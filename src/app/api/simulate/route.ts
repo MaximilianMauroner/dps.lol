@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { compareAcrossSamples, simulateYunara } from "@/domain/simulator";
 import { quantile, round } from "@/domain/math";
 import { getRealisticTargets } from "@/data/realistic-targets";
+import { fixtureTargets } from "@/data/fixtures";
 import type { ActionKind, Build, Target } from "@/domain/types";
 
 const DEFAULT_A: Build = { name: "Infinity Edge", itemIds: [6672, 3085, 3006, 3031] };
@@ -39,7 +40,30 @@ export async function POST(request: Request) {
       level: clampInt(body.manualTarget?.level ?? 13, 1, 18),
       provenance: "fixture",
     };
-    const targets = body.targetMode === "manual" ? [manualTarget] : dataset.targets;
+    let displayDataset = dataset;
+    let targets: Target[];
+    if (body.targetMode === "manual") {
+      targets = [manualTarget];
+      displayDataset = {
+        ...dataset,
+        provenance: "fixture",
+        phase: "manual target",
+        fallbackLevel: 3,
+        note: "Manual target values supplied by the user; no Riot snapshot claim is made.",
+      };
+    } else if (dataset.targets.length === 0) {
+      targets = fixtureTargets;
+      displayDataset = {
+        ...dataset,
+        targets: fixtureTargets,
+        provenance: "fixture",
+        phase: "fixture fallback (no stored Riot samples)",
+        fallbackLevel: 3,
+        note: "No stored Riot scenario samples match these filters; fixture values are shown explicitly.",
+      };
+    } else {
+      targets = dataset.targets;
+    }
     const fallbackTarget = targets[0] ?? manualTarget;
     const base: Omit<import("@/domain/types").SimulationInput, "build" | "target"> = {
       level: clampInt(body.level ?? 13, 1, 18),
@@ -56,7 +80,7 @@ export async function POST(request: Request) {
       patch: "26.18",
       dataVersion: "16.18.1",
       assumptions: `Level ${base.level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Kraken + Runaan + boots included.`,
-      dataset: { ...dataset, count: targets.length, summary },
+      dataset: { ...displayDataset, count: targets.length, summary },
       builds: { a: buildA, b: buildB },
       target: fallbackTarget,
       results: { a, b, comparison },
