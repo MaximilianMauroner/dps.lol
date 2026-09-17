@@ -1,4 +1,4 @@
-import { giantSlayerMultiplier, itemStats, krakenBaseDamage } from "../items";
+import { giantSlayerMultiplier, itemStats, itemWarnings, krakenBaseDamage } from "../items";
 import { applyPercentArmorPenetration, growthAtLevel, mitigate, round } from "../math";
 import type { ChampionPlugin } from "./plugin";
 import type { DamageEvent, DamageType, SimulationResult } from "../types";
@@ -11,7 +11,7 @@ const AS_GROWTH = 0.02;
 const BASE_CRIT_DAMAGE = 2;
 const Q_DURATION_SECONDS = 5;
 const R_DURATION_SECONDS = 15;
-const ABILITY_CAST_SECONDS = { Q: 0.25, W: 0.5, R: 0.25 } as const;
+const ABILITY_CAST_SECONDS = { Q: 0.25, W: 0.5, R: 0.25, E: 0.25 } as const;
 const SCRIPTED_ATTACK_LOCK_SECONDS = 0.25;
 const YUN_TAL_MAX_STACKS = 125;
 const YUN_TAL_CRIT_PER_STACK = 0.002;
@@ -72,7 +72,8 @@ export const yunara: ChampionPlugin = {
       "Expected crit mode averages crits; individual attacks are not RNG rolls.",
       "Mortal-target mode stops at first death; damage shown excludes overkill.",
       "AA timing uses attack-readiness intervals and a 0.25s scripted action lock; champion windups/resets are not modeled.",
-      "E is mobility-only and intentionally contributes no damage.",
+      "E is selectable for combo planning but is mobility-only and intentionally contributes no damage.",
+      ...itemWarnings(input.build.itemIds),
     ];
     if (hasYunTal) {
       warnings.push(
@@ -237,6 +238,8 @@ export const yunara: ChampionPlugin = {
           ]);
         }
         cursor += ABILITY_CAST_SECONDS.W;
+      } else if (action === "E") {
+        cursor += ABILITY_CAST_SECONDS.E;
       } else {
         const attackTime = Math.max(cursor, state.nextAttackReady);
         if (attack(attackTime)) cursor = attackTime + SCRIPTED_ATTACK_LOCK_SECONDS;

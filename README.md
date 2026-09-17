@@ -130,6 +130,12 @@ build cards start from the same observed default, expose every supported item sl
 manual edits until the explicit realistic-default reset. This attacker distribution is separate from
 the enemy target cohort used by the Worker damage comparison.
 
+The primary workflow is level-driven: changing Yunara's level refreshes the progression panel,
+common archived skill-rank pattern (or a clearly labelled legal fallback), and a same-match/frame
+enemy cohort. The combo builder has simulator presets, reorder/remove controls, and an explicit
+mobility-only E action. Item/build edits, rank edits, combo edits, duration, and Yun Tal stack
+assumptions stay local to the cached cohort; only level or target filters retrieve a new cohort.
+
 ## Current limitations and practice-tool validation
 
 Expected crit mode is deterministic expected damage, not a probability distribution. Runaan’s bolts

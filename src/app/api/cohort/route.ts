@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
 import { getRealisticTargets, type TargetFilters } from "@/data/realistic-targets";
+import { getYunaraLevelTargets } from "@/data/level-targets";
 import { round, weightedQuantile } from "@/domain/math";
 
 const REGIONS = new Set(["EUW1", "NA1", "KR"]);
-const PHASES = new Set(["yunara-third-item", "bot-carry-third-item", "minute-window"]);
+const PHASES = new Set([
+  "yunara-level",
+  "yunara-third-item",
+  "bot-carry-third-item",
+  "minute-window",
+]);
 const RANKS = new Set(["ALL", "CHALLENGER", "GRANDMASTER", "MASTER"]);
 const ROLES = new Set(["ALL", "TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]);
 
@@ -21,7 +27,11 @@ export async function POST(request: Request) {
       champion: typeof body.champion === "string" ? body.champion.trim().slice(0, 48) : "",
       limit: boundedInt(body.limit, 1, 1000, 500),
     };
-    const dataset = await getRealisticTargets(filters);
+    const level = boundedInt(body.level, 1, 18, 13);
+    const dataset =
+      filters.phase === "yunara-level"
+        ? await getYunaraLevelTargets({ ...filters, level })
+        : await getRealisticTargets(filters);
     return NextResponse.json({
       patch: "26.18",
       dataVersion: "16.18.1",
@@ -40,6 +50,7 @@ export async function POST(request: Request) {
                 ? `Deterministic bounded sample: ${dataset.snapshotCount} of ${dataset.availableSnapshotCount} matching snapshots.`
                 : undefined,
       },
+      level,
     });
   } catch (error) {
     return NextResponse.json(

@@ -27,6 +27,9 @@ import {
   dedupeLevelObservations,
   progressionRarity,
 } from "../src/domain/progression";
+import { defaultSkillRanks, isLegalSkillRanks, tryAdjustSkillRank } from "../src/domain/skills";
+import { dedupeLevelAnchors, matchBalancedWeight } from "../src/domain/level-cohort";
+import { extractSkillObservations } from "../src/data/skill-progression";
 
 describe("combat math", () => {
   test("mitigates positive and negative resistance", () => {
@@ -229,6 +232,57 @@ describe("Yunara inventory progression", () => {
     expect(result.selection.recommendedExcludedItemIds).toEqual([]);
     expect(result.selection.recommendedExcludedItemNames).toEqual([]);
     expect(result.selection.modeCompletedLegendary).toBe(3);
+  });
+});
+
+describe("level-driven cohort and skill helpers", () => {
+  test("deduplicates level anchors and balances enemy vectors by match", () => {
+    const rows = dedupeLevelAnchors([
+      { matchId: "m1", participantId: 1, level: 10, timestampMs: 1_000, value: "old" },
+      { matchId: "m1", participantId: 1, level: 10, timestampMs: 2_000, value: "new" },
+      { matchId: "m1", participantId: 2, level: 10, timestampMs: 2_000, value: "enemy" },
+      { matchId: "m2", participantId: 1, level: 10, timestampMs: 1_000, value: "other" },
+    ]);
+    expect(rows).toHaveLength(3);
+    expect(rows.find((row) => row.matchId === "m1" && row.participantId === 1)?.value).toBe("new");
+    expect(matchBalancedWeight(5)).toBeCloseTo(0.2);
+    expect(matchBalancedWeight(0)).toBe(1);
+  });
+
+  test("skill defaults and manual edits stay legal at level breakpoints", () => {
+    expect(defaultSkillRanks(5).r).toBe(0);
+    expect(defaultSkillRanks(6).r).toBe(1);
+    expect(defaultSkillRanks(16).r).toBe(3);
+    expect(isLegalSkillRanks({ q: 5, w: 3, e: 1, r: 2 }, 13)).toBe(true);
+    expect(isLegalSkillRanks({ q: 5, w: 5, e: 5, r: 3 }, 13)).toBe(false);
+    expect(tryAdjustSkillRank({ q: 5, w: 3, e: 1, r: 2 }, 13, "q", 1)).toBeNull();
+    expect(tryAdjustSkillRank({ q: 5, w: 3, e: 1, r: 2 }, 13, "w", 1)).toEqual({
+      q: 5,
+      w: 4,
+      e: 1,
+      r: 2,
+    });
+  });
+
+  test("skill rank observations reconstruct common level states from timeline events", () => {
+    const timeline = {
+      info: {
+        frames: [
+          {
+            timestamp: 60_000,
+            participantFrames: { "1": { level: 1 } },
+            events: [{ type: "SKILL_LEVEL_UP", participantId: 1, skillSlot: 1 }],
+          },
+          {
+            timestamp: 120_000,
+            participantFrames: { "1": { level: 2 } },
+            events: [{ type: "SKILL_LEVEL_UP", participantId: 1, skillSlot: 2 }],
+          },
+        ],
+      },
+    };
+    const observations = extractSkillObservations(timeline);
+    expect(observations.find((row) => row.level === 2)?.ranks).toEqual({ q: 1, w: 1, e: 0, r: 0 });
   });
 });
 

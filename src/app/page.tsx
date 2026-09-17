@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import type { ActionKind, Target } from "@/domain/types";
 import { weightedHeadlineWinner } from "@/domain/simulator";
-import { buildGoldTotal, ITEMS } from "@/domain/items";
+import { buildGoldTotal, itemWarnings, ITEMS } from "@/domain/items";
+import { defaultSkillRanks, skillBounds, tryAdjustSkillRank } from "@/domain/skills";
 import type {
   WorkerSimulationRequest,
   WorkerSimulationResponse,
@@ -16,6 +17,7 @@ const itemNames: Record<number, string> = {
   3085: "Runaan's Hurricane",
   3006: "Berserker's Greaves",
   3008: "Gluttonous Greaves",
+  2523: "Hexoptics C44",
   3032: "Yun Tal Wildarrows",
   3031: "Infinity Edge",
   3036: "Lord Dominik's Regards",
@@ -25,15 +27,35 @@ const itemIcons: Record<number, string> = {
   3085: "3085.png",
   3006: "3006.png",
   3008: "3008.png",
+  2523: "2523.png",
   3032: "3032.png",
   3031: "3031.png",
   3036: "3036.png",
+  3046: "3046.png",
+  3072: "3072.png",
+  3095: "3095.png",
+  3153: "3153.png",
+  3302: "3302.png",
+  3026: "3026.png",
+  3139: "3139.png",
+  3033: "3033.png",
+  2512: "2512.png",
 };
 const SUPPORTED_BUILD_ITEMS = Object.keys(ITEMS)
   .map(Number)
   .sort((left, right) => left - right);
 const INITIAL_REALISTIC_BUILD = [6672, 3085, 3006];
-const WINDOWS = [3, 5, 20] as const;
+const WINDOWS = [2, 5, 10, 20] as const;
+const COMBO_PRESETS: Array<{
+  id: string;
+  label: string;
+  actions: ActionKind[];
+  continueAutos: boolean;
+}> = [
+  { id: "autos", label: "Autos", actions: ["AA"], continueAutos: true },
+  { id: "q-autos", label: "Q → autos", actions: ["Q"], continueAutos: true },
+  { id: "r-q-w", label: "R → Q → W → autos", actions: ["R", "Q", "W"], continueAutos: true },
+];
 
 type ResponseData = any;
 
@@ -53,7 +75,7 @@ export default function Home() {
   const [targetMode, setTargetMode] = useState<"realistic" | "manual">("realistic");
   const [region, setRegion] = useState("EUW1");
   const [rank, setRank] = useState("ALL");
-  const [phase, setPhase] = useState("yunara-third-item");
+  const [phase, setPhase] = useState("yunara-level");
   const [role, setRole] = useState("ALL");
   const [targetChampion, setTargetChampion] = useState("");
   const [selectedTargetId, setSelectedTargetId] = useState("");
@@ -65,7 +87,7 @@ export default function Home() {
   const [progression, setProgression] = useState<any>(null);
   const [progressionLoading, setProgressionLoading] = useState(true);
   const [progressionError, setProgressionError] = useState("");
-  const [ranks, setRanks] = useState({ q: 5, w: 3, e: 1, r: 2 });
+  const [ranks, setRanks] = useState(() => defaultSkillRanks(13));
   const [actions, setActions] = useState<ActionKind[]>(["R", "Q", "W", "AA", "AA"]);
   const [manual, setManual] = useState({
     health: 2200,
@@ -85,6 +107,8 @@ export default function Home() {
   const cohortRef = useRef<{ key: string; payload: any } | null>(null);
   const progressionCacheRef = useRef(new Map<number, any>());
   const buildsEditedRef = useRef(false);
+  const ranksEditedRef = useRef(false);
+  const comboEditedRef = useRef(false);
 
   const buildA = useMemo(
     () => ({ name: buildDisplayName(buildAItems, "Build A"), itemIds: buildAItems }),
@@ -114,6 +138,18 @@ export default function Home() {
           }));
         if (!active) return;
         setProgression(next);
+        if (!ranksEditedRef.current) {
+          const observedRanks = next.skill?.ranks;
+          setRanks(
+            observedRanks && isLegalRankShape(observedRanks, level)
+              ? observedRanks
+              : defaultSkillRanks(level),
+          );
+        }
+        if (!comboEditedRef.current) {
+          setActions(defaultActionsForLevel(level));
+          setContinueAutos(true);
+        }
         if (!buildsEditedRef.current) {
           const recommended = recommendedBuild(next);
           setBuildAItems(recommended);
@@ -273,7 +309,16 @@ export default function Home() {
   }
 
   async function loadCohort(): Promise<any> {
-    const key = JSON.stringify({ targetMode, region, rank, phase, role, targetChampion, manual });
+    const key = JSON.stringify({
+      targetMode,
+      region,
+      rank,
+      phase,
+      role,
+      targetChampion,
+      level,
+      manual,
+    });
     if (cohortRef.current?.key === key) return cohortRef.current.payload;
     let payload: any;
     if (targetMode === "manual") {
@@ -312,7 +357,15 @@ export default function Home() {
       const response = await fetch("/api/cohort", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ region, rank, phase, role, champion: targetChampion, limit: 1000 }),
+        body: JSON.stringify({
+          region,
+          rank,
+          phase,
+          role,
+          champion: targetChampion,
+          level,
+          limit: 1000,
+        }),
       });
       payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Cohort retrieval failed");
@@ -374,10 +427,38 @@ export default function Home() {
   /* eslint-enable react-hooks/exhaustive-deps */
 
   function addAction(action: ActionKind) {
+    if (!actionAvailable(action, level)) return;
+    comboEditedRef.current = true;
     setActions((current) => [...current, action]);
   }
   function removeAction(index: number) {
+    comboEditedRef.current = true;
     setActions((current) => current.filter((_, i) => i !== index));
+  }
+
+  function moveAction(index: number, direction: -1 | 1) {
+    comboEditedRef.current = true;
+    setActions((current) => {
+      const destination = index + direction;
+      if (destination < 0 || destination >= current.length) return current;
+      const next = [...current];
+      [next[index], next[destination]] = [next[destination]!, next[index]!];
+      return next;
+    });
+  }
+
+  function applyComboPreset(preset: (typeof COMBO_PRESETS)[number]) {
+    const legal = preset.actions.filter((action) => actionAvailable(action, level));
+    comboEditedRef.current = true;
+    setActions(legal.length ? legal : ["AA"]);
+    setContinueAutos(preset.continueAutos);
+  }
+
+  function adjustRank(key: "q" | "w" | "e" | "r", delta: number) {
+    const next = tryAdjustSkillRank(ranks, level, key, delta);
+    if (!next) return;
+    ranksEditedRef.current = true;
+    setRanks(next);
   }
 
   function markBuildEdited() {
@@ -408,6 +489,15 @@ export default function Home() {
     setBuildBItems(recommended);
     buildsEditedRef.current = false;
     setBuildsEdited(false);
+    ranksEditedRef.current = false;
+    comboEditedRef.current = false;
+    setRanks(
+      progression?.skill?.ranks && isLegalRankShape(progression.skill.ranks, level)
+        ? progression.skill.ranks
+        : defaultSkillRanks(level),
+    );
+    setActions(defaultActionsForLevel(level));
+    setContinueAutos(true);
     setYunTalStacks(0);
   }
 
@@ -427,27 +517,26 @@ export default function Home() {
   const headlineOutcome = comparison ? weightedHeadlineWinner(comparison) : "tie";
   const winnerName =
     headlineOutcome === "a" ? buildA.name : headlineOutcome === "b" ? buildB.name : null;
-  const scope = targetMode === "manual" ? "custom target" : "average frontline";
+  const scope = targetMode === "manual" ? "custom target" : `real level-${level} enemy cohort`;
   const verdictTitle = winnerName ? (
     <>
-      <span className="winner">{winnerName}</span> wins the {scope}
+      <span className="winner">{winnerName}</span> leads the {scope}
     </>
   ) : (
-    <>Dead heat on the {scope}</>
+    <>The builds are tied on the {scope}</>
   );
   const delta = comparison?.medianRelativeDelta ?? 0;
   const signed = `${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}%`;
-  const winnerShare = comparison
-    ? headlineOutcome === "a"
-      ? comparison.buildAWinRate
-      : headlineOutcome === "b"
-        ? 1 - comparison.buildAWinRate
-        : 0.5
-    : 0.5;
-  const verdictSub =
-    metric === "ttk"
-      ? `Median first-crossing ${signed} · ${Math.round(winnerShare * 100)}% of cohort mass`
-      : `${signed} damage at ${duration}s · ${Math.round(winnerShare * 100)}% of cohort mass`;
+  const verdictSub = comparison
+    ? comparisonSentence(comparison, {
+        buildA: buildA.name,
+        buildB: buildB.name,
+        duration,
+        level,
+        metric,
+        distinctMatchCount: data?.dataset?.distinctMatchCount ?? comparison.distinctMatchCount,
+      })
+    : "Loading the level-matched target cohort…";
 
   return (
     <main className="page">
@@ -543,6 +632,7 @@ export default function Home() {
               leads={headlineOutcome === "a"}
               maxSource={maxSource(resultA, resultB)}
               rarity={buildRarity(progression, buildA.itemIds)}
+              warnings={itemWarnings(buildA.itemIds)}
             />
             <div className="vs" aria-hidden>
               <span>VS</span>
@@ -559,6 +649,7 @@ export default function Home() {
               leads={headlineOutcome === "b"}
               maxSource={maxSource(resultA, resultB)}
               rarity={buildRarity(progression, buildB.itemIds)}
+              warnings={itemWarnings(buildB.itemIds)}
             />
           </div>
           <div className="card dist">
@@ -670,6 +761,19 @@ export default function Home() {
                   : ""}{" "}
                 {progression.dedupeRule}
               </p>
+              <div className="skill-summary" role="status">
+                <strong>
+                  Common skill ranks: Q{progression.skill.ranks.q} W{progression.skill.ranks.w} E
+                  {progression.skill.ranks.e} R{progression.skill.ranks.r}
+                </strong>
+                <span>
+                  {progression.skill.provenance === "timeline"
+                    ? "Archived timeline-derived"
+                    : "Legal fallback"}
+                  {progression.skill.sampleCount > 0 ? ` · n=${progression.skill.sampleCount}` : ""}
+                  . {progression.skill.note}
+                </span>
+              </div>
               <div className="progression-grid">
                 <div>
                   <h3>Completed legendary count</h3>
@@ -715,6 +819,13 @@ export default function Home() {
                   .join(" + ") || "none"}
                 . The simulated default uses only supported mechanics; observed unsupported items
                 stay visible in the pattern but are not fabricated into damage.
+              </p>
+              <p className="progression-interpretation">
+                The level-{level} default uses the modal full core:{" "}
+                <strong>
+                  {progression.selection.modeCompletedLegendary} completed legendary items
+                </strong>
+                . Boots and components are shown separately and never increase that count.
               </p>
             </>
           )}
@@ -793,19 +904,20 @@ export default function Home() {
                     <div className="stepper">
                       <button
                         aria-label={`Decrease ${key}`}
-                        onClick={() => setRanks((r) => ({ ...r, [key]: Math.max(1, r[key] - 1) }))}
+                        disabled={ranks[key] <= skillBounds(level)[key].min}
+                        onClick={() => adjustRank(key, -1)}
                       >
                         −
                       </button>
-                      <strong>{ranks[key]}</strong>
+                      <strong
+                        title={`Legal range ${skillBounds(level)[key].min}–${skillBounds(level)[key].max}`}
+                      >
+                        {ranks[key]}
+                      </strong>
                       <button
                         aria-label={`Increase ${key}`}
-                        onClick={() =>
-                          setRanks((r) => ({
-                            ...r,
-                            [key]: Math.min(key === "r" ? 3 : 5, r[key] + 1),
-                          }))
-                        }
+                        disabled={ranks[key] >= skillBounds(level)[key].max}
+                        onClick={() => adjustRank(key, 1)}
                       >
                         +
                       </button>
@@ -830,33 +942,59 @@ export default function Home() {
                 }
               />
               <p className="dim" style={{ marginTop: 10 }}>
-                Patch pinned to 26.18 · Q/W/E/R ranks are manual assumptions (not inferred from
-                timelines) · E is mobility-only · 3032 starts at the explicit stack value above;
-                stored frames do not expose crit chance
+                Patch pinned to 26.18 · level changes load the common archived skill pattern when
+                available; manual edits are preserved · E is mobility-only · 3032 starts at the
+                explicit stack value above because stored frames do not expose crit chance.
               </p>
             </div>
 
             <div className="card">
               <h3>Opener</h3>
-              <div className="opener">
-                {actions.map((action, index) => (
-                  <button
-                    className="op"
-                    key={`${action}-${index}`}
-                    onClick={() => removeAction(index)}
-                    title="Remove action"
-                  >
-                    {action} <small aria-hidden>×</small>
+              <div className="preset-row" aria-label="Simulator combo presets">
+                {COMBO_PRESETS.map((preset) => (
+                  <button key={preset.id} onClick={() => applyComboPreset(preset)}>
+                    {preset.label}
                   </button>
                 ))}
               </div>
+              <div className="opener">
+                {actions.map((action, index) => (
+                  <span className="op-wrap" key={`${action}-${index}`}>
+                    <button
+                      className="op"
+                      onClick={() => removeAction(index)}
+                      title="Remove action"
+                    >
+                      {action} <small aria-hidden>×</small>
+                    </button>
+                    <button
+                      className="op-move"
+                      aria-label={`Move ${action} ${index === 0 ? "down" : "up"}`}
+                      onClick={() => moveAction(index, index === 0 ? 1 : -1)}
+                    >
+                      {index === 0 ? "↓" : "↑"}
+                    </button>
+                  </span>
+                ))}
+              </div>
               <div className="addrow">
-                {(["AA", "Q", "W", "R"] as ActionKind[]).map((action) => (
-                  <button key={action} onClick={() => addAction(action)}>
+                {(["AA", "Q", "W", "R", "E"] as ActionKind[]).map((action) => (
+                  <button
+                    key={action}
+                    onClick={() => addAction(action)}
+                    disabled={!actionAvailable(action, level)}
+                  >
                     + {action}
                   </button>
                 ))}
               </div>
+              <p className="dim">E can be sequenced for timing, but remains mobility-only and contributes no damage in this MVP.</p>
+              {!actions.every((action) => actionAvailable(action, level)) && (
+                <p className="warn">
+                  This opener contains an ability unavailable at level {level}; choose a preset or
+                  remove it.
+                </p>
+              )}
               <span className="fl">After the opener</span>
               <div className="toggle" role="group" aria-label="Continue autos">
                 <button
@@ -964,6 +1102,7 @@ export default function Home() {
                     value={phase}
                     onChange={(event) => setPhase(event.target.value)}
                   >
+                    <option value="yunara-level">Same-frame Yunara level (recommended)</option>
                     <option value="yunara-third-item">Yunara third item</option>
                     <option value="bot-carry-third-item">Bot carry fallback</option>
                     <option value="minute-window">Around minute 25</option>
@@ -1031,6 +1170,13 @@ export default function Home() {
                   ? "Lower first-crossing time wins; uncensored kills only."
                   : "Mortal targets stop at death; both kills are an applied-damage tie."}
               </p>
+              {targetMode === "realistic" && (
+                <p className="provenance">
+                  Level {level} loads enemy vectors from the same archived match/frame as the Yunara
+                  level observation. Build, combo, rank, and stack edits reuse this cohort;
+                  level/filter changes fetch a new one.
+                </p>
+              )}
             </div>
           </div>
         </section>
@@ -1149,6 +1295,57 @@ export default function Home() {
   );
 }
 
+function actionAvailable(action: ActionKind, level: number): boolean {
+  if (action === "R") return level >= 6;
+  return level >= 1;
+}
+
+function defaultActionsForLevel(level: number): ActionKind[] {
+  if (level < 6) return ["Q", "AA"];
+  return ["R", "Q", "W", "AA", "AA"];
+}
+
+function isLegalRankShape(
+  ranks: { q: number; w: number; e: number; r: number },
+  level: number,
+): boolean {
+  const bounds = skillBounds(level);
+  return (
+    (["q", "w", "e", "r"] as const).every((key) => {
+      const value = ranks[key];
+      return Number.isInteger(value) && value >= bounds[key].min && value <= bounds[key].max;
+    }) && ranks.q + ranks.w + ranks.e + ranks.r <= level
+  );
+}
+
+function comparisonSentence(
+  comparison: any,
+  context: {
+    buildA: string;
+    buildB: string;
+    duration: number;
+    level: number;
+    metric: "damage" | "ttk";
+    distinctMatchCount: number;
+  },
+): string {
+  const total = Object.values(comparison.weightedOutcomes ?? {}).reduce(
+    (sum: number, value) => sum + Number(value ?? 0),
+    0,
+  );
+  const aMass = Number(comparison.weightedOutcomes?.a ?? 0);
+  const bMass = Number(comparison.weightedOutcomes?.b ?? 0);
+  const tieMass = Number(comparison.weightedOutcomes?.tie ?? 0);
+  const censoredMass = Number(comparison.weightedOutcomes?.censored ?? 0);
+  const pct = (value: number) => (total > 0 ? Math.round((value / total) * 100) : 0);
+  const median = Number(comparison.medianRelativeDelta ?? 0);
+  const signedMedian = `${median >= 0 ? "+" : "−"}${Math.abs(median)}%`;
+  const metricText =
+    context.metric === "ttk" ? "first-crossing TTK" : `${context.duration}s applied damage`;
+  const leader = aMass > bMass ? context.buildA : bMass > aMass ? context.buildB : "neither build";
+  return `Across ${comparison.count} real enemy vectors from ${context.distinctMatchCount} matches at Yunara level ${context.level}, ${leader} leads ${metricText}: ${pct(aMass)}% A / ${pct(bMass)}% B weighted mass, ${pct(tieMass)}% ties, ${pct(censoredMass)}% censored; median A-vs-B delta ${signedMedian}.`;
+}
+
 function maxSource(a: any, b: any) {
   const values = [
     ...Object.values((a?.sources ?? {}) as Record<string, number>),
@@ -1224,18 +1421,19 @@ function buildRarity(progression: any, itemIds: number[]) {
 }
 
 function BuildRarity({ rarity }: { rarity: any }) {
+  const ahead = Math.max(0, Math.min(100, Number(rarity.progressionPercentile)));
   return (
     <div className="build-rarity" aria-label="Economic item progression rarity">
       <strong>
-        {rarity.count} completed legendary{rarity.count === 1 ? "" : "s"}
+        {rarity.count} completed legendary item{rarity.count === 1 ? "" : "s"}
       </strong>
       <span>
-        {rarity.lowSample ? "Low-sample " : ""}progression percentile {rarity.progressionPercentile}
-        th · tail ≥{rarity.count}: {rarity.tailPercent}%
+        {rarity.lowSample ? "Low-sample · " : ""}ahead of {ahead}% of observed Yunara states at this
+        level
       </span>
       <span>
-        Exact count: {rarity.exactPercent}% · selected core observed in {rarity.corePercent}% (n=
-        {rarity.sampleCount})
+        Only {rarity.tailPercent}% had ≥{rarity.count} · exact count {rarity.exactPercent}% · exact
+        selected core {rarity.corePercent}% (n={rarity.sampleCount})
       </span>
       <small>Economic/item progression only; not player skill or win probability.</small>
     </div>
@@ -1268,6 +1466,7 @@ function BuildCard({
   leads,
   maxSource: max,
   rarity,
+  warnings,
 }: {
   side: "a" | "b";
   name: string;
@@ -1280,13 +1479,14 @@ function BuildCard({
   leads: boolean;
   maxSource: number;
   rarity: any;
+  warnings: string[];
 }) {
   const heroItem = itemIds[itemIds.length - 1] ?? 6672;
   return (
     <article className={`build ${leads ? "win" : ""}`}>
       <div className="build-head">
         <Image
-          src={`${ICON}${itemIcons[heroItem] ?? "6672.png"}`}
+          src={`${ICON}${itemIcons[heroItem] ?? `${heroItem}.png`}`}
           alt=""
           width={44}
           height={44}
@@ -1303,7 +1503,7 @@ function BuildCard({
         {itemIds.map((id, index) => (
           <label className="build-slot" key={`${side}-${index}`}>
             <Image
-              src={`${ICON}${itemIcons[id] ?? "6672.png"}`}
+              src={`${ICON}${itemIcons[id] ?? `${id}.png`}`}
               alt=""
               width={30}
               height={30}
@@ -1342,6 +1542,13 @@ function BuildCard({
         </button>
       </div>
       {rarity && <BuildRarity rarity={rarity} />}
+      {warnings.length > 0 && (
+        <div className="build-warnings" role="note">
+          {warnings.map((warning) => (
+            <span key={warning}>⚠ {warning}</span>
+          ))}
+        </div>
+      )}
       <div className="bignum num">
         {result ? Math.round(result.totalDamage).toLocaleString() : "—"}
         <small>total damage</small>

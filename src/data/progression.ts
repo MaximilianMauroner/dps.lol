@@ -6,6 +6,7 @@ import {
 } from "@/domain/progression";
 import type { StaticItemShape } from "@/ingestion/completed-items";
 import { hasDatabase, query } from "@/db/client";
+import { getYunaraSkillProgression, type SkillProgression } from "./skill-progression";
 
 const PATCH = "26.18";
 const DDRAGON_VERSION = "16.18.1";
@@ -43,6 +44,7 @@ export interface ProgressionApiResponse extends ProgressionAggregateResult {
   requestedLevel: number;
   exactLevel: ProgressionAggregateResult["levels"][number];
   sourceObservationCount: number;
+  skill: SkillProgression;
 }
 
 let cached: {
@@ -64,6 +66,7 @@ export async function getYunaraProgression(
   const exactLevel = result.levels.find(
     (level) => level.level === result.selection.requestedLevel,
   )!;
+  const skill = await getYunaraSkillProgression(result.selection.requestedLevel);
   return {
     ...result,
     patch: PATCH,
@@ -79,6 +82,7 @@ export async function getYunaraProgression(
     requestedLevel: result.selection.requestedLevel,
     exactLevel,
     sourceObservationCount: source.observations.length,
+    skill,
   };
 }
 

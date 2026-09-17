@@ -188,7 +188,7 @@ function normalizeActions(value: unknown): readonly ActionKind[] {
   if (!Array.isArray(value) || value.length > 100)
     throw new Error("Actions must be an array of at most 100 entries.");
   const actions = value.filter((action): action is ActionKind =>
-    ["AA", "Q", "W", "R"].includes(action),
+    ["AA", "Q", "W", "R", "E"].includes(action),
   );
   if (actions.length !== value.length || actions.length === 0)
     throw new Error("Actions contain an unsupported action.");

@@ -389,16 +389,35 @@ function coreFrequencies(
   supportedItemIds: number[],
   total: number,
 ): CoreFrequency[] {
-  const frequencies: CoreFrequency[] = [];
-  for (let mask = 1; mask < 1 << supportedItemIds.length; mask += 1) {
-    const ids = supportedItemIds.filter((_, index) => (mask & (1 << index)) !== 0);
+  // Only enumerate combinations that occur in at least one observed inventory.
+  // Enumerating every subset of the whole item catalog made a small cohort produce
+  // hundreds of thousands of zero-frequency rows and made the progression endpoint
+  // needlessly slow. This preserves the useful "selected core appeared in" query
+  // while bounding work by observed rows (at most 2^6 subsets per inventory).
+  const supported = new Set(supportedItemIds);
+  const candidateKeys = new Set<string>();
+  for (const source of itemSets) {
+    const ids = [...new Set(source.filter((id) => supported.has(id)))].sort((a, b) => a - b);
+    for (let mask = 1; mask < 1 << ids.length; mask += 1) {
+      const subset = ids.filter((_, index) => (mask & (1 << index)) !== 0);
+      candidateKeys.add(subset.join(","));
+    }
+  }
+  const frequencies: CoreFrequency[] = [...candidateKeys].map((key) => {
+    const ids = key.split(",").map(Number);
     const observations = itemSets.filter((set) => ids.every((id) => set.includes(id))).length;
-    frequencies.push({
+    return {
       itemIds: ids,
       observations,
       percent: roundPercent((observations / Math.max(1, total)) * 100),
-    });
-  }
+    };
+  });
+  frequencies.sort(
+    (left, right) =>
+      right.itemIds.length - left.itemIds.length ||
+      right.observations - left.observations ||
+      left.itemIds.join(",").localeCompare(right.itemIds.join(",")),
+  );
   return frequencies;
 }
 

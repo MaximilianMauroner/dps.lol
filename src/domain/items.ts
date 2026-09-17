@@ -8,6 +8,8 @@ export interface ItemMechanic {
   critDamage?: number;
   armorPenPercent?: number;
   boots?: boolean;
+  /** Important passive effects that are not represented by the MVP damage engine. */
+  warning?: string;
 }
 
 export const ITEMS: Record<number, ItemMechanic> = {
@@ -25,6 +27,14 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 3000,
     attackDamage: 50,
     attackSpeed: 0.45,
+  },
+  2523: {
+    id: 2523,
+    name: "Hexoptics C44",
+    goldTotal: 2800,
+    attackDamage: 55,
+    critChance: 0.25,
+    warning: "Hexoptics Magnification's range-based attack damage amp is not modeled.",
   },
   3031: {
     id: 3031,
@@ -48,6 +58,77 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 2650,
     attackSpeed: 0.4,
     critChance: 0.25,
+  },
+  3046: {
+    id: 3046,
+    name: "Phantom Dancer",
+    goldTotal: 2650,
+    attackSpeed: 0.65,
+    critChance: 0.25,
+    warning: "Phantom Dancer's Spectral Waltz movement effect is not modeled.",
+  },
+  3072: {
+    id: 3072,
+    name: "Bloodthirster",
+    goldTotal: 3400,
+    attackDamage: 80,
+    warning: "Bloodthirster lifesteal and Ichorshield are not modeled.",
+  },
+  3095: {
+    id: 3095,
+    name: "Stormrazor",
+    goldTotal: 3200,
+    attackDamage: 50,
+    attackSpeed: 0.25,
+    critChance: 0.25,
+    warning: "Stormrazor's Energized Bolt proc is not modeled.",
+  },
+  3153: {
+    id: 3153,
+    name: "Blade of The Ruined King",
+    goldTotal: 3200,
+    attackDamage: 40,
+    attackSpeed: 0.25,
+    warning: "Blade of the Ruined King's current-health on-hit is not modeled.",
+  },
+  3302: {
+    id: 3302,
+    name: "Terminus",
+    goldTotal: 3000,
+    attackDamage: 30,
+    attackSpeed: 0.35,
+    warning: "Terminus on-hit damage and alternating penetration stacks are not modeled.",
+  },
+  3026: {
+    id: 3026,
+    name: "Guardian Angel",
+    goldTotal: 3200,
+    attackDamage: 55,
+    warning: "Guardian Angel's Rebirth effect is defensive and not modeled.",
+  },
+  3139: {
+    id: 3139,
+    name: "Mercurial Scimitar",
+    goldTotal: 3200,
+    attackDamage: 50,
+    warning: "Mercurial Scimitar's active and lifesteal are not modeled.",
+  },
+  3033: {
+    id: 3033,
+    name: "Mortal Reminder",
+    goldTotal: 3000,
+    attackDamage: 35,
+    critChance: 0.25,
+    armorPenPercent: 0.3,
+    warning: "Mortal Reminder's Grievous Wounds is not modeled.",
+  },
+  2512: {
+    id: 2512,
+    name: "Fiendhunter Bolts",
+    goldTotal: 2650,
+    attackSpeed: 0.45,
+    critChance: 0.25,
+    warning: "Fiendhunter's post-ultimate guaranteed-crit/true-damage passive is not modeled.",
   },
   6672: { id: 6672, name: "Kraken Slayer", goldTotal: 3000, attackDamage: 45, attackSpeed: 0.4 },
 };
@@ -74,6 +155,16 @@ export function buildGoldTotal(itemIds: number[]): number {
 
 export function unsupportedItemIds(itemIds: number[]): number[] {
   return [...new Set(itemIds.filter((id) => !ITEMS[id]))];
+}
+
+export function itemWarnings(itemIds: number[]): string[] {
+  return [
+    ...new Set(
+      itemIds
+        .map((id) => ITEMS[id]?.warning)
+        .filter((warning): warning is string => Boolean(warning)),
+    ),
+  ];
 }
 
 export function giantSlayerMultiplier(bonusHealth: number): number {

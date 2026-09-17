@@ -1,5 +1,5 @@
 export type DamageType = "physical" | "magic" | "true";
-export type ActionKind = "AA" | "Q" | "W" | "R";
+export type ActionKind = "AA" | "Q" | "W" | "R" | "E";
 
 export interface AbilityRanks {
   q: number;
