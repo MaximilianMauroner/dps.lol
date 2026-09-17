@@ -24,6 +24,10 @@ export interface ProgressionDistributionRow {
 
 export interface ProgressionRarity {
   count: number;
+  /** Number of observations at or above the selected count. */
+  tailObservations: number;
+  /** Number of observations exactly at the selected count. */
+  exactObservations: number;
   progressionPercentile: number;
   tailPercent: number;
   exactPercent: number;
@@ -242,6 +246,8 @@ export function progressionRarity(
   const denominator = Math.max(1, aggregate.sampleCount);
   return {
     count: normalized,
+    tailObservations: atLeast,
+    exactObservations: equal,
     progressionPercentile: roundPercent(((less + equal / 2) / denominator) * 100),
     tailPercent: roundPercent((atLeast / denominator) * 100),
     exactPercent: roundPercent((equal / denominator) * 100),

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { deriveBonusHealth } from "../src/domain/health";
 import { deriveBonusHealthEstimate } from "../src/domain/health";
-import { giantSlayerMultiplier, itemStats } from "../src/domain/items";
+import { duplicateItemIds, giantSlayerMultiplier, itemStats } from "../src/domain/items";
 import {
   applyPercentArmorPenetration,
   growthAtLevel,
@@ -27,9 +27,15 @@ import {
   dedupeLevelObservations,
   progressionRarity,
 } from "../src/domain/progression";
-import { defaultSkillRanks, isLegalSkillRanks, tryAdjustSkillRank } from "../src/domain/skills";
+import {
+  clampSkillRanks,
+  defaultSkillRanks,
+  isLegalSkillRanks,
+  tryAdjustSkillRank,
+} from "../src/domain/skills";
 import { dedupeLevelAnchors, matchBalancedWeight } from "../src/domain/level-cohort";
 import { extractSkillObservations } from "../src/data/skill-progression";
+import { refreshUntouchedBuildDefaults } from "../src/domain/build-state";
 
 describe("combat math", () => {
   test("mitigates positive and negative resistance", () => {
@@ -175,6 +181,69 @@ describe("Yunara inventory progression", () => {
     expect(rarity.exactPercent).toBe(50);
   });
 
+  test("computes rarity for counts absent below, between, and above observed rows", () => {
+    const aggregate = {
+      distribution: [
+        { count: 1, observations: 20, percent: 45.45 },
+        { count: 3, observations: 24, percent: 54.55 },
+      ],
+      sampleCount: 44,
+    };
+    expect(progressionRarity(aggregate, 0)).toMatchObject({
+      progressionPercentile: 0,
+      tailObservations: 44,
+      exactObservations: 0,
+      tailPercent: 100,
+    });
+    expect(progressionRarity(aggregate, 1)).toMatchObject({
+      progressionPercentile: 22.73,
+      tailObservations: 44,
+      exactObservations: 20,
+    });
+    expect(progressionRarity(aggregate, 2)).toMatchObject({
+      progressionPercentile: 45.45,
+      tailObservations: 24,
+      exactObservations: 0,
+      tailPercent: 54.55,
+    });
+    expect(progressionRarity(aggregate, 4)).toMatchObject({
+      progressionPercentile: 100,
+      tailObservations: 0,
+      exactObservations: 0,
+      tailPercent: 0,
+    });
+  });
+
+  test("level-10 three-item rarity says zero of the observed states had three or more", () => {
+    const aggregate = {
+      distribution: [
+        { count: 1, observations: 20, percent: 45.45 },
+        { count: 2, observations: 24, percent: 54.55 },
+      ],
+      sampleCount: 44,
+    };
+    const rarity = progressionRarity(aggregate, 3);
+    expect(rarity.tailObservations).toBe(0);
+    expect(rarity.tailPercent).toBe(0);
+    expect(rarity.progressionPercentile).toBe(100);
+  });
+
+  test("completed item duplicates are rejected and untouched level defaults refresh independently", () => {
+    expect(duplicateItemIds([3031, 3032, 3031, 3006])).toEqual([3031]);
+    expect(
+      refreshUntouchedBuildDefaults(
+        [6672, 3085],
+        [3031, 3032, 3085],
+        [3031, 3032, 3085, 3006],
+        false,
+        true,
+      ),
+    ).toEqual({
+      a: [3031, 3032, 3085, 3006],
+      b: [3031, 3032, 3085],
+    });
+  });
+
   test("does not count boots/components and flags a three-item low-level state as unusual", () => {
     const rows = [
       {
@@ -255,6 +324,13 @@ describe("level-driven cohort and skill helpers", () => {
     expect(defaultSkillRanks(16).r).toBe(3);
     expect(isLegalSkillRanks({ q: 5, w: 3, e: 1, r: 2 }, 13)).toBe(true);
     expect(isLegalSkillRanks({ q: 5, w: 5, e: 5, r: 3 }, 13)).toBe(false);
+    expect(isLegalSkillRanks({ q: 5, w: 2, e: 1, r: 2 }, 10)).toBe(false);
+    expect(clampSkillRanks({ q: 5, w: 2, e: 1, r: 2 }, 10)).toEqual({
+      q: 5,
+      w: 2,
+      e: 1,
+      r: 1,
+    });
     expect(tryAdjustSkillRank({ q: 5, w: 3, e: 1, r: 2 }, 13, "q", 1)).toBeNull();
     expect(tryAdjustSkillRank({ q: 5, w: 3, e: 1, r: 2 }, 13, "w", 1)).toEqual({
       q: 5,

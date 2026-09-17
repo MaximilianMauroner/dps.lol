@@ -157,6 +157,17 @@ export function unsupportedItemIds(itemIds: number[]): number[] {
   return [...new Set(itemIds.filter((id) => !ITEMS[id]))];
 }
 
+/** Completed items are unique in a legal six-slot build. */
+export function duplicateItemIds(itemIds: number[]): number[] {
+  const seen = new Set<number>();
+  const duplicates = new Set<number>();
+  for (const id of itemIds) {
+    if (seen.has(id)) duplicates.add(id);
+    seen.add(id);
+  }
+  return [...duplicates].sort((left, right) => left - right);
+}
+
 export function itemWarnings(itemIds: number[]): string[] {
   return [
     ...new Set(

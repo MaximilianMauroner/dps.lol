@@ -4,8 +4,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import type { ActionKind, Target } from "@/domain/types";
 import { weightedHeadlineWinner } from "@/domain/simulator";
-import { buildGoldTotal, itemWarnings, ITEMS } from "@/domain/items";
-import { defaultSkillRanks, skillBounds, tryAdjustSkillRank } from "@/domain/skills";
+import { buildGoldTotal, duplicateItemIds, itemWarnings, ITEMS } from "@/domain/items";
+import { refreshUntouchedBuildDefaults } from "@/domain/build-state";
+import {
+  clampSkillRanks,
+  defaultSkillRanks,
+  skillBounds,
+  tryAdjustSkillRank,
+} from "@/domain/skills";
+import { progressionRarity } from "@/domain/progression";
 import type {
   WorkerSimulationRequest,
   WorkerSimulationResponse,
@@ -78,15 +85,20 @@ export default function Home() {
   const [phase, setPhase] = useState("yunara-level");
   const [role, setRole] = useState("ALL");
   const [targetChampion, setTargetChampion] = useState("");
+  const [targetChampionDraft, setTargetChampionDraft] = useState("");
   const [selectedTargetId, setSelectedTargetId] = useState("");
   const [continueAutos, setContinueAutos] = useState(true);
   const [yunTalStacks, setYunTalStacks] = useState(0);
-  const [buildAItems, setBuildAItems] = useState<number[]>(INITIAL_REALISTIC_BUILD);
-  const [buildBItems, setBuildBItems] = useState<number[]>(INITIAL_REALISTIC_BUILD);
-  const [buildsEdited, setBuildsEdited] = useState(false);
+  const [buildAItems, setBuildAItems] = useState<Array<number | 0>>(INITIAL_REALISTIC_BUILD);
+  const [buildBItems, setBuildBItems] = useState<Array<number | 0>>(INITIAL_REALISTIC_BUILD);
+  const [buildAEdited, setBuildAEdited] = useState(false);
+  const [buildBEdited, setBuildBEdited] = useState(false);
+  const [buildAManualLevel, setBuildAManualLevel] = useState<number | null>(null);
+  const [buildBManualLevel, setBuildBManualLevel] = useState<number | null>(null);
   const [progression, setProgression] = useState<any>(null);
   const [progressionLoading, setProgressionLoading] = useState(true);
   const [progressionError, setProgressionError] = useState("");
+  const [rankNotice, setRankNotice] = useState("");
   const [ranks, setRanks] = useState(() => defaultSkillRanks(13));
   const [actions, setActions] = useState<ActionKind[]>(["R", "Q", "W", "AA", "AA"]);
   const [manual, setManual] = useState({
@@ -106,16 +118,25 @@ export default function Home() {
   const requestIdRef = useRef(0);
   const cohortRef = useRef<{ key: string; payload: any } | null>(null);
   const progressionCacheRef = useRef(new Map<number, any>());
-  const buildsEditedRef = useRef(false);
+  const buildAEditedRef = useRef(false);
+  const buildBEditedRef = useRef(false);
   const ranksEditedRef = useRef(false);
+  const ranksRef = useRef(ranks);
   const comboEditedRef = useRef(false);
+  ranksRef.current = ranks;
 
   const buildA = useMemo(
-    () => ({ name: buildDisplayName(buildAItems, "Build A"), itemIds: buildAItems }),
+    () => ({
+      name: buildDisplayName(compactBuildItems(buildAItems), "Build A"),
+      itemIds: compactBuildItems(buildAItems),
+    }),
     [buildAItems],
   );
   const buildB = useMemo(
-    () => ({ name: buildDisplayName(buildBItems, "Build B"), itemIds: buildBItems }),
+    () => ({
+      name: buildDisplayName(compactBuildItems(buildBItems), "Build B"),
+      itemIds: compactBuildItems(buildBItems),
+    }),
     [buildBItems],
   );
 
@@ -124,6 +145,8 @@ export default function Home() {
     async function loadProgression() {
       setProgressionLoading(true);
       setProgressionError("");
+      setData(undefined);
+      setLoading(true);
       try {
         const cached = progressionCacheRef.current.get(level);
         const next =
@@ -145,16 +168,31 @@ export default function Home() {
               ? observedRanks
               : defaultSkillRanks(level),
           );
+          setRankNotice("");
+        } else if (!isLegalRankShape(ranksRef.current, level)) {
+          const corrected = clampSkillRanks(ranksRef.current, level);
+          setRanks(corrected);
+          setRankNotice(
+            `Your previous manual ranks were not legal at level ${level}; they were clamped to Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r}.`,
+          );
         }
         if (!comboEditedRef.current) {
           setActions(defaultActionsForLevel(level));
           setContinueAutos(true);
         }
-        if (!buildsEditedRef.current) {
-          const recommended = recommendedBuild(next);
-          setBuildAItems(recommended);
-          setBuildBItems(recommended);
+        const recommended = recommendedBuild(next);
+        if (!buildAEditedRef.current) {
+          setBuildAItems(
+            (current) => refreshUntouchedBuildDefaults(current, [], recommended, false, true).a,
+          );
         }
+        if (!buildBEditedRef.current) {
+          setBuildBItems(
+            (current) => refreshUntouchedBuildDefaults([], current, recommended, true, false).b,
+          );
+        }
+        setBuildAEdited(buildAEditedRef.current);
+        setBuildBEdited(buildBEditedRef.current);
       } catch (caught) {
         if (active)
           setProgressionError(caught instanceof Error ? caught.message : "Progression unavailable");
@@ -179,11 +217,28 @@ export default function Home() {
     };
   }, []);
 
-  async function run(selectedOverride?: string) {
+  async function run(selectedOverride?: string, cohortOverrides: { targetChampion?: string } = {}) {
     setLoading(true);
     setError("");
+    setData(undefined);
+    setMatrix(null);
     try {
-      const cohort = await loadCohort();
+      if (!isLegalRankShape(ranks, level)) {
+        const corrected = clampSkillRanks(ranks, level);
+        setRanks(corrected);
+        setRankNotice(
+          `Ranks were invalid at level ${level}; calculation is paused until the legal ranks Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r} are applied.`,
+        );
+        return;
+      }
+      const duplicateA = duplicateItemIds(buildA.itemIds);
+      const duplicateB = duplicateItemIds(buildB.itemIds);
+      if (duplicateA.length || duplicateB.length) {
+        throw new Error(
+          `${duplicateA.length ? `Build A repeats ${duplicateA.map((id) => itemNames[id] ?? ITEMS[id]?.name ?? id).join(", ")}` : ""}${duplicateA.length && duplicateB.length ? "; " : ""}${duplicateB.length ? `Build B repeats ${duplicateB.map((id) => itemNames[id] ?? ITEMS[id]?.name ?? id).join(", ")}` : ""}. Remove duplicate completed items before simulating.`,
+        );
+      }
+      const cohort = await loadCohort(cohortOverrides);
       const targets = cohort.dataset.targets as Target[];
       if (!targets.length) throw new Error("No target snapshots matched these filters.");
       const base = {
@@ -308,14 +363,15 @@ export default function Home() {
     }
   }
 
-  async function loadCohort(): Promise<any> {
+  async function loadCohort(overrides: { targetChampion?: string } = {}): Promise<any> {
+    const committedChampion = overrides.targetChampion ?? targetChampion;
     const key = JSON.stringify({
       targetMode,
       region,
       rank,
       phase,
       role,
-      targetChampion,
+      targetChampion: committedChampion,
       level,
       manual,
     });
@@ -362,7 +418,7 @@ export default function Home() {
           rank,
           phase,
           role,
-          champion: targetChampion,
+          champion: committedChampion,
           level,
           limit: 1000,
         }),
@@ -459,18 +515,29 @@ export default function Home() {
     if (!next) return;
     ranksEditedRef.current = true;
     setRanks(next);
+    setRankNotice("");
   }
 
-  function markBuildEdited() {
-    buildsEditedRef.current = true;
-    setBuildsEdited(true);
+  function markBuildEdited(side: "a" | "b") {
+    if (side === "a") {
+      buildAEditedRef.current = true;
+      setBuildAEdited(true);
+      setBuildAManualLevel(level);
+    } else {
+      buildBEditedRef.current = true;
+      setBuildBEdited(true);
+      setBuildBManualLevel(level);
+    }
   }
 
   function updateBuild(side: "a" | "b", index: number, value: number | null) {
-    markBuildEdited();
+    markBuildEdited(side);
     const setter = side === "a" ? setBuildAItems : setBuildBItems;
     setter((current) => {
-      if (value === null) return current.filter((_, itemIndex) => itemIndex !== index);
+      if (value === null) {
+        const next = current.filter((_, itemIndex) => itemIndex !== index);
+        return next.length > 0 ? next : [0];
+      }
       const next = [...current];
       next[index] = value;
       return next.length > 0 ? next : [value];
@@ -478,17 +545,21 @@ export default function Home() {
   }
 
   function addBuildItem(side: "a" | "b") {
-    markBuildEdited();
+    markBuildEdited(side);
     const setter = side === "a" ? setBuildAItems : setBuildBItems;
-    setter((current) => (current.length >= 6 ? current : [...current, SUPPORTED_BUILD_ITEMS[0]!]));
+    setter((current) => (current.length >= 6 ? current : [...current, 0]));
   }
 
   function resetRealisticBuild() {
     const recommended = recommendedBuild(progression);
     setBuildAItems(recommended);
     setBuildBItems(recommended);
-    buildsEditedRef.current = false;
-    setBuildsEdited(false);
+    buildAEditedRef.current = false;
+    buildBEditedRef.current = false;
+    setBuildAEdited(false);
+    setBuildBEdited(false);
+    setBuildAManualLevel(null);
+    setBuildBManualLevel(null);
     ranksEditedRef.current = false;
     comboEditedRef.current = false;
     setRanks(
@@ -501,8 +572,16 @@ export default function Home() {
     setYunTalStacks(0);
   }
 
+  function commitTargetChampion() {
+    const next = targetChampionDraft.trim().slice(0, 48);
+    setTargetChampion(next);
+    cohortRef.current = null;
+    void run(undefined, { targetChampion: next });
+  }
+
   function setIeLdrComparison() {
-    markBuildEdited();
+    markBuildEdited("a");
+    markBuildEdited("b");
     const baseline = progression ? recommendedBuild(progression) : INITIAL_REALISTIC_BUILD;
     const completed = baseline.filter((id) => !isBootItem(id) && id !== 3031 && id !== 3036);
     const core = [...new Set(completed)];
@@ -515,7 +594,8 @@ export default function Home() {
   const resultB = data?.results?.b;
   const comparison = data?.results?.comparison;
   const buildsAreIdentical = sameInventory(buildA.itemIds, buildB.itemIds);
-  const headlineOutcome = comparison ? weightedHeadlineWinner(comparison) : "tie";
+  const hasCurrentResult = Boolean(comparison) && !loading;
+  const headlineOutcome = hasCurrentResult ? weightedHeadlineWinner(comparison) : "tie";
   const winnerName = buildsAreIdentical
     ? null
     : headlineOutcome === "a"
@@ -535,18 +615,24 @@ export default function Home() {
   );
   const delta = comparison?.medianRelativeDelta ?? 0;
   const signed = `${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}%`;
-  const verdictSub = buildsAreIdentical
-    ? `Both builds use the same ${buildA.itemIds.filter((id) => !isBootItem(id)).length}-item inventory, so every target is a tie. Use “Compare IE vs LDR” or edit Build B; no recommendation is implied.`
-    : comparison
-      ? comparisonSentence(comparison, {
-          buildA: buildA.name,
-          buildB: buildB.name,
-          duration,
-          level,
-          metric,
-          distinctMatchCount: data?.dataset?.distinctMatchCount ?? comparison.distinctMatchCount,
-        })
-      : "Loading the level-matched target cohort…";
+  const verdictSub = loading
+    ? "Running the current level, build, combo, and target settings…"
+    : !comparison
+      ? error
+        ? "No result is being shown until the input issue is corrected."
+        : "Run a comparison to see the measured result."
+      : buildsAreIdentical
+        ? `Both builds use the same ${buildA.itemIds.filter((id) => !isBootItem(id)).length}-item inventory, so every target is a tie. Use “Compare IE vs LDR” or edit Build B; no recommendation is implied.`
+        : comparisonSentence(comparison, {
+            buildA: buildA.name,
+            buildB: buildB.name,
+            duration,
+            level,
+            metric,
+            targetMode,
+            targetCount: data?.dataset?.count ?? comparison.count,
+            distinctMatchCount: data?.dataset?.distinctMatchCount ?? comparison.distinctMatchCount,
+          });
 
   return (
     <main className="page">
@@ -573,7 +659,13 @@ export default function Home() {
       <div className="wrap">
         <section className="card verdict" id="verdict" aria-live="polite">
           <div>
-            <h1>{loading && !comparison ? "Computing the verdict…" : verdictTitle}</h1>
+            <h1>
+              {loading
+                ? "Computing the verdict…"
+                : !comparison
+                  ? "No current comparison"
+                  : verdictTitle}
+            </h1>
             <p>
               <strong>{verdictSub}</strong>
               {" · "}Level-aware attacker inventory{" · "}R-Q-W-AA-AA + autos{" · "}
@@ -614,14 +706,19 @@ export default function Home() {
             <button className="ghost-btn" onClick={setIeLdrComparison}>
               Compare IE vs LDR
             </button>
-            {buildsAreIdentical && (
+            {buildsAreIdentical && !hasCurrentResult && (
               <span className="dim">
                 Start from the observed default, then change one slot to make the question
                 comparative.
               </span>
             )}
-            {buildsEdited && (
-              <span className="dim">Manual build edits are preserved on level changes.</span>
+            {(buildAEdited || buildBEdited) && (
+              <span className="dim">
+                {buildAEdited ? "Build A is manual." : ""}
+                {buildAEdited && buildBEdited ? " " : ""}
+                {buildBEdited ? "Build B is manual." : ""} Untouched builds follow each new level
+                default.
+              </span>
             )}
           </div>
           {progression && unsupportedObservedDefaults(progression).length > 0 && (
@@ -640,15 +737,27 @@ export default function Home() {
               side="a"
               name={buildA.name}
               itemIds={buildA.itemIds}
+              slots={buildAItems}
               cost={buildGoldTotal(buildA.itemIds)}
               result={resultA}
               onChange={updateBuild}
               onAdd={addBuildItem}
-              tag={buildsAreIdentical ? "SAME BUILD" : headlineOutcome === "a" ? "WINNER" : "2ND"}
-              leads={!buildsAreIdentical && headlineOutcome === "a"}
+              tag={
+                hasCurrentResult
+                  ? buildsAreIdentical
+                    ? "SAME BUILD"
+                    : headlineOutcome === "a"
+                      ? "WINNER"
+                      : "2ND"
+                  : null
+              }
+              leads={hasCurrentResult && !buildsAreIdentical && headlineOutcome === "a"}
               maxSource={maxSource(resultA, resultB)}
               rarity={buildRarity(progression, buildA.itemIds)}
               warnings={itemWarnings(buildA.itemIds)}
+              manualOverride={buildAEdited}
+              manualLevel={buildAManualLevel}
+              level={level}
             />
             <div className="vs" aria-hidden>
               <span>VS</span>
@@ -657,81 +766,105 @@ export default function Home() {
               side="b"
               name={buildB.name}
               itemIds={buildB.itemIds}
+              slots={buildBItems}
               cost={buildGoldTotal(buildB.itemIds)}
               result={resultB}
               onChange={updateBuild}
               onAdd={addBuildItem}
-              tag={buildsAreIdentical ? "SAME BUILD" : headlineOutcome === "b" ? "WINNER" : "2ND"}
-              leads={!buildsAreIdentical && headlineOutcome === "b"}
+              tag={
+                hasCurrentResult
+                  ? buildsAreIdentical
+                    ? "SAME BUILD"
+                    : headlineOutcome === "b"
+                      ? "WINNER"
+                      : "2ND"
+                  : null
+              }
+              leads={hasCurrentResult && !buildsAreIdentical && headlineOutcome === "b"}
               maxSource={maxSource(resultA, resultB)}
               rarity={buildRarity(progression, buildB.itemIds)}
               warnings={itemWarnings(buildB.itemIds)}
+              manualOverride={buildBEdited}
+              manualLevel={buildBManualLevel}
+              level={level}
             />
           </div>
-          <div className="card dist">
-            <div
-              className="winbar"
-              role="img"
-              aria-label={`Build A wins ${Math.round((comparison?.buildAWinRate ?? 0) * 100)} percent of cohort mass`}
-            >
-              <i style={{ width: `${(comparison?.buildAWinRate ?? 0) * 100}%` }} />
-            </div>
-            <div className="winlbl">
-              <span>
-                <strong>{buildA.name}</strong> {aWinsLabel(comparison)}
-              </span>
-              <span>
-                <strong>{buildB.name}</strong> {bWinsLabel(comparison)}
-              </span>
-            </div>
-            <div className="dist-meta">
-              <span>
-                Median <strong>{comparison ? `${signed}` : "—"}</strong>
-                {metric === "ttk" ? " first-crossing" : " damage"}
-              </span>
-              <span>
-                P25 → P75{" "}
-                <strong>
+          {hasCurrentResult ? (
+            <div className="card dist">
+              <div
+                className="winbar"
+                role="img"
+                aria-label={`Build A wins ${Math.round((comparison?.buildAWinRate ?? 0) * 100)} percent of cohort mass`}
+              >
+                <i style={{ width: `${(comparison?.buildAWinRate ?? 0) * 100}%` }} />
+              </div>
+              <div className="winlbl">
+                <span>
+                  <strong>{buildA.name}</strong> {aWinsLabel(comparison)}
+                </span>
+                <span>
+                  <strong>{buildB.name}</strong> {bWinsLabel(comparison)}
+                </span>
+              </div>
+              <div className="dist-meta">
+                <span>
+                  Median <strong>{comparison ? `${signed}` : "—"}</strong>
+                  {metric === "ttk" ? " first-crossing" : " damage"}
+                </span>
+                <span>
+                  P25 → P75{" "}
+                  <strong>
+                    {comparison
+                      ? `${comparison.p25RelativeDelta}% → ${comparison.p75RelativeDelta}%`
+                      : "—"}
+                  </strong>
+                </span>
+                <span>
+                  Sample <strong>{data?.dataset?.count ?? "—"}</strong>
+                  {data?.dataset?.fallbackLevel
+                    ? ` · fallback level ${data.dataset.fallbackLevel}`
+                    : ""}
+                </span>
+                <span>
                   {comparison
-                    ? `${comparison.p25RelativeDelta}% → ${comparison.p75RelativeDelta}%`
-                    : "—"}
-                </strong>
-              </span>
-              <span>
-                Sample <strong>{data?.dataset?.count ?? "—"}</strong>
-                {data?.dataset?.fallbackLevel
-                  ? ` · fallback level ${data.dataset.fallbackLevel}`
-                  : ""}
-              </span>
-              <span>
-                {comparison
-                  ? `${comparison.ties} ties · ${comparison.censored} censored · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B`
-                  : "Inspecting snapshots"}
-              </span>
-            </div>
-            <div className="chips-row" aria-label="Role breakdown">
-              <span className="chips-label">Roles</span>
-              {(comparison?.byRole ?? []).map((group: any) => (
-                <span className="chip" key={group.role}>
-                  {group.role} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
+                    ? `${comparison.ties} ties · ${comparison.censored} censored · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B`
+                    : "Inspecting snapshots"}
                 </span>
-              ))}
-              {(comparison?.byRole ?? []).length === 0 && (
-                <span className="dim">Needs 2+ samples per role</span>
-              )}
+              </div>
+              <div className="chips-row" aria-label="Role breakdown">
+                <span className="chips-label">Roles</span>
+                {(comparison?.byRole ?? []).map((group: any) => (
+                  <span className="chip" key={group.role}>
+                    {group.role} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
+                  </span>
+                ))}
+                {(comparison?.byRole ?? []).length === 0 && (
+                  <span className="dim">Needs 2+ samples per role</span>
+                )}
+              </div>
+              <div className="chips-row" aria-label="Champion breakdown">
+                <span className="chips-label">Champions</span>
+                {(comparison?.byChampion ?? []).map((group: any) => (
+                  <span className="chip" key={group.champion}>
+                    {group.champion} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
+                  </span>
+                ))}
+                {(comparison?.byChampion ?? []).length === 0 && (
+                  <span className="dim">Needs duplicate observations</span>
+                )}
+              </div>
             </div>
-            <div className="chips-row" aria-label="Champion breakdown">
-              <span className="chips-label">Champions</span>
-              {(comparison?.byChampion ?? []).map((group: any) => (
-                <span className="chip" key={group.champion}>
-                  {group.champion} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
-                </span>
-              ))}
-              {(comparison?.byChampion ?? []).length === 0 && (
-                <span className="dim">Needs duplicate observations</span>
-              )}
+          ) : (
+            <div className="card dist" aria-live="polite">
+              <p className="dim">
+                {loading
+                  ? "Computing the cohort comparison…"
+                  : error
+                    ? "No current result."
+                    : "Run a comparison to see the cohort result."}
+              </p>
             </div>
-          </div>
+          )}
         </section>
 
         <section className="card progression-panel" aria-labelledby="progression-h">
@@ -941,6 +1074,11 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+              {rankNotice && (
+                <p className="warn" role="alert">
+                  {rankNotice}
+                </p>
+              )}
               <label className="fl" htmlFor="yun-tal-stacks">
                 Yun Tal starting stacks (ranged)
               </label>
@@ -1134,12 +1272,23 @@ export default function Home() {
                       id="champ"
                       type="text"
                       placeholder="Any champion"
-                      value={targetChampion}
-                      onChange={(event) => setTargetChampion(event.target.value)}
-                      onKeyDown={(event) => event.key === "Enter" && void run()}
+                      value={targetChampionDraft}
+                      onChange={(event) => setTargetChampionDraft(event.target.value.slice(0, 48))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitTargetChampion();
+                        }
+                      }}
                     />
-                    <button onClick={() => void run()}>Apply</button>
+                    <button onClick={commitTargetChampion}>Apply</button>
                   </div>
+                  <p className="dim">
+                    {targetChampion
+                      ? `Applied filter: ${targetChampion}`
+                      : "Applied filter: any champion"}
+                    . Editing the field does not fetch until Apply or Enter.
+                  </p>
                 </>
               ) : (
                 <div className="two" style={{ marginTop: 4 }}>
@@ -1326,6 +1475,10 @@ function sameInventory(left: number[], right: number[]): boolean {
   return a.every((value, index) => value === b[index]);
 }
 
+function compactBuildItems(slots: Array<number | 0>): number[] {
+  return slots.filter((id): id is number => id > 0);
+}
+
 function defaultActionsForLevel(level: number): ActionKind[] {
   if (level < 6) return ["Q", "AA"];
   return ["R", "Q", "W", "AA", "AA"];
@@ -1352,6 +1505,8 @@ function comparisonSentence(
     duration: number;
     level: number;
     metric: "damage" | "ttk";
+    targetMode: "realistic" | "manual";
+    targetCount: number;
     distinctMatchCount: number;
   },
 ): string {
@@ -1361,15 +1516,30 @@ function comparisonSentence(
   );
   const aMass = Number(comparison.weightedOutcomes?.a ?? 0);
   const bMass = Number(comparison.weightedOutcomes?.b ?? 0);
-  const tieMass = Number(comparison.weightedOutcomes?.tie ?? 0);
-  const censoredMass = Number(comparison.weightedOutcomes?.censored ?? 0);
   const pct = (value: number) => (total > 0 ? Math.round((value / total) * 100) : 0);
   const median = Number(comparison.medianRelativeDelta ?? 0);
-  const signedMedian = `${median >= 0 ? "+" : "−"}${Math.abs(median)}%`;
-  const metricText =
-    context.metric === "ttk" ? "first-crossing TTK" : `${context.duration}s applied damage`;
-  const leader = aMass > bMass ? context.buildA : bMass > aMass ? context.buildB : "neither build";
-  return `Across ${comparison.count} real enemy vectors from ${context.distinctMatchCount} matches at Yunara level ${context.level}, ${leader} leads ${metricText}: ${pct(aMass)}% A / ${pct(bMass)}% B weighted mass, ${pct(tieMass)}% ties, ${pct(censoredMass)}% censored; median A-vs-B delta ${signedMedian}.`;
+  const medianMagnitude = Math.abs(median);
+  const subject =
+    context.targetMode === "manual"
+      ? "Against the custom target"
+      : `Against ${context.distinctMatchCount} level-${context.level} matches (${context.targetCount} enemy snapshots)`;
+  const medianClause =
+    context.metric === "ttk"
+      ? median > 0
+        ? `${context.buildA} reaches first kill a median ${medianMagnitude}% sooner than ${context.buildB}`
+        : median < 0
+          ? `${context.buildB} reaches first kill a median ${medianMagnitude}% sooner than ${context.buildA}`
+          : `the builds have the same median first-crossing time`
+      : median > 0
+        ? `${context.buildA} deals a median ${medianMagnitude}% more ${context.duration}s damage than ${context.buildB}`
+        : median < 0
+          ? `${context.buildB} deals a median ${medianMagnitude}% more ${context.duration}s damage than ${context.buildA}`
+          : `the builds have the same median ${context.duration}s damage`;
+  const leader = aMass > bMass ? context.buildA : bMass > aMass ? context.buildB : null;
+  const leadClause = leader
+    ? `${leader} leads on ${pct(Math.max(aMass, bMass))}% of weighted targets`
+    : "neither build leads on weighted targets";
+  return `${subject}, ${medianClause}, and ${leadClause}.`;
 }
 
 function maxSource(a: any, b: any) {
@@ -1423,12 +1593,7 @@ function buildRarity(progression: any, itemIds: number[]) {
   const selected = progression?.selection;
   if (!selected) return null;
   const count = itemIds.filter((id) => !isBootItem(id)).length;
-  const rarity = selected.rarityByCount?.find((row: any) => row.count === count) ?? {
-    count,
-    progressionPercentile: 0,
-    tailPercent: 0,
-    exactPercent: 0,
-  };
+  const rarity = progressionRarity(selected, count);
   const coreIds = [...new Set(itemIds.filter((id) => !isBootItem(id)))].sort(
     (left, right) => left - right,
   );
@@ -1440,7 +1605,9 @@ function buildRarity(progression: any, itemIds: number[]) {
     progressionPercentile: rarity.progressionPercentile,
     tailPercent: rarity.tailPercent,
     exactPercent: rarity.exactPercent,
-    corePercent: coreIds.length === 0 ? 100 : Number(core?.percent ?? 0),
+    tailObservations: rarity.tailObservations,
+    exactObservations: rarity.exactObservations,
+    corePercent: Number(core?.percent ?? 0),
     sampleCount: selected.sampleCount,
     lowSample: Boolean(selected.lowSample),
   };
@@ -1448,18 +1615,23 @@ function buildRarity(progression: any, itemIds: number[]) {
 
 function BuildRarity({ rarity }: { rarity: any }) {
   const ahead = Math.max(0, Math.min(100, Number(rarity.progressionPercentile)));
+  const aheadText =
+    rarity.tailObservations === 0 && rarity.sampleCount > 0
+      ? `ahead of essentially all observed Yunara states at this level (${ahead}%)`
+      : `ahead of ${ahead}% of observed Yunara states at this level`;
   return (
     <div className="build-rarity" aria-label="Economic item progression rarity">
       <strong>
         {rarity.count} completed legendary item{rarity.count === 1 ? "" : "s"}
       </strong>
       <span>
-        {rarity.lowSample ? "Low-sample · " : ""}ahead of {ahead}% of observed Yunara states at this
-        level
+        {rarity.lowSample ? "Low-sample · " : ""}
+        {aheadText}
       </span>
       <span>
-        Only {rarity.tailPercent}% had ≥{rarity.count} · exact count {rarity.exactPercent}% · exact
-        selected core {rarity.corePercent}% (n={rarity.sampleCount})
+        {rarity.tailObservations} of {rarity.sampleCount} observed states had ≥{rarity.count} ·
+        exact count {rarity.exactPercent}% ({rarity.exactObservations}) · exact selected core{" "}
+        {rarity.corePercent}%
       </span>
       <small>Economic/item progression only; not player skill or win probability.</small>
     </div>
@@ -1484,6 +1656,7 @@ function BuildCard({
   side,
   name,
   itemIds,
+  slots,
   cost,
   result,
   onChange,
@@ -1493,21 +1666,33 @@ function BuildCard({
   maxSource: max,
   rarity,
   warnings,
+  manualOverride,
+  manualLevel,
+  level,
 }: {
   side: "a" | "b";
   name: string;
   itemIds: number[];
+  slots: Array<number | 0>;
   cost: number;
   result: any;
   onChange: (side: "a" | "b", index: number, value: number | null) => void;
   onAdd: (side: "a" | "b") => void;
-  tag: string;
+  tag: string | null;
   leads: boolean;
   maxSource: number;
   rarity: any;
   warnings: string[];
+  manualOverride: boolean;
+  manualLevel: number | null;
+  level: number;
 }) {
   const heroItem = itemIds[itemIds.length - 1] ?? 6672;
+  const selectedIds = slots.filter((id): id is number => id > 0);
+  const selectedCounts = selectedIds.reduce(
+    (counts, id) => counts.set(id, (counts.get(id) ?? 0) + 1),
+    new Map<number, number>(),
+  );
   return (
     <article className={`build ${leads ? "win" : ""}`}>
       <div className="build-head">
@@ -1522,26 +1707,49 @@ function BuildCard({
         <div>
           <strong>{name}</strong>
           <small>{cost.toLocaleString()}g</small>
+          {manualOverride && (
+            <small className="dim">
+              Manual override
+              {manualLevel !== null && manualLevel !== level ? ` from level ${manualLevel}` : ""} ·
+              evaluated at level {level}
+            </small>
+          )}
         </div>
-        <span className={`tag ${leads ? "" : "dim"}`}>{tag}</span>
+        {tag && <span className={`tag ${leads ? "" : "dim"}`}>{tag}</span>}
       </div>
       <div className="items">
-        {itemIds.map((id, index) => (
+        {slots.map((id, index) => (
           <label className="build-slot" key={`${side}-${index}`}>
-            <Image
-              src={`${ICON}${itemIcons[id] ?? `${id}.png`}`}
-              alt=""
-              width={30}
-              height={30}
-              unoptimized
-            />
+            {id > 0 ? (
+              <Image
+                src={`${ICON}${itemIcons[id] ?? `${id}.png`}`}
+                alt=""
+                width={30}
+                height={30}
+                unoptimized
+              />
+            ) : (
+              <span className="empty-item" aria-hidden>
+                ?
+              </span>
+            )}
             <select
               aria-label={`${side === "a" ? "Build A" : "Build B"} item ${index + 1}`}
-              value={id}
-              onChange={(event) => onChange(side, index, Number(event.target.value))}
+              value={id > 0 ? id : ""}
+              onChange={(event) =>
+                onChange(side, index, event.target.value === "" ? null : Number(event.target.value))
+              }
             >
+              <option value="">Choose an item…</option>
               {SUPPORTED_BUILD_ITEMS.map((candidate) => (
-                <option value={candidate} key={candidate}>
+                <option
+                  value={candidate}
+                  key={candidate}
+                  disabled={
+                    (selectedCounts.get(candidate) ?? 0) > 0 &&
+                    !(candidate === id && selectedCounts.get(candidate) === 1)
+                  }
+                >
                   {itemNames[candidate] ?? ITEMS[candidate]?.name ?? candidate}
                 </option>
               ))}
@@ -1562,7 +1770,7 @@ function BuildCard({
           type="button"
           className="add-slot"
           onClick={() => onAdd(side)}
-          disabled={itemIds.length >= 6}
+          disabled={slots.length >= 6}
         >
           + item
         </button>
