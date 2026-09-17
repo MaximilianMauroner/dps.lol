@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { database, hasDatabase, transaction } from "../src/db/client";
-import { deriveBonusHealthEstimate } from "../src/domain/health";
-import { applyInventoryEvent } from "../src/ingestion/inventory";
+import { database, hasDatabase } from "../src/db/client";
 import {
-  findThirdItemAnchor,
-  type StaticItemShape,
-  nearestFrameWithin,
-} from "../src/ingestion/completed-items";
-import type { RiotItemEvent, RiotTimeline } from "../src/ingestion/types";
+  buildCompactProjection,
+  estimateCompactProjectionBytes,
+} from "../src/ingestion/compact-projection";
+import type { StaticItemShape } from "../src/ingestion/completed-items";
+import type { RiotTimeline } from "../src/ingestion/types";
+import { persistArchivedMatch } from "../src/ingestion/persist";
+import { nextBatchBoundary, type IngestionCeilings } from "../src/ingestion/limits";
+import { runArchiveFirst } from "../src/storage/archive-workflow";
 import {
   archiveEnabled,
+  archiveObjectKey,
   buildMatchArchive,
   compressArchive,
   DATASET_VERSION,
@@ -17,29 +19,68 @@ import {
   putVerifiedArchive,
   SOURCE_SCHEMA_VERSION,
 } from "../src/storage/archive";
+import {
+  createPendingArchiveIntent,
+  markArchiveFailed,
+  markArchiveUploadAttempt,
+  type ArchiveManifestRow,
+} from "../src/storage/manifest";
 
 type AnyRecord = Record<string, any>;
+
+function arg(name: string): string | undefined {
+  const index = Bun.argv.indexOf(name);
+  return index >= 0 ? Bun.argv[index + 1] : undefined;
+}
+
+function ceiling(value: string | undefined, fallback: number, label: string): number {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed) || parsed < 0)
+    throw new Error(`${label} must be a non-negative number`);
+  return Math.floor(parsed);
+}
+
 const patch = process.env.LOL_PATCH ?? "26.18";
 const apiKey = process.env.RIOT_API_KEY;
 const platform = arg("--region") ?? "EUW1";
 const routing = arg("--routing") ?? "EUROPE";
 const tiers = (arg("--tiers") ?? "CHALLENGER,GRANDMASTER,MASTER").split(",");
-const maxPlayers = Number(arg("--players") ?? process.env.INGEST_MAX_PLAYERS ?? 100);
-const maxMatches = Math.min(
-  1000,
-  Number(arg("--matches") ?? process.env.INGEST_MAX_MATCHES ?? 200),
+const maxPlayers = ceiling(arg("--players") ?? process.env.INGEST_MAX_PLAYERS, 100, "players");
+const requestedMatches = ceiling(
+  arg("--matches") ?? process.env.INGEST_MAX_MATCHES,
+  200,
+  "matches",
+);
+const maxMatches = Math.min(1000, requestedMatches);
+const maxAcceptedMatches = Math.min(
+  maxMatches,
+  ceiling(
+    arg("--max-accepted") ?? process.env.INGEST_MAX_ACCEPTED_MATCHES,
+    maxMatches,
+    "accepted matches",
+  ),
 );
 const candidateLimit = Math.min(
   4000,
-  Number(arg("--candidates") ?? process.env.INGEST_CANDIDATES ?? maxMatches),
+  ceiling(arg("--candidates") ?? process.env.INGEST_CANDIDATES, maxMatches, "candidates"),
 );
 const candidateOffset = Math.max(
   0,
-  Number(arg("--candidate-offset") ?? process.env.INGEST_CANDIDATE_OFFSET ?? 0),
+  ceiling(arg("--candidate-offset") ?? process.env.INGEST_CANDIDATE_OFFSET, 0, "candidate offset"),
 );
 const configuredMaxRequests = Math.min(
   5000,
-  Number(arg("--max-requests") ?? process.env.INGEST_MAX_REQUESTS ?? 5000),
+  ceiling(arg("--max-requests") ?? process.env.INGEST_MAX_REQUESTS, 5000, "requests"),
+);
+const maxBucketBytes = ceiling(
+  arg("--max-bucket-bytes") ?? process.env.INGEST_MAX_BUCKET_BYTES,
+  256 * 1024 * 1024,
+  "bucket bytes",
+);
+const maxProjectedPgBytes = ceiling(
+  arg("--max-pg-hot-bytes") ?? process.env.INGEST_MAX_PROJECTED_PG_BYTES,
+  64 * 1024 * 1024,
+  "projected Postgres bytes",
 );
 const scenarioMinute = Number(process.env.SCENARIO_MINUTE ?? 25);
 const scenarioMinuteTolerance = Number(process.env.SCENARIO_MINUTE_TOLERANCE ?? 2);
@@ -48,7 +89,17 @@ const patchStartUnix = Number(process.env.PATCH_START_UNIX ?? 1788912000);
 const patchEndUnix = Number(process.env.PATCH_END_UNIX ?? Math.floor(Date.now() / 1000) + 3600);
 const globalRequestCeiling = 5000;
 const untrackedRequestReserve = Math.max(0, Number(process.env.GLOBAL_REQUEST_RESERVE ?? 500));
-const archiveRequired = process.env.ARCHIVE_REQUIRED !== "false";
+const riotRequestTimeoutMs = ceiling(
+  process.env.RIOT_REQUEST_TIMEOUT_MS,
+  20_000,
+  "Riot request timeout",
+);
+const batchCeilings: IngestionCeilings = {
+  acceptedMatches: maxAcceptedMatches,
+  requests: configuredMaxRequests,
+  bucketBytes: maxBucketBytes,
+  projectedPgBytes: maxProjectedPgBytes,
+};
 
 if (!hasDatabase())
   throw new Error(
@@ -56,9 +107,11 @@ if (!hasDatabase())
   );
 if (!apiKey)
   throw new Error(
-    "RIOT_API_KEY is not configured. Copy .env.example, add the key locally, then rerun ingest:euw.",
+    "RIOT_API_KEY is not configured. Copy .env.example, add the key locally, then rerun ingestion.",
   );
-if (archiveRequired && !archiveEnabled())
+if (process.env.ARCHIVE_REQUIRED === "false")
+  throw new Error("ARCHIVE_REQUIRED=false is unsupported: archive-first ingestion is mandatory.");
+if (!archiveEnabled())
   throw new Error(
     "Railway bucket S3 variables are required for ingestion. Configure BUCKET, ENDPOINT, REGION, ACCESS_KEY_ID, and SECRET_ACCESS_KEY.",
   );
@@ -71,36 +124,45 @@ let requestCount = 0;
 let maxRequests = configuredMaxRequests;
 
 async function riotJson<T>(url: string): Promise<T> {
-  requestCount += 1;
-  if (requestCount > maxRequests) throw new Error(`Riot request ceiling reached (${maxRequests}).`);
-  const wait = Math.max(0, 110 - (Date.now() - lastRequestAt));
-  if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
   for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (requestCount >= maxRequests)
+      throw new Error(`Riot request ceiling reached (${maxRequests}).`);
+    requestCount += 1;
+    const wait = Math.max(0, 110 - (Date.now() - lastRequestAt));
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
     lastRequestAt = Date.now();
-    const response = await fetch(url, { headers });
-    if (response.ok) return (await response.json()) as T;
-    if (response.status === 429 || response.status >= 500) {
-      const retryAfter = Number(response.headers.get("retry-after") ?? 1);
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.max(retryAfter * 1000, 500 * 2 ** attempt)),
-      );
-      continue;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), riotRequestTimeoutMs);
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (response.ok) return (await response.json()) as T;
+      if (response.status === 429 || response.status >= 500) {
+        const retryAfter = Number(response.headers.get("retry-after") ?? 1);
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(retryAfter * 1000, 500 * 2 ** attempt)),
+        );
+        continue;
+      }
+      throw new Error(`Riot API request failed with status ${response.status}.`);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.startsWith("Riot API request failed") ||
+          error.message.startsWith("Riot request ceiling"))
+      )
+        throw error;
+      if (attempt === 4) throw new Error("Riot API request timed out or failed.");
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+    } finally {
+      clearTimeout(timeout);
     }
-    const body = await response.text();
-    throw new Error(
-      `Riot API ${response.status} for ${new URL(url).pathname}: ${body.slice(0, 200)}`,
-    );
   }
-  throw new Error(`Riot API retry budget exhausted for ${new URL(url).pathname}`);
-}
-
-function arg(name: string): string | undefined {
-  const index = Bun.argv.indexOf(name);
-  return index >= 0 ? Bun.argv[index + 1] : undefined;
+  throw new Error("Riot API retry budget exhausted.");
 }
 
 const itemRows = await database().query<AnyRecord>(
-  `SELECT item_id, name, tags, gold_total, purchasable, from_ids, into_ids, maps FROM lol_dps.items WHERE patch = $1`,
+  `SELECT item_id, name, tags, gold_total, purchasable, from_ids, into_ids, maps
+     FROM lol_dps.items WHERE patch = $1`,
   [patch],
 );
 const staticItems = new Map<number, StaticItemShape>(
@@ -126,7 +188,8 @@ const championStats = new Map<number, AnyRecord>(
   championRows.rows.map((row) => [Number(row.champion_id), row.stats]),
 );
 const requestHistory = await database().query<{ used: string }>(
-  `SELECT COALESCE(SUM(CASE WHEN cursor->>'requestCount' ~ '^[0-9]+$' THEN (cursor->>'requestCount')::bigint ELSE 0 END),0)::text AS used
+  `SELECT COALESCE(SUM(CASE WHEN cursor->>'requestCount' ~ '^[0-9]+$'
+                    THEN (cursor->>'requestCount')::bigint ELSE 0 END),0)::text AS used
      FROM lol_dps.ingestion_runs`,
 );
 const knownRequestCount = Number(requestHistory.rows[0]?.used ?? 0);
@@ -134,6 +197,7 @@ maxRequests = Math.min(
   configuredMaxRequests,
   Math.max(0, globalRequestCeiling - knownRequestCount - untrackedRequestReserve),
 );
+batchCeilings.requests = maxRequests;
 if (maxRequests <= 0) {
   throw new Error("The global Riot request ceiling is exhausted; no new ingestion was started.");
 }
@@ -211,9 +275,15 @@ try {
     [runId, seeds.length, selected.length],
   );
   let ingested = 0;
+  let projectedBucketBytes = 0;
+  let projectedPgBytes = 0;
+  let stopReason: string | null = null;
   const skipped = { existing: 0, short: 0, malformed: 0, patch: 0, outsideWindow: 0 };
   for (const matchId of selected) {
-    if (ingested >= maxMatches) break;
+    if (ingested >= maxAcceptedMatches) {
+      stopReason = "accepted-match-ceiling";
+      break;
+    }
     const exists = await database().query(`SELECT 1 FROM lol_dps.matches WHERE match_id=$1`, [
       matchId,
     ]);
@@ -252,380 +322,120 @@ try {
       `https://${routingHost}/lol/match/v5/matches/${matchId}/timeline`,
     );
     const archive = compressArchive(buildMatchArchive(match, timeline));
-    const archiveObject = archiveEnabled()
-      ? await putVerifiedArchive(archive, { patch, region: platform })
-      : null;
-    await persistMatch({
-      matchId,
-      match,
+    const projection = buildCompactProjection({
+      participants: info.participants,
       timeline,
-      staticItems,
       championStats,
-      gameVersion,
-      tierByPuuid,
-      archiveObject,
+      staticItems,
+      scenarioMinute,
+      scenarioMinuteTolerance,
+    });
+    const estimatedPgBytes = estimateCompactProjectionBytes(projection);
+    const boundary = nextBatchBoundary(
+      {
+        acceptedMatches: ingested,
+        requests: requestCount,
+        bucketBytes: projectedBucketBytes,
+        projectedPgBytes,
+      },
+      {
+        acceptedMatches: ingested + 1,
+        requests: requestCount,
+        bucketBytes: projectedBucketBytes + archive.compressedBytes,
+        projectedPgBytes: projectedPgBytes + estimatedPgBytes,
+      },
+      batchCeilings,
+    );
+    if (boundary) {
+      stopReason = boundary;
+      break;
+    }
+    const archiveIntent = {
+      objectKind: "match-source",
+      sourceMatchId: matchId,
+      sourceIdentity: `match:${matchId}`,
+      patch,
+      platformRegion: platform,
+      objectKey: archiveObjectKey(patch, platform, archive.sha256),
+      sha256: archive.sha256,
+      compressedBytes: archive.compressedBytes,
+      uncompressedBytes: archive.uncompressedBytes,
+      sourceSchemaVersion: SOURCE_SCHEMA_VERSION,
+      extractorVersion: EXTRACTOR_VERSION,
+      datasetVersion: DATASET_VERSION,
+    } as const;
+    await runArchiveFirst<ArchiveManifestRow, Awaited<ReturnType<typeof putVerifiedArchive>>>({
+      createPendingIntent: () => createPendingArchiveIntent(archiveIntent),
+      markUploadAttempt: (pending) => markArchiveUploadAttempt(pending.archive_object_id),
+      uploadAndVerify: () => putVerifiedArchive(archive, { patch, region: platform }),
+      markUploadFailed: (pending, error) => markArchiveFailed(pending.archive_object_id, error),
+      finalizeTransactionally: (pending, archiveObject) =>
+        persistArchivedMatch({
+          matchId,
+          match,
+          patch,
+          platformRegion: platform,
+          routingRegion: routing,
+          gameVersion,
+          tierByPuuid,
+          archiveObjectId: pending.archive_object_id,
+          archiveObject,
+          projection,
+        }),
     });
     ingested += 1;
+    projectedBucketBytes += archive.compressedBytes;
+    projectedPgBytes += estimatedPgBytes;
     await database().query(
       `UPDATE lol_dps.ingestion_runs SET matches_ingested=$2,cursor=$3 WHERE run_id=$1`,
       [
         runId,
         ingested,
-        { requestCount, lastMatch: ingested, candidateOffset, patchStartUnix, patchEndUnix },
+        {
+          requestCount,
+          candidateOffset,
+          patchStartUnix,
+          patchEndUnix,
+          projectedBucketBytes,
+          projectedPgBytes,
+        },
       ],
     );
-    console.log(`Ingested match ${ingested}/${selected.length}`);
+    console.log(`Ingested ${ingested}/${selected.length} accepted match(es).`);
   }
+  const status = stopReason ? "stopped" : "complete";
   await database().query(
-    `UPDATE lol_dps.ingestion_runs SET status='complete',finished_at=now(),cursor=$2 WHERE run_id=$1`,
-    [runId, { requestCount, candidateOffset, patchStartUnix, patchEndUnix }],
+    `UPDATE lol_dps.ingestion_runs SET status=$2,finished_at=now(),cursor=$3 WHERE run_id=$1`,
+    [
+      runId,
+      status,
+      {
+        requestCount,
+        candidateOffset,
+        patchStartUnix,
+        patchEndUnix,
+        projectedBucketBytes,
+        projectedPgBytes,
+        stopReason,
+      },
+    ],
   );
-  console.log(`Ingestion complete: ${ingested} new ${patch} matches.`);
   console.log(
-    `Discovery seeds=${seeds.length} (enriched=${enrichedSeeds.length}), empty=${emptySeeds}, selected=${selected.length}, offset=${candidateOffset}.`,
+    `Ingestion ${status}: ${ingested} new ${patch} match(es); bucket=${projectedBucketBytes} B, projected-pg=${projectedPgBytes} B, requests=${requestCount}.`,
   );
   console.log(
-    `Skipped existing=${skipped.existing}, short=${skipped.short}, malformed=${skipped.malformed}, outside-window=${skipped.outsideWindow}, other-patch=${skipped.patch}. Requests=${requestCount}; prior-known=${knownRequestCount}.`,
+    `Discovery seeds=${seeds.length}, empty=${emptySeeds}, selected=${selected.length}; skipped existing=${skipped.existing}, short=${skipped.short}, malformed=${skipped.malformed}, outside-window=${skipped.outsideWindow}, other-patch=${skipped.patch}; stop=${stopReason ?? "none"}.`,
   );
 } catch (error) {
   await database().query(
     `UPDATE lol_dps.ingestion_runs SET status='failed',error=$2,finished_at=now(),cursor=$3 WHERE run_id=$1`,
     [
       runId,
-      String(error).slice(0, 2000),
+      String(error).slice(0, 1000),
       { requestCount, candidateOffset, patchStartUnix, patchEndUnix },
     ],
   );
   throw error;
 } finally {
   await database().end();
-}
-
-async function persistMatch(input: {
-  matchId: string;
-  match: AnyRecord;
-  timeline: RiotTimeline;
-  staticItems: Map<number, StaticItemShape>;
-  championStats: Map<number, AnyRecord>;
-  gameVersion: string;
-  tierByPuuid: Map<string, string>;
-  archiveObject: {
-    key: string;
-    sha256: string;
-    compressedBytes: number;
-    uncompressedBytes: number;
-  } | null;
-}): Promise<void> {
-  const info = input.match.info as AnyRecord;
-  const participants = (info.participants ?? []) as AnyRecord[];
-  const participantIds = participants.map((participant) => Number(participant.participantId));
-  const snapshotIds = new Map<string, string>();
-  const anchorFrames = new Map<number, Array<{ timestamp: number; inventory: number[] }>>();
-  const anchorEvents = new Map<number, RiotItemEvent[]>();
-  const snapshotRows: Array<{
-    participantId: number;
-    timestamp: number;
-    minute: number;
-    level: number;
-    totalGold: number;
-    currentGold: number;
-    health: number;
-    armor: number;
-    magicResist: number;
-    attackDamage: number | null;
-    attackSpeed: number | null;
-    abilityPower: number | null;
-    bonusHealth: number | null;
-    bonusHealthStatus: string;
-    inventory: number[];
-  }> = [];
-  await transaction(async (client) => {
-    if (input.archiveObject) {
-      await client.query(
-        `INSERT INTO lol_dps.archive_objects
-          (object_kind,source_match_id,patch,platform_region,object_key,sha256,compressed_bytes,uncompressed_bytes,
-           source_schema_version,extractor_version,dataset_version,status,verified_at)
-         VALUES ('match-source',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'verified',now())
-         ON CONFLICT (object_kind,source_match_id) DO UPDATE SET
-           object_key=EXCLUDED.object_key, sha256=EXCLUDED.sha256,
-           compressed_bytes=EXCLUDED.compressed_bytes, uncompressed_bytes=EXCLUDED.uncompressed_bytes,
-           source_schema_version=EXCLUDED.source_schema_version, extractor_version=EXCLUDED.extractor_version,
-           dataset_version=EXCLUDED.dataset_version, status='verified', verified_at=now(), error=NULL`,
-        [
-          input.matchId,
-          patch,
-          platform,
-          input.archiveObject.key,
-          input.archiveObject.sha256,
-          input.archiveObject.compressedBytes,
-          input.archiveObject.uncompressedBytes,
-          SOURCE_SCHEMA_VERSION,
-          EXTRACTOR_VERSION,
-          DATASET_VERSION,
-        ],
-      );
-    }
-    await client.query(
-      `INSERT INTO lol_dps.matches
-        (match_id,patch,game_version,platform_region,routing_region,queue_id,game_start,duration_seconds,raw,
-         archive_status,source_schema_version,extractor_version,dataset_version)
-       VALUES ($1,$2,$3,$4,$5,$6,to_timestamp($7/1000.0),$8,$9,$10,$11,$12,$13)`,
-      [
-        input.matchId,
-        patch,
-        input.gameVersion,
-        platform,
-        routing,
-        info.queueId ?? 420,
-        info.gameStartTimestamp ?? null,
-        info.gameDuration ?? 0,
-        input.archiveObject
-          ? {
-              archiveObjectKey: input.archiveObject.key,
-              archiveSha256: input.archiveObject.sha256,
-            }
-          : input.match,
-        input.archiveObject ? "verified" : "legacy",
-        input.archiveObject ? SOURCE_SCHEMA_VERSION : null,
-        input.archiveObject ? EXTRACTOR_VERSION : null,
-        input.archiveObject ? DATASET_VERSION : null,
-      ],
-    );
-    for (const participant of participants) {
-      await client.query(
-        `INSERT INTO lol_dps.participants (match_id,participant_id,puuid,champion_id,champion_name,team_id,role,lane,tier)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
-          input.matchId,
-          participant.participantId,
-          participant.puuid ?? null,
-          participant.championId,
-          participant.championName,
-          participant.teamId,
-          participant.teamPosition || participant.individualPosition || null,
-          participant.lane || null,
-          input.tierByPuuid.get(participant.puuid) ?? null,
-        ],
-      );
-      anchorFrames.set(Number(participant.participantId), []);
-      anchorEvents.set(Number(participant.participantId), []);
-    }
-    const inventories = new Map(participantIds.map((id) => [id, [] as number[]]));
-    const eventsByParticipant = new Map<number, RiotItemEvent[]>();
-    for (const frame of input.timeline.info.frames) {
-      for (const event of frame.events as RiotItemEvent[]) {
-        if (!event.participantId) continue;
-        const events = eventsByParticipant.get(event.participantId) ?? [];
-        events.push(event);
-        eventsByParticipant.set(event.participantId, events);
-      }
-    }
-    for (const [participantId, events] of eventsByParticipant) {
-      events.sort((a, b) => a.timestamp - b.timestamp);
-      anchorEvents.set(participantId, events);
-    }
-    const eventIndexes = new Map(participantIds.map((id) => [id, 0]));
-    const orderedFrames = [...input.timeline.info.frames].sort((a, b) => a.timestamp - b.timestamp);
-    for (const frame of orderedFrames) {
-      for (const participantId of participantIds) {
-        const events = eventsByParticipant.get(participantId) ?? [];
-        let index = eventIndexes.get(participantId) ?? 0;
-        while (index < events.length && events[index]!.timestamp <= frame.timestamp) {
-          inventories.set(
-            participantId,
-            applyInventoryEvent(inventories.get(participantId) ?? [], events[index]!),
-          );
-          index += 1;
-        }
-        eventIndexes.set(participantId, index);
-      }
-      for (const participant of participants) {
-        const id = Number(participant.participantId);
-        const frameParticipant = frame.participantFrames[String(id)];
-        if (!frameParticipant?.championStats) continue;
-        const stats = frameParticipant.championStats;
-        const staticStats = input.championStats.get(Number(participant.championId));
-        const health = Number(stats.healthMax ?? 0);
-        const estimate = deriveBonusHealthEstimate(
-          health,
-          Number(frameParticipant.level ?? 1),
-          staticStats ? Number(staticStats.hp) : undefined,
-          staticStats ? Number(staticStats.hpperlevel) : undefined,
-        );
-        const bonusHealth = estimate.value;
-        const bonusHealthStatus = estimate.status;
-        const inventory = inventories.get(id) ?? [];
-        anchorFrames.get(id)!.push({ timestamp: frame.timestamp, inventory: [...inventory] });
-        snapshotRows.push({
-          participantId: id,
-          timestamp: frame.timestamp,
-          minute: frame.timestamp / 60000,
-          level: Number(frameParticipant.level ?? 1),
-          totalGold: Number(frameParticipant.totalGold ?? 0),
-          currentGold: Number(frameParticipant.currentGold ?? 0),
-          health,
-          armor: Number(stats.armor ?? 0),
-          magicResist: Number(stats.magicResist ?? 0),
-          attackDamage: stats.attackDamage == null ? null : Number(stats.attackDamage),
-          attackSpeed: stats.attackSpeed == null ? null : Number(stats.attackSpeed),
-          abilityPower: stats.abilityPower == null ? null : Number(stats.abilityPower),
-          bonusHealth,
-          bonusHealthStatus,
-          inventory: [...inventory],
-        });
-      }
-    }
-    if (snapshotRows.length > 0) {
-      const snapshotValues: unknown[] = [];
-      const snapshotPlaceholders = snapshotRows.map((row, index) => {
-        const offset = index * 15;
-        snapshotValues.push(
-          input.matchId,
-          row.participantId,
-          row.timestamp,
-          row.minute,
-          row.level,
-          row.totalGold,
-          row.currentGold,
-          row.health,
-          row.armor,
-          row.magicResist,
-          row.attackDamage,
-          row.attackSpeed,
-          row.abilityPower,
-          row.bonusHealth,
-          row.bonusHealthStatus,
-        );
-        return `(${Array.from({ length: 15 }, (_, valueIndex) => `$${offset + valueIndex + 1}`).join(",")})`;
-      });
-      const inserted = await client.query<{
-        snapshot_id: string;
-        participant_id: number;
-        timestamp_ms: number;
-      }>(
-        `INSERT INTO lol_dps.timeline_snapshots
-          (match_id,participant_id,timestamp_ms,minute,level,total_gold,current_gold,health_max,armor,magic_resist,attack_damage,attack_speed,ability_power,bonus_health_estimate,bonus_health_status)
-         VALUES ${snapshotPlaceholders.join(",")}
-         ON CONFLICT (match_id,participant_id,timestamp_ms) DO UPDATE SET health_max=EXCLUDED.health_max, bonus_health_estimate=EXCLUDED.bonus_health_estimate, bonus_health_status=EXCLUDED.bonus_health_status
-         RETURNING snapshot_id,participant_id,timestamp_ms`,
-        snapshotValues,
-      );
-      for (const row of inserted.rows)
-        snapshotIds.set(`${row.participant_id}:${row.timestamp_ms}`, row.snapshot_id);
-      const itemValues: unknown[] = [];
-      const itemPlaceholders: string[] = [];
-      for (const row of snapshotRows) {
-        const snapshotId = snapshotIds.get(`${row.participantId}:${row.timestamp}`);
-        if (!snapshotId) continue;
-        for (const [slot, itemId] of row.inventory.entries()) {
-          const offset = itemValues.length;
-          itemValues.push(snapshotId, slot, itemId);
-          itemPlaceholders.push(`($${offset + 1},$${offset + 2},$${offset + 3})`);
-        }
-      }
-      if (itemPlaceholders.length > 0) {
-        await client.query(
-          `INSERT INTO lol_dps.snapshot_items (snapshot_id,slot,item_id) VALUES ${itemPlaceholders.join(",")} ON CONFLICT DO NOTHING`,
-          itemValues,
-        );
-      }
-    }
-    await createScenarioSamples(
-      client,
-      input,
-      participants,
-      anchorFrames,
-      anchorEvents,
-      snapshotIds,
-    );
-  });
-}
-
-async function createScenarioSamples(
-  client: import("pg").PoolClient,
-  input: { matchId: string; staticItems: Map<number, StaticItemShape> },
-  participants: AnyRecord[],
-  anchorFrames: Map<number, Array<{ timestamp: number; inventory: number[] }>>,
-  anchorEvents: Map<number, RiotItemEvent[]>,
-  snapshotIds: Map<string, string>,
-): Promise<void> {
-  const anchors = [
-    ...participants
-      .filter((participant) => Number(participant.championId) === 804)
-      .map((p) => ({ p, phase: "yunara-third-item", fallback: 0 })),
-    ...participants
-      .filter((participant) =>
-        ["BOTTOM", "CARRY", "BOT"].includes(
-          participant.teamPosition || participant.individualPosition,
-        ),
-      )
-      .map((p) => ({ p, phase: "bot-carry-third-item", fallback: 1 })),
-  ];
-  const used = new Set<string>();
-  for (const anchor of anchors) {
-    const id = Number(anchor.p.participantId);
-    const frames = anchorFrames.get(id) ?? [];
-    const third = findThirdItemAnchor(frames, anchorEvents.get(id) ?? [], input.staticItems);
-    if (!third) continue;
-    const enemies = participants
-      .filter((participant) => Number(participant.teamId) !== Number(anchor.p.teamId))
-      .map((participant) => Number(participant.participantId));
-    for (const enemyId of enemies) {
-      const targetSnapshot = snapshotIds.get(`${enemyId}:${third.frameTimestamp}`);
-      if (!targetSnapshot) continue;
-      const key = `${anchor.phase}:${id}:${targetSnapshot}`;
-      if (used.has(key)) continue;
-      used.add(key);
-      await client.query(
-        `INSERT INTO lol_dps.scenario_samples
-         (patch,platform_region,phase,fallback_level,anchor_match_id,anchor_participant_id,anchor_timestamp_ms,anchor_event_timestamp_ms,anchor_frame_distance_ms,target_snapshot_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
-        [
-          patch,
-          platform,
-          anchor.phase,
-          anchor.fallback,
-          input.matchId,
-          id,
-          third.frameTimestamp,
-          third.eventTimestamp,
-          third.frameDistanceMs,
-          targetSnapshot,
-        ],
-      );
-    }
-  }
-  const minuteAnchor =
-    participants.find((participant) =>
-      ["BOTTOM", "CARRY", "BOT"].includes(
-        participant.teamPosition || participant.individualPosition,
-      ),
-    ) ?? participants[0];
-  if (minuteAnchor) {
-    const id = Number(minuteAnchor.participantId);
-    const frames = anchorFrames.get(id) ?? [];
-    const anchorFrame = nearestFrameWithin(
-      frames,
-      scenarioMinute * 60_000,
-      scenarioMinuteTolerance * 60_000,
-    );
-    if (anchorFrame) {
-      const enemies = participants
-        .filter((participant) => Number(participant.teamId) !== Number(minuteAnchor.teamId))
-        .map((participant) => Number(participant.participantId));
-      for (const enemyId of enemies) {
-        const targetSnapshot = snapshotIds.get(`${enemyId}:${anchorFrame.timestamp}`);
-        if (!targetSnapshot) continue;
-        const key = `minute-window:${id}:${targetSnapshot}`;
-        if (used.has(key)) continue;
-        used.add(key);
-        await client.query(
-          `INSERT INTO lol_dps.scenario_samples
-           (patch,platform_region,phase,fallback_level,anchor_match_id,anchor_participant_id,anchor_timestamp_ms,anchor_event_timestamp_ms,anchor_frame_distance_ms,target_snapshot_id)
-           VALUES ($1,$2,'minute-window',2,$3,$4,$5,NULL,NULL,$6) ON CONFLICT DO NOTHING`,
-          [patch, platform, input.matchId, id, anchorFrame.timestamp, targetSnapshot],
-        );
-      }
-    }
-  }
 }

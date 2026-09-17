@@ -14,7 +14,10 @@
     "db:migrate": "bun scripts/migrate.ts",
     "data:sync": "bun scripts/sync-static.ts",
     "archive:reconcile": "bun scripts/reconcile-archive.ts",
+    "archive:rebuild": "bun scripts/rebuild-from-archives.ts",
     "archive:verify-rebuild": "bun scripts/verify-archive-rebuild.ts",
+    "storage:audit": "bun scripts/storage-audit.ts",
+    "storage:status": "bun scripts/storage-status.ts",
     "ingest:euw": "bun scripts/ingest.ts --region EUW1 --routing EUROPE --tiers CHALLENGER,GRANDMASTER,MASTER",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun test && bun run build"
   },
