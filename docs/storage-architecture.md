@@ -33,8 +33,16 @@ The current schema is isolated in [`migrations/001_initial.sql`](../migrations/0
 under `lol_dps`:
 
 - `patches`, `champions`, and `items` hold patch-pinned static data.
-- `matches.raw` holds the match-details JSONB; timeline responses are currently unpacked into
-  `timeline_snapshots` and `snapshot_items` rather than retained as raw timeline JSON.
+- `matches.raw` holds the original Match-V5 match-details response as JSONB. The original
+  Match-V5 timeline response is **not** retained: it is unpacked into `timeline_snapshots` and
+  `snapshot_items` instead.
+- During that extraction, the MVP keeps each frame timestamp, participant level/gold, selected
+  `championStats` fields (`healthMax`, armor, MR, attack damage/speed, and AP when present), and
+  the reconstructed item IDs at each snapshot. It replays only the item-event fields needed for
+  purchase/sell/destroy/undo inventory state. Original timeline event payloads (including events
+  unrelated to inventory), unused event fields, the original frame objects, and timeline metadata
+  such as `frameInterval` are discarded after extraction. Scenario rows retain pointers to the
+  anchor and target snapshots, not the source timeline itself.
 - `participants` holds match/champion/team/role metadata and currently also has a raw PUUID
   column. PUUIDs are not needed by the UI and should not be copied into future client-facing
   packs.
@@ -87,13 +95,13 @@ measurements, not production sizing or latency guarantees**.
 | `lol_dps` table relation bytes (including table indexes/toast per relation) |  3,727,360 B |
 | `lol_dps` index bytes (reported separately by `pg_stat_user_indexes`)       |    491,520 B |
 | whole database size                                                         | 11,933,375 B |
-| `matches.raw` JSONB storage (`pg_column_size`)                              |     47,492 B |
-| same match JSON text                                                        |     84,935 B |
-| same match JSON piped directly through gzip                                 |     12,468 B |
+| `matches.raw` JSONB storage (match-details response; `pg_column_size`)      |     47,492 B |
+| same match-details JSON text                                                |     84,935 B |
+| same match-details JSON piped directly through gzip                         |     12,468 B |
 | normalized snapshot JSON (230 rows)                                         |     73,840 B |
 | normalized snapshot-item JSON (1,104 rows)                                  |     54,842 B |
-| reconstructed archive object (match + snapshots + items) JSON               |    213,663 B |
-| reconstructed archive object piped directly through gzip                    |     24,185 B |
+| **reconstructed** object (match details + normalized rows) JSON             |    213,663 B |
+| **reconstructed** object piped directly through gzip                        |     24,185 B |
 | eight-row compact scenario cohort JSON                                      |      1,923 B |
 | same cohort piped through gzip                                              |        454 B |
 
@@ -104,15 +112,24 @@ kept as rows: one distinct anchor match and eight distinct target snapshots in t
 A warm `scenario_samples -> timeline_snapshots -> participants` query with the current index,
 filters, ordering, and limit executed in **0.248 ms** (planning 0.678 ms, 26 shared buffers hit)
 on this tiny database. That is a useful shape check, not a scale claim. A local Bun benchmark of
-the pure simulator took **0.437 ms** per A/B comparison for 20 targets and **42.1 ms** for a
+the **engine only** took **0.437 ms** per A/B comparison for 20 targets and **42.1 ms** for a
 synthetic 2,000-target cohort; machine, JIT warm-up, and target complexity make those numbers
-non-representative. They do show why a bounded pack plus a worker is preferable to shipping full
-logs for every row.
+non-representative. They are not browser, Web Worker, network, or end-to-end measurements.
+
+### Scope correction for the archive-size measurements
+
+The 213,663-byte / 24,185-byte object is reconstructed from the match-details JSONB plus the
+normalized snapshot and inventory tables. It does **not** contain the original Match-V5 timeline
+response or the discarded event/frame fields described above. The 454-byte cohort is likewise only
+the current eight-row derived sample. Neither measurement is a complete Riot archive size, a
+compression ratio for original match-plus-timeline responses, or a defensible full-corpus cost
+forecast. The future archive must capture the original match response and original timeline response
+before lossy extraction so inventory, anchor timing, and new extractors can be rebuilt later.
 
 The current `matches.raw` value is therefore a concrete hot-Postgres duplication to remove in a
-future migration: archive and verify it first, then make the hot record metadata-only (or retain a
-strictly bounded emergency copy until retention proves the archive is usable). Nothing is removed
-by this document.
+future migration: archive and verify the match details **and the original timeline response**
+first, then make the hot record metadata-only (or retain a strictly bounded emergency copy until
+retention proves the archive is usable). Nothing is removed by this document.
 
 ## Tier ownership
 
@@ -126,8 +143,8 @@ Keep these searchable and typed:
 - participant champion/team/role/rank metadata. Avoid raw PUUIDs in new client-facing data;
 - current and previous **verified** patches' target snapshots, inventory item IDs, and scenario
   anchors; use compact numeric columns and indexes rather than a large JSON blob;
-- `ingestion_runs`, retry/cursor state, cohort manifests, schema/data/engine versions, and
-  reconciliation state.
+- `ingestion_runs`, retry/cursor state, cohort manifests, source schema/extractor/dataset
+  versions, separate engine/mechanics versions, and reconciliation state.
 
 The current `timeline_snapshots` and `snapshot_items` tables can be the first hot implementation;
 an eventual `target_snapshot_hot` projection is optional, not a reason to add another database.
@@ -137,7 +154,12 @@ an eventual `target_snapshot_hot` projection is optional, not a reason to add an
 A cohort pack is keyed by all inputs that affect its meaning:
 
 `patch + Data Dragon version + region + queue + phase/fallback + role/champion/rank filters +
-corpus version + cohort version + engine/mechanics version`.
+corpus version + cohort version + source schema/extractor/dataset versions`.
+
+Result caches add the complete scenario configuration (level, ability ranks, builds, actions,
+duration, crit mode, target mode, and mitigation inputs) plus the engine/mechanics version. A
+change to simulation math therefore invalidates results without requiring raw source objects to be
+reuploaded.
 
 Each vector remains joint and carries at least:
 
@@ -167,8 +189,9 @@ S3 adapter boundary so another S3-compatible provider remains possible.
 
 Initial objects:
 
-- one content-addressed gzip JSON object per match containing the original match details and raw
-  timeline response (or a capped NDJSON equivalent when a response is too large);
+- one content-addressed gzip JSON object per match containing the original match-details response
+  **and original timeline response captured before extraction** (or a capped NDJSON equivalent when
+  a response is too large);
 - patch-pinned Data Dragon/static snapshots;
 - older normalized snapshot exports and reproducible cohort-pack versions;
 - optional manifests/checksums alongside the objects, never credentials in the object body.
@@ -182,19 +205,23 @@ cohort/patch=26.18/phase=yunara-third-item/cohort=<version>.json.gz
 ```
 
 The Postgres manifest maps private source identity to key, checksum, compressed/uncompressed byte
-counts, schema version, source API/corpus version, and verification state. Content-addressed keys
-make retries idempotent and prevent an overwrite from being the only copy.
+counts, source schema/extractor/dataset versions, source API/corpus version, and verification
+state. Content-addressed keys make retries idempotent and prevent an overwrite from being the only
+copy.
 
 ## Ingestion and publication flow
 
-1. Fetch details/timeline with the existing rate-limited, retrying Riot client.
-2. Canonicalize the response, gzip it, calculate SHA-256 and byte counts, and upload to the bucket
-   through an S3 adapter.
+1. Fetch details/timeline with the existing rate-limited, retrying Riot client and retain both
+   original responses in memory until the source archive write is complete.
+2. Canonicalize the original match-plus-timeline source, gzip it, calculate SHA-256 and byte counts,
+   and upload it to the bucket through an S3 adapter **before lossy extraction**.
 3. `HEAD`/read the object and verify checksum and bytes. Do not rely on an ETag as a SHA-256 for
    all upload modes.
 4. In one Postgres transaction, upsert the archive manifest as `verified`, match/participant
-   metadata, hot snapshots/items, ingestion progress, and deterministic scenario rows. Publish a
-   cohort manifest only after its source rows and archive manifests are verified.
+   metadata, compact typed phase/target rows, ingestion progress, and deterministic scenario rows.
+   Keep extra per-minute hot snapshots only when supported queries justify them and a configurable
+   byte/patch budget allows them. Publish a cohort manifest only after its source rows and archive
+   manifests are verified.
 5. A reconciliation job handles the unavoidable lack of cross-system atomicity:
    - upload succeeded, DB failed: retain the immutable object, record/recover it as an orphan or
      pending manifest, and never delete an unknown object during routine cleanup;
@@ -208,12 +235,13 @@ immutability, retention, and recovery are application responsibilities.
 
 ## Interactive query flow
 
-The first request for a filter set should resolve a cohort manifest from Postgres and load one
-bounded pack (or generate it asynchronously for a cold historical filter). Subsequent level,
-ability-rank, build, duration, armor, and bonus-HP changes run the pure simulator locally in a Web
-Worker. Summary mode returns totals, split, win rate, quantiles, and source aggregates for the
-cohort. Detailed event logs are generated only for a selected representative target or an explicit
-debug request.
+The first implementation slice should separate cohort retrieval from build changes: resolve a cohort
+manifest from Postgres and load one bounded pack (or generate it asynchronously for a cold
+historical filter), then let subsequent level, ability-rank, build, duration, armor, and bonus-HP
+changes run the pure simulator locally in a Web Worker. Summary-only cohort mode returns totals,
+split, win rate, quantiles, and source aggregates. Detailed event logs are generated only for a
+selected representative target or an explicit debug request. Enforce byte limits as well as target
+counts; the worker avoids introducing an always-on Redis/cache service for this workload.
 
 Large historical filters must be labeled **building/async** rather than pretending to be an instant
 query. Raw archives stay private and are never scanned for each slider event.
@@ -232,74 +260,84 @@ Recommended defaults are configurable, not applied yet:
   old hot snapshots;
 - never delete the only usable raw or derived copy; keep a manifest/tombstone for every retirement.
 
+No delete/prune job is enabled until archive checksums and a rebuild/restore test pass. Archive blobs
+also do not back up Postgres-only manifests, ingestion state, or hot projections; those require a
+separate Postgres backup/recovery plan.
+
 This is workload-driven: the live UI needs recent patches and indexed filters, while historical
 rebuilds need the cold source. A longer hot window can be enabled when usage data shows that old
 patch filters are common.
 
 There is currently no second service to sleep. The existing Postgres is a persistent database and
-the Railway deployment reports `sleepApplication: false`. Keeping it running has a hidden baseline:
+the Railway deployment reports `sleepApplication: false`. Keeping it warm has a hidden baseline:
 RAM includes the database process, OS, and filesystem cache; CPU and memory are metered while idle,
 not just when a query is active. The supplied Railway rates are $10/GB-month RAM and $20/vCPU-month
 CPU, so even a small always-on database can cost more than a few gigabytes of bucket storage.
 
-Scaling this Postgres to zero is not a safe “wake on request” design: it adds cold-start/recovery
-latency and there is no separate always-on broker in this project to guarantee a wake before the
-UI query. The minimal choice is therefore a small always-on Postgres plus a worker/ingestion process
-that is run on demand or as a bounded cron job and exits when idle. If a future web service is
-added, it can have its own sleep policy; do not keep a dedicated idle ingestion worker running.
-Measure actual RAM/CPU and first-query wake latency before considering a database stop/start
-workflow. Bucket storage persists while compute sleeps, but bucket requests still traverse public
-network paths from Railway services.
+Railway's current [serverless deployment documentation](https://docs.railway.com/deployments/serverless)
+says the sleep flag takes effect on a **new deployment** and that a sleeping service wakes on
+internet or private-network traffic. The existing `sleepApplication: false` observation therefore
+does not prove that sleep/wake is unavailable. However, this specific Postgres has not had sleep,
+wake, reconnect, recovery, or first-query latency safely verified, and Railway's
+[cut-idle-costs guide](https://docs.railway.com/guides/cut-idle-costs-serverless) lists databases
+as a poor fit for this pattern. Budget this database as warm for now; make no stop/start automation
+or service change in this task. A future worker/ingestion process should run on demand or as a
+bounded cron job and exit when idle. If a web service is added, test its sleep policy separately.
+Bucket storage persists while compute sleeps, but bucket requests from Railway services still use
+public network paths.
 
 ## Illustrative monthly cost model (not a bill)
 
-The only size input measured here is one smoke match: about **24,185 compressed bytes** for a
-reconstructed archive object and about **454 compressed bytes** for its eight-row cohort. This is
-not representative of a complete Riot timeline corpus; replace it with p50/p95 measurements after
-at least 100 matches. The table rounds to 25 KB raw archive + 2 KB derived cohort per retained
-match to make the arithmetic readable.
+The 24,185-byte value above is a **reconstructed** object, not a complete original Riot
+match-plus-timeline archive. It must not be used to estimate corpus storage, compression savings,
+or upload volume. Until original source archives have been captured and measured across a useful
+sample, use variables rather than a scale table.
 
-Assumptions below are deliberately separate: retained volume is not monthly upload volume; the
-Postgres RAM/CPU values are full-month average usage examples, not measurements; UI egress is an
-assumed cohort response volume. Bucket egress/API operations are free according to Railway docs, but
-traffic from a Railway service to a bucket or browser is service egress.
+```text
+A = verified compressed bytes per original match-details + original timeline object
+C = verified compressed bytes per derived cohort contribution
+retained bucket GB = retained matches * (A + C) / 1,000,000,000
+monthly upload egress = new matches * (A + C) / 1,000,000,000 * $0.05
+bucket storage = retained bucket GB * $0.015/month
+```
 
-| Scale  | Retained matches; new/month | Bucket stored (raw + cohort) | Bucket storage @ $0.015/GB-mo | Monthly archive upload | Service egress for upload @ $0.05/GB | Assumed UI egress; service cost | Illustrative hot PG volume |          Illustrative PG RAM + CPU | Usage subtotal before plan credit |
-| ------ | --------------------------: | ---------------------------: | ----------------------------: | ---------------------: | -----------------------------------: | ------------------------------: | -------------------------: | ---------------------------------: | --------------------------------: |
-| Small  |                  1,000; 100 |                    ~0.027 GB |                      ~$0.0004 |             ~0.0025 GB |                             ~$0.0001 |               0.05 GB; ~$0.0025 |          0.05 GB; ~$0.0075 | 0.25 GB + 0.05 vCPU; $2.50 + $1.00 |                     **~$3.51/mo** |
-| Medium |               10,000; 1,000 |                     ~0.27 GB |                      ~$0.0041 |              ~0.027 GB |                             ~$0.0014 |                 0.5 GB; ~$0.025 |          0.25 GB; ~$0.0375 |   0.5 GB + 0.1 vCPU; $5.00 + $2.00 |                     **~$7.07/mo** |
-| Large  |             100,000; 10,000 |                      ~2.7 GB |                      ~$0.0405 |               ~0.27 GB |                             ~$0.0135 |                    5 GB; ~$0.25 |                1 GB; $0.15 |   1 GB + 0.25 vCPU; $10.00 + $5.00 |                    **~$15.45/mo** |
+Relevant Railway rates are: bucket storage `$0.015/GB-month`; unlimited/free S3 operations and
+bucket egress; service egress `$0.05/GB`; volume storage `$0.15/GB-month`; RAM `$10/GB-month`; and
+CPU `$20/vCPU-month`. The $5 Hobby and $20 Pro plan credits/subscriptions must be applied once to
+the account total, not once per line item. Persistent Postgres RAM/CPU/cache is the likely baseline
+cost to measure; the current 5,000 MB volume capacity is not a measured used-volume bill.
 
-These totals exclude the account plan subscription and apply no credit. Railway's current docs list a
-$5 Hobby subscription with $5 of included resource usage and a $20 Pro subscription with $20 of
-included resource usage; apply the selected plan's credit once, not once per line item. Actual
-Postgres memory/cache, CPU, volume billing semantics, cohort response sizes, and Riot payload sizes
-could dominate these examples. The current 5,000 MB volume capacity is not substituted for a
-measured used-volume bill.
+## Why not Parquet/DuckDB/DuckLake yet?
 
-## Why not Parquet/DuckDB yet?
-
-Parquet plus embedded DuckDB is a good **offline history** path once there are millions of typed
-snapshots, repeated columnar scans, or analysts rebuilding many cohorts. It enables partition and
-column pruning without adding a server. It is not justified by 230 snapshots: gzip JSON is simpler,
-portable, inspectable, and already sufficient for immutable per-match recovery. Revisit at measured
-multi-million-row or multi-gigabyte history, keeping the raw gzip source and a reproducible export
-version so Parquet remains a derived cache rather than the only copy.
+Gzip JSON is the first format: simple, inspectable, portable, and sufficient for immutable
+per-match recovery. Partitioned Parquet plus embedded DuckDB (or DuckLake, with a Postgres catalog
+and Parquet object storage) becomes useful only when measured historical scans, column pruning, or
+repeated cohort rebuilds justify it. It is not required by the current 230-snapshot cohort-serving
+workflow. Revisit at measured multi-million-row or multi-gigabyte history, keeping the original
+gzip source and a reproducible export version so columnar files remain derived data rather than the
+only copy.
 
 ## Smallest implementation sequence (next instruction)
 
-1. Add typed `archive_objects` and `cohort_manifests` migrations plus a narrow S3 adapter interface;
-   no provider-specific calls in the domain or UI.
-2. Change ingestion to upload/verify immutable gzip objects before publishing a manifest transaction;
-   keep the current normalized write path as the hot projection during a transition.
-3. Add a reconciliation command and a bounded, match-balanced cohort builder that preserves joint
-   vectors, weights, `matchCount`, `snapshotCount`, phase/fallback, and provenance.
-4. Stop returning full event logs for every comparison row. Add a cohort endpoint and move repeated
-   pure simulation to a Web Worker/browser cache; keep one selected-target debug log.
-5. After an observed retention window and successful archive restore test, make `matches.raw`
-   metadata-only for new rows and migrate old rows only when their archive manifests are verified.
-6. Measure p50/p95 archive sizes, upload/read latency, Postgres RAM/CPU while idle, and first-request
-   latency before deciding whether any service should sleep.
+1. Make cohort retrieval separate from build changes: return summary-only cohort results, keep a
+   detailed event log only for selected traces, enforce byte limits as well as target counts, and
+   move repeated pure simulation to a Web Worker/browser cache. Do not add an always-on Redis/cache
+   service.
+2. Add typed `archive_objects` and `cohort_manifests` migrations plus a narrow S3 adapter. Capture
+   the original match and timeline responses, gzip them, checksum/size them, and publish immutable
+   versioned keys before lossy extraction.
+3. Add reconciliation and a bounded, match-balanced cohort builder that preserves complete joint
+   vectors, item IDs, weights, `matchCount`, `snapshotCount`, phase/fallback, and provenance.
+4. Keep compact typed phase/target rows in Postgres. Retain extra per-minute hot snapshots only
+   when supported queries justify them and a configurable byte/patch budget allows them; do not
+   duplicate unbounded minutes alongside scenarios.
+5. Store source schema/extractor/dataset versions separately from engine/mechanics versions. Raw
+   objects should not be reuploaded for a math-only change; result keys must include engine version
+   and the full scenario configuration.
+6. After checksum verification and a successful rebuild/restore test, consider metadata-only
+   `matches` rows for new data and conservative hot retention. Do not enable deletion/pruning until
+   the recovery path is proven. Measure p50/p95 original archive sizes and resource usage before
+   revisiting sleep policy.
 
 No step requires Kubernetes, Redis, Kafka, ClickHouse, or a second database.
 
@@ -332,3 +370,7 @@ No step requires Kubernetes, Redis, Kafka, ClickHouse, or a second database.
   $0.015/GB-month, unlimited/free S3 operations and bucket egress, and the service-egress caveat.
 - [Railway Pricing Plans](https://docs.railway.com/pricing/plans) — current RAM, CPU, volume,
   network-egress rates and plan credits.
+- [Railway Serverless Deployments](https://docs.railway.com/deployments/serverless) — sleep takes
+  effect on a new deployment and sleeping services wake on internet/private-network traffic.
+- [Cut idle costs with serverless](https://docs.railway.com/guides/cut-idle-costs-serverless) —
+  databases are called out as a poor fit for this sleep pattern.
