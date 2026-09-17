@@ -8,7 +8,11 @@ import {
   mitigate,
   resistanceMultiplier,
 } from "../src/domain/math";
-import { compareAcrossSamples, simulateYunara } from "../src/domain/simulator";
+import {
+  compareAcrossSamples,
+  simulateYunara,
+  weightedHeadlineWinner,
+} from "../src/domain/simulator";
 import { applyInventoryEvent } from "../src/ingestion/inventory";
 import {
   findThirdItemAnchor,
@@ -274,6 +278,33 @@ describe("Yunara fixture and comparisons", () => {
     expect(summary.rows[0]?.a.events).toHaveLength(0);
     expect(summary.rows[0]?.a.totalDamage).toBe(full.rows[0]?.a.totalDamage);
     expect(summary.rows[0]?.b.totalDamage).toBe(full.rows[0]?.b.totalDamage);
+  });
+
+  test("weighted headline follows outcome mass rather than raw row count", () => {
+    const samples = [0, 50, 500].map((armor, index) => ({
+      ...target,
+      id: `weighted-${index}`,
+      health: 3000,
+      armor,
+      bonusHealth: 0,
+      sampleWeight: index < 2 ? 0.1 : 0.8,
+    }));
+    const comparison = compareAcrossSamples(
+      {
+        ...base,
+        durationSeconds: 20,
+        targetMode: "mortal",
+      },
+      { name: "IE", itemIds: [6672, 3085, 3006, 3031] },
+      { name: "LDR", itemIds: [6672, 3085, 3006, 3036] },
+      samples,
+      { metric: "ttk", includeEvents: false },
+    );
+    expect(comparison.aWins).toBe(2);
+    expect(comparison.bWins).toBe(1);
+    expect(comparison.weightedOutcomes.a).toBeCloseTo(0.2);
+    expect(comparison.weightedOutcomes.b).toBeCloseTo(0.8);
+    expect(weightedHeadlineWinner(comparison)).toBe("b");
   });
 });
 

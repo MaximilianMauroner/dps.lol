@@ -39,5 +39,8 @@ comparisons treat two kills as a tie because both applied the same target HP. TT
 first expected-damage crossing time; an uncensored kill beats a censored (not-killed) result, two
 censored results are reported as censored, and the value is not a kill probability. An explicit
 training-dummy/uncapped mode exists for engine diagnostics only and is never presented as TTK.
+Across a cohort, each row contributes its match-balanced sample weight to the A-win, B-win, tie, or
+censored bucket. The headline and decisive win bar compare weighted A/B mass; ties and censored mass
+are neutral, and equal weighted A/B mass is shown as a tie rather than being assigned to LDR.
 
 The engine keeps these mechanics in `src/domain/champions/yunara.ts` behind `ChampionPlugin`; future plugins can add more complete spell scheduling without changing mitigation, targets, or comparison aggregation.

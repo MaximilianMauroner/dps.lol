@@ -41,6 +41,13 @@ export function compareAcrossSamples(
     .filter((row) => row.metricDelta !== null)
     .map((row) => ({ value: row.metricDelta!, weight: targetWeight(row.target) }));
   const totalWeight = targets.reduce((sum, target) => sum + targetWeight(target), 0);
+  const weightedOutcomes = rows.reduce(
+    (mass, row) => {
+      mass[row.outcome] += targetWeight(row.target);
+      return mass;
+    },
+    { a: 0, b: 0, tie: 0, censored: 0 },
+  );
   const decisive = rows.filter((row) => row.outcome !== "censored");
   const stats = outcomeStats(rows);
   const distinctMatchCount = new Set(rows.map((row) => row.target.sourceMatchKey ?? row.target.id))
@@ -52,6 +59,9 @@ export function compareAcrossSamples(
     count: rows.length,
     distinctMatchCount,
     totalWeight: round(totalWeight, 4),
+    weightedOutcomes: Object.fromEntries(
+      Object.entries(weightedOutcomes).map(([key, value]) => [key, round(value, 6)]),
+    ) as typeof weightedOutcomes,
     buildAWinRate: weightedWinRate(decisive),
     medianRelativeDelta: round(weightedQuantile(weighted, 0.5) * 100, 2),
     p25RelativeDelta: round(weightedQuantile(weighted, 0.25) * 100, 2),
@@ -84,6 +94,18 @@ export function compareAcrossSamples(
       .filter((group) => group.count >= 2),
     rows,
   };
+}
+
+/**
+ * Selects the headline from the same weighted outcome mass used by the cohort bar.
+ * Ties and censored rows are neutral; only weighted A/B mass chooses a winner.
+ */
+export function weightedHeadlineWinner(
+  comparison: Pick<SampleComparison, "weightedOutcomes">,
+): "a" | "b" | "tie" {
+  const { a, b } = comparison.weightedOutcomes;
+  if (Math.abs(a - b) < 1e-9) return "tie";
+  return a > b ? "a" : "b";
 }
 
 function targetWeight(target: Target): number {

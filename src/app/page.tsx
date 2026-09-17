@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import type { ActionKind, Target } from "@/domain/types";
+import { weightedHeadlineWinner } from "@/domain/simulator";
 import type {
   WorkerSimulationRequest,
   WorkerSimulationResponse,
@@ -221,12 +222,9 @@ export default function Home() {
   const resultA = data?.results?.a;
   const resultB = data?.results?.b;
   const comparison = data?.results?.comparison;
+  const headlineOutcome = comparison ? weightedHeadlineWinner(comparison) : "tie";
   const winner =
-    comparison?.aWins > comparison?.bWins
-      ? buildA.name
-      : comparison?.bWins > comparison?.aWins
-        ? buildB.name
-        : "—";
+    headlineOutcome === "a" ? buildA.name : headlineOutcome === "b" ? buildB.name : "—";
 
   return (
     <main className="shell">
@@ -587,21 +585,31 @@ export default function Home() {
             </div>
             <div className="win-bar">
               <div style={{ width: `${(comparison?.buildAWinRate ?? 0) * 100}%` }} />
-              <span>{comparison ? `${Math.round(comparison.buildAWinRate * 100)}%` : "—"}</span>
+              <span>
+                {comparison ? `${Math.round(comparison.buildAWinRate * 100)}% weighted A/B` : "—"}
+              </span>
             </div>
             <div className="win-labels">
               <span>
                 <i className="orange-dot" /> Infinity Edge{" "}
-                <b>{comparison ? `${comparison.aWins} wins` : "—"}</b>
+                <b>
+                  {comparison
+                    ? `${comparison.aWins} rows · ${Math.round(weightedShare(comparison, "a") * 100)}% mass`
+                    : "—"}
+                </b>
               </span>
               <span>
                 <i className="blue-dot" /> LDR{" "}
-                <b>{comparison ? `${comparison.bWins} wins` : "—"}</b>
+                <b>
+                  {comparison
+                    ? `${comparison.bWins} rows · ${Math.round(weightedShare(comparison, "b") * 100)}% mass`
+                    : "—"}
+                </b>
               </span>
             </div>
             <div className="outcome-line">
               {comparison
-                ? `${comparison.ties} ties · ${comparison.censored} censored (both not killed) · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B`
+                ? `${comparison.ties} ties · ${comparison.censored} censored (both not killed) · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B · headline tie policy: ties/censored neutral`
                 : "—"}
             </div>
             <div className="stats-grid">
@@ -804,6 +812,12 @@ function goldTotal(itemIds: number[]) {
     3036: 3000,
   };
   return itemIds.reduce((total, id) => total + (costs[id] ?? 0), 0);
+}
+
+function weightedShare(comparison: any, side: "a" | "b") {
+  const weighted = comparison.weightedOutcomes;
+  const decisive = Number(weighted?.a ?? 0) + Number(weighted?.b ?? 0);
+  return decisive > 0 ? Number(weighted?.[side] ?? 0) / decisive : 0;
 }
 
 function summarizeTargetValues(targets: Array<Record<string, unknown>>) {

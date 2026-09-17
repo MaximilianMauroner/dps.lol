@@ -90,6 +90,13 @@ export interface SampleComparison {
   count: number;
   distinctMatchCount: number;
   totalWeight: number;
+  /** Weighted outcome mass; ties and censored rows are neutral for winner selection. */
+  weightedOutcomes: {
+    a: number;
+    b: number;
+    tie: number;
+    censored: number;
+  };
   buildAWinRate: number;
   medianRelativeDelta: number;
   p25RelativeDelta: number;
