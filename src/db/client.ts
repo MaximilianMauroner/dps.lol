@@ -8,7 +8,16 @@ export function hasDatabase(): boolean {
 
 export function database(): Pool {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not configured");
-  pool ??= new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
+  // Keep the hot pool deliberately small and let idle web instances release sockets. This helps
+  // the web service sleep when Railway applies its serverless policy without putting Postgres in
+  // an unverified scale-to-zero mode.
+  pool ??= new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 3,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+    allowExitOnIdle: true,
+  });
   return pool;
 }
 

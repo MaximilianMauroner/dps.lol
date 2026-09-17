@@ -13,10 +13,13 @@
     "format:check": "prettier --check .",
     "db:migrate": "bun scripts/migrate.ts",
     "data:sync": "bun scripts/sync-static.ts",
+    "archive:reconcile": "bun scripts/reconcile-archive.ts",
+    "archive:verify-rebuild": "bun scripts/verify-archive-rebuild.ts",
     "ingest:euw": "bun scripts/ingest.ts --region EUW1 --routing EUROPE --tiers CHALLENGER,GRANDMASTER,MASTER",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1134.0",
     "@types/pg": "^8.15.5",
     "next": "^15.5.3",
     "pg": "^8.16.3",

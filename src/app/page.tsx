@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import type { ActionKind } from "@/domain/types";
+import type { ActionKind, Target } from "@/domain/types";
+import type {
+  WorkerSimulationRequest,
+  WorkerSimulationResponse,
+} from "@/workers/simulation.worker";
 
 const ICON = "https://ddragon.leagueoflegends.com/cdn/16.18.1/img/item/";
 const itemNames: Record<number, string> = {
@@ -25,12 +29,14 @@ type ResponseData = any;
 export default function Home() {
   const [level, setLevel] = useState(13);
   const [duration, setDuration] = useState(5);
+  const [metric, setMetric] = useState<"damage" | "ttk">("damage");
   const [targetMode, setTargetMode] = useState<"realistic" | "manual">("realistic");
   const [region, setRegion] = useState("EUW1");
   const [rank, setRank] = useState("ALL");
   const [phase, setPhase] = useState("yunara-third-item");
   const [role, setRole] = useState("ALL");
   const [targetChampion, setTargetChampion] = useState("");
+  const [selectedTargetId, setSelectedTargetId] = useState("");
   const [continueAutos, setContinueAutos] = useState(true);
   const [thirdA, setThirdA] = useState<3031 | 3036>(3031);
   const [thirdB, setThirdB] = useState<3031 | 3036>(3036);
@@ -47,6 +53,9 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showLog, setShowLog] = useState(false);
+  const workerRef = useRef<Worker | null>(null);
+  const requestIdRef = useRef(0);
+  const cohortRef = useRef<{ key: string; payload: any } | null>(null);
 
   const buildA = useMemo(
     () => ({ name: itemNames[thirdA], itemIds: [6672, 3085, 3006, thirdA] }),
@@ -57,33 +66,63 @@ export default function Home() {
     [thirdB],
   );
 
-  async function run() {
+  useEffect(() => {
+    const worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    workerRef.current = worker;
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+    };
+  }, []);
+
+  async function run(selectedOverride?: string) {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/simulate", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      const cohort = await loadCohort();
+      const targets = cohort.dataset.targets as Target[];
+      if (!targets.length) throw new Error("No target snapshots matched these filters.");
+      const request: WorkerSimulationRequest = {
+        id: ++requestIdRef.current,
+        base: {
           level,
-          durationSeconds: duration,
-          targetMode,
-          region,
-          rank,
-          phase,
           ranks,
-          role,
-          targetChampion,
-          continueAutos,
+          durationSeconds: duration,
           actions,
-          manualTarget: manual,
-          buildA,
-          buildB,
-        }),
+          continueAutos,
+          targetMode: "mortal",
+        },
+        buildA,
+        buildB,
+        targets,
+        selectedTargetId: selectedOverride ?? selectedTargetId,
+        metric,
+      };
+      const result = await runWorker(request);
+      setData({
+        patch: "26.18",
+        dataVersion: "16.18.1",
+        engineVersion: "yunara-engine-v1",
+        assumptions: `Level ${level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Kraken + Runaan + boots included.`,
+        warnings: [
+          "Expected crit mode averages crits; it is not a kill probability.",
+          "Yunara E is unsupported for damage, and Runaan's bolts are excluded for this single-target comparison.",
+          "Builds are compared at listed costs, not equal gold.",
+          "Mortal-target mode stops at death; fixed-window applied damage excludes overkill.",
+          "Expected-crit TTK is a first-crossing model, not a kill probability.",
+        ],
+        dataset: { ...cohort.dataset, count: targets.length },
+        builds: { a: buildA, b: buildB },
+        target: result.representative.target,
+        results: {
+          a: result.representative.a,
+          b: result.representative.b,
+          comparison: result.comparison,
+        },
+        breakpoints: result.breakpoints,
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Simulation failed");
-      setData(payload);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Simulation failed");
     } finally {
@@ -91,7 +130,81 @@ export default function Home() {
     }
   }
 
-  // The initial request intentionally uses the seeded defaults; later changes run on demand.
+  async function loadCohort(): Promise<any> {
+    const key = JSON.stringify({ targetMode, region, rank, phase, role, targetChampion, manual });
+    if (cohortRef.current?.key === key) return cohortRef.current.payload;
+    let payload: any;
+    if (targetMode === "manual") {
+      const target = {
+        id: "manual",
+        champion: "Custom target",
+        health: manual.health,
+        armor: manual.armor,
+        magicResist: manual.magicResist,
+        bonusHealth: manual.bonusHealth,
+        level: manual.level,
+        provenance: "fixture",
+        sampleWeight: 1,
+      };
+      payload = {
+        dataset: {
+          targets: [target],
+          provenance: "fixture",
+          phase: "manual target",
+          fallbackLevel: 3,
+          note: "Manual target values supplied by the user; no Riot snapshot claim is made.",
+          count: 1,
+          distinctMatchCount: 0,
+          snapshotCount: 1,
+          availableDistinctMatchCount: 0,
+          availableSnapshotCount: 1,
+          truncated: false,
+          sampleLimitPerMatch: 1,
+          uniqueChampions: [target.champion],
+          uniqueRoles: [],
+          knownRankCount: 0,
+          summary: summarizeTargetValues([target]),
+        },
+      };
+    } else {
+      const response = await fetch("/api/cohort", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ region, rank, phase, role, champion: targetChampion, limit: 1000 }),
+      });
+      payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Cohort retrieval failed");
+    }
+    const targets = payload.dataset.targets as Target[];
+    if (targets.length && !targets.some((target) => target.id === selectedTargetId)) {
+      setSelectedTargetId(targets[Math.floor(targets.length / 2)]!.id);
+    }
+    cohortRef.current = { key, payload };
+    return payload;
+  }
+
+  function runWorker(request: WorkerSimulationRequest): Promise<WorkerSimulationResponse> {
+    const worker = workerRef.current;
+    if (!worker) return Promise.reject(new Error("Simulation worker is unavailable."));
+    return new Promise((resolve, reject) => {
+      const onMessage = (event: MessageEvent<WorkerSimulationResponse>) => {
+        if (event.data.id !== request.id) return;
+        worker.removeEventListener("message", onMessage);
+        worker.removeEventListener("error", onError);
+        resolve(event.data);
+      };
+      const onError = () => {
+        worker.removeEventListener("message", onMessage);
+        worker.removeEventListener("error", onError);
+        reject(new Error("Simulation worker failed."));
+      };
+      worker.addEventListener("message", onMessage);
+      worker.addEventListener("error", onError);
+      worker.postMessage(request);
+    });
+  }
+
+  // The initial request loads one cohort; later build/level changes reuse it in the worker.
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     void run();
@@ -109,11 +222,11 @@ export default function Home() {
   const resultB = data?.results?.b;
   const comparison = data?.results?.comparison;
   const winner =
-    resultA && resultB
-      ? resultA.totalDamage >= resultB.totalDamage
-        ? buildA.name
-        : buildB.name
-      : "—";
+    comparison?.aWins > comparison?.bWins
+      ? buildA.name
+      : comparison?.bWins > comparison?.aWins
+        ? buildB.name
+        : "—";
 
   return (
     <main className="shell">
@@ -278,6 +391,23 @@ export default function Home() {
               s
             </label>
           </div>
+          <label className="field-label">COMPARISON METRIC</label>
+          <div className="segmented metric-toggle">
+            <button
+              className={metric === "damage" ? "selected" : ""}
+              onClick={() => setMetric("damage")}
+            >
+              APPLIED DAMAGE
+            </button>
+            <button className={metric === "ttk" ? "selected" : ""} onClick={() => setMetric("ttk")}>
+              EXPECTED TTK
+            </button>
+          </div>
+          <p className="quiet metric-note">
+            {metric === "ttk"
+              ? "Lower first-crossing time wins; uncensored kills only."
+              : "Mortal targets stop at death; both kills are an applied-damage tie."}
+          </p>
           <button className="run-button" onClick={() => void run()} disabled={loading}>
             <span>{loading ? "CALCULATING…" : "RUN COMPARISON"}</span>
             <b>↗</b>
@@ -294,7 +424,7 @@ export default function Home() {
             <div className="head-meta">
               <span className="target-count">{data?.dataset?.count ?? "—"} targets</span>
               <span>·</span>
-              <span>{duration}s window</span>
+              <span>{metric === "ttk" ? "TTK metric" : `${duration}s window`}</span>
             </div>
           </div>
           {error && <div className="error-banner">{error}</div>}
@@ -388,7 +518,43 @@ export default function Home() {
               {data?.dataset?.provenance === "riot" ? "RIOT SNAPSHOTS" : "FIXTURE / DEMO MODE"}
             </span>
             <span>{data?.dataset?.note ?? "Loading target provenance…"}</span>
+            {data?.dataset && (
+              <span className="quiet">
+                {data.dataset.distinctMatchCount ?? 0} distinct match(es) ·{" "}
+                {data.dataset.snapshotCount ?? data.dataset.count ?? 0} snapshots ·{" "}
+                {data.dataset.uniqueChampions?.length ?? 0} champions
+              </span>
+            )}
+            {data?.dataset?.warning && <span className="warning-text">{data.dataset.warning}</span>}
+            {data?.warnings?.map((warning: string) => (
+              <span className="warning-text" key={warning}>
+                {warning}
+              </span>
+            ))}
             <span className="assumption">{data?.assumptions}</span>
+          </div>
+          <div className="selected-target-bar">
+            <label>
+              <span>SELECTED ACTUAL TARGET TRACE</span>
+              <select
+                value={selectedTargetId}
+                onChange={(event) => {
+                  setSelectedTargetId(event.target.value);
+                  void run(event.target.value);
+                }}
+              >
+                {(data?.dataset?.targets ?? []).map((target: Target) => (
+                  <option value={target.id} key={target.id}>
+                    {target.champion} · {target.role ?? "unknown role"} ·{" "}
+                    {Math.round(target.health)} HP / {Math.round(target.armor)} armor
+                  </option>
+                ))}
+              </select>
+            </label>
+            <small>
+              Headline uses the whole cohort; this panel and trace use one observed vector. A new
+              target selection reuses the cached cohort.
+            </small>
           </div>
           <div className="result-grid">
             <ResultCard
@@ -426,12 +592,17 @@ export default function Home() {
             <div className="win-labels">
               <span>
                 <i className="orange-dot" /> Infinity Edge{" "}
-                <b>{comparison ? `${Math.round(comparison.buildAWinRate * 100)}%` : "—"}</b>
+                <b>{comparison ? `${comparison.aWins} wins` : "—"}</b>
               </span>
               <span>
                 <i className="blue-dot" /> LDR{" "}
-                <b>{comparison ? `${Math.round((1 - comparison.buildAWinRate) * 100)}%` : "—"}</b>
+                <b>{comparison ? `${comparison.bWins} wins` : "—"}</b>
               </span>
+            </div>
+            <div className="outcome-line">
+              {comparison
+                ? `${comparison.ties} ties · ${comparison.censored} censored (both not killed) · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B`
+                : "—"}
             </div>
             <div className="stats-grid">
               <Stat
@@ -441,7 +612,7 @@ export default function Home() {
                     ? `${comparison.medianRelativeDelta > 0 ? "+" : ""}${comparison.medianRelativeDelta}%`
                     : "—"
                 }
-                hint="IE relative to LDR"
+                hint={metric === "ttk" ? "positive = IE faster" : "IE relative to LDR"}
               />
               <Stat
                 label="P25 → P75"
@@ -450,7 +621,7 @@ export default function Home() {
                     ? `${comparison.p25RelativeDelta}% → ${comparison.p75RelativeDelta}%`
                     : "—"
                 }
-                hint="spread across targets"
+                hint={metric === "ttk" ? "uncensored kills only" : "spread across targets"}
               />
               <Stat
                 label="SAMPLE SIZE"
@@ -586,20 +757,30 @@ function ResultCard({
         {result ? result.totalDamage.toLocaleString() : "—"}
         <small>total damage</small>
       </div>
+      <div className="cost-line">Listed build cost: {goldTotal(itemIds).toLocaleString()}g</div>
       <div className="card-stats">
         <span>
           <b>{result ? result.dps.toLocaleString() : "—"}</b> DPS
         </span>
         <span>
-          <b>{result?.ttk ? `${result.ttk}s` : "—"}</b> TTK
+          <b>{result?.ttk !== null && result?.ttk !== undefined ? `${result.ttk}s` : "censored"}</b>{" "}
+          TTK
         </span>
         <span>
           <b>
-            {result ? `${Math.round((result.split.physical / result.totalDamage) * 100)}%` : "—"}
+            {result && result.totalDamage > 0
+              ? `${Math.round((result.split.physical / result.totalDamage) * 100)}%`
+              : "—"}
           </b>{" "}
           physical
         </span>
       </div>
+      {result && (
+        <div className="kill-line">
+          {result.killed ? `Killed at ${result.ttk}s` : "Not killed in window"} · overkill{" "}
+          {result.overkill}
+        </div>
+      )}
       <div className="source-list">
         {result &&
           Object.entries(result.sources)
@@ -614,6 +795,29 @@ function ResultCard({
     </article>
   );
 }
+function goldTotal(itemIds: number[]) {
+  const costs: Record<number, number> = {
+    6672: 3100,
+    3085: 2650,
+    3006: 1100,
+    3031: 3500,
+    3036: 3000,
+  };
+  return itemIds.reduce((total, id) => total + (costs[id] ?? 0), 0);
+}
+
+function summarizeTargetValues(targets: Array<Record<string, unknown>>) {
+  const keys = ["health", "bonusHealth", "armor", "magicResist", "level", "minute"] as const;
+  return Object.fromEntries(
+    keys.map((key) => {
+      const values = targets.map((target) => Number(target[key] ?? 0)).sort((a, b) => a - b);
+      const at = (p: number) =>
+        values[Math.min(values.length - 1, Math.floor((values.length - 1) * p))] ?? 0;
+      return [key, { p25: at(0.25), median: at(0.5), p75: at(0.75) }];
+    }),
+  );
+}
+
 function Stat({ label, value, hint }: { label: string; value: string | number; hint: string }) {
   return (
     <div className="stat">

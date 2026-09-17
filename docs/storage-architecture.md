@@ -33,9 +33,10 @@ The current schema is isolated in [`migrations/001_initial.sql`](../migrations/0
 under `lol_dps`:
 
 - `patches`, `champions`, and `items` hold patch-pinned static data.
-- `matches.raw` holds the original Match-V5 match-details response as JSONB. The original
-  Match-V5 timeline response is **not** retained: it is unpacked into `timeline_snapshots` and
-  `snapshot_items` instead.
+- The pre-archive smoke row has `matches.raw` as the original Match-V5 match-details JSONB, but its
+  original Match-V5 timeline response is **not** retained. It is explicitly `legacy`. New rows keep
+  only an archive pointer in `matches.raw`; the original match **and** timeline responses are gzip
+  archived and verified before extraction.
 - During that extraction, the MVP keeps each frame timestamp, participant level/gold, selected
   `championStats` fields (`healthMax`, armor, MR, attack damage/speed, and AP when present), and
   the reconstructed item IDs at each snapshot. It replays only the item-event fields needed for
@@ -44,8 +45,8 @@ under `lol_dps`:
   such as `frameInterval` are discarded after extraction. Scenario rows retain pointers to the
   anchor and target snapshots, not the source timeline itself.
 - `participants` holds match/champion/team/role metadata and currently also has a raw PUUID
-  column. PUUIDs are not needed by the UI and should not be copied into future client-facing
-  packs.
+  column for private provenance. PUUIDs are not returned by the UI and are not copied into client
+  cohort packs.
 - `ingestion_runs` tracks the bounded Riot job; `scenario_samples` points an anchor participant
   and timestamp at an enemy target snapshot.
 
@@ -59,36 +60,39 @@ The ingestion and serving paths are:
   and completed-item classification.
 - [`src/data/realistic-targets.ts`](../src/data/realistic-targets.ts) queries the exact Yunara
   third-item phase, then bot-carry and minute-window fallbacks.
-- [`src/app/api/simulate/route.ts`](../src/app/api/simulate/route.ts) queries up to 2,000 targets,
-  simulates both builds, and returns `SimulationResult` event logs for the representative target
-  **and every row in the comparison**.
-- [`src/domain/simulator.ts`](../src/domain/simulator.ts) is pure TypeScript and is the correct
-  boundary for a future worker. It currently preserves full event logs in each comparison row.
+- [`src/app/api/cohort/route.ts`](../src/app/api/cohort/route.ts) retrieves a deterministic,
+  sanitized, match-balanced cohort with byte/count bounds and weighted summaries.
+- [`src/workers/simulation.worker.ts`](../src/workers/simulation.worker.ts) runs summary-only A/B
+  simulation in a module worker and emits a detailed trace only for the selected actual target.
+- [`src/domain/simulator.ts`](../src/domain/simulator.ts) is pure TypeScript and owns mortal-target
+  capping, overkill, TTK censoring, ties, and weighted outcome aggregation.
 
-The latter two points are the main next implementation seam: fetch a cohort once and return
-summary rows by default; generate a detailed event log only for an explicitly selected target.
+The shipped UI fetches a cohort once per target-filter/manual-target change. Build, level, action,
+duration, metric, and selected-target changes reuse the cached cohort; raw archives are never on the
+slider path.
 
 ## Verified Railway state (read-only)
 
 The Railway CLI is linked to project `rift-delta`, workspace `Lab4Code`, environment `production`.
 Current metadata shows:
 
-- one service, a persistent Postgres deployment, currently running;
-- no application/web service;
-- no Railway bucket (`railway bucket list --json` is empty);
+- one persistent Postgres deployment, currently running, plus one lean `web` service;
+- one private Railway bucket `rift-delta-archive` in `ams`;
 - the Postgres deployment manifest still has `sleepApplication: false`;
+- the web service currently has no sleep change applied; a future new deployment can be tested
+  separately without putting Postgres into an unverified sleep mode;
 - a 5,000 MB Postgres volume is attached. The status view's `currentSizeMB` is not a billing
   measurement, so capacity must not be reported as used bytes.
 
-The database contains the prior bounded smoke corpus: patch 26.18 / Data Dragon 16.18.1, one
-match, 230 timeline snapshots, 1,104 snapshot-item rows, and 8 scenario samples (4
-`bot-carry-third-item` and 4 `minute-window`). The only ingestion run is `stopped` after 10
-players/matches were examined and 1 match was persisted. No broad live ingestion was started.
+The database now contains the prior legacy smoke row plus the bounded live corpus. Exact counts and
+verified archive bytes are recorded in `docs/prototype-validation.md`; raw identifiers are omitted
+from this document. Ingestion is a one-shot command and no recurring job is installed.
 
 ## Measurements from the current database
 
-These are read-only measurements taken on 2026-09-17. They are **one-match smoke-corpus
-measurements, not production sizing or latency guarantees**.
+These are read-only measurements taken on 2026-09-17 from the **pre-archive one-match smoke
+corpus**. They are not production sizing or latency guarantees; the reconstructed archive values do
+not describe a complete original Riot match-plus-timeline response.
 
 | Measurement                                                                 |        Value |
 | --------------------------------------------------------------------------- | -----------: |

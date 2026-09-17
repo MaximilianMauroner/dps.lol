@@ -16,6 +16,70 @@
 * {
   box-sizing: border-box;
 }
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at 20% 0%, #17243a 0, transparent 42%), #080b12;
+}
+
+.login-card {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 32px;
+  border: 1px solid #283449;
+  border-radius: 18px;
+  background: rgba(16, 21, 32, 0.96);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: 42px;
+}
+
+.login-card p,
+.login-card small {
+  color: #98a5bb;
+  line-height: 1.5;
+}
+
+.login-card label {
+  display: grid;
+  gap: 8px;
+  color: #8f9db3;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+.login-card input {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid #344157;
+  border-radius: 9px;
+  color: #eef3fb;
+  background: #0d121d;
+}
+
+.warning-text {
+  color: #f3bd6d;
+}
+
+.cost-line {
+  margin-top: -10px;
+  color: #8f9db3;
+  font-size: 12px;
+}
+.metric-toggle {
+  grid-template-columns: 1fr 1fr;
+}
+.metric-note {
+  margin: 7px 0 0;
+  line-height: 1.4;
+}
 html,
 body {
   margin: 0;
@@ -523,6 +587,38 @@ select,
   margin-left: auto;
   color: #566871;
 }
+.provenance .warning-text {
+  color: #e7b36f;
+}
+.selected-target-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.7fr);
+  align-items: end;
+  gap: 14px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid #293944;
+  border-radius: 4px;
+  background: #101820;
+}
+.selected-target-bar label {
+  display: grid;
+  gap: 6px;
+  color: #74858d;
+  font:
+    9px "DM Mono",
+    monospace;
+  letter-spacing: 0.1em;
+}
+.selected-target-bar select {
+  font:
+    11px "DM Mono",
+    monospace;
+}
+.selected-target-bar small {
+  color: #74858d;
+  line-height: 1.45;
+}
 .riot-badge,
 .fixture-badge {
   font:
@@ -571,6 +667,14 @@ select,
 .result-card.winner {
   border-color: #8b5834;
   box-shadow: inset 0 1px #b87948;
+}
+.kill-line,
+.outcome-line {
+  margin-top: 10px;
+  color: #a0afb5;
+  font:
+    10px "DM Mono",
+    monospace;
 }
 .result-card-head {
   display: flex;
@@ -1047,5 +1151,8 @@ footer {
     align-items: start;
     flex-wrap: wrap;
     padding: 8px 0;
+  }
+  .selected-target-bar {
+    grid-template-columns: 1fr;
   }
 }

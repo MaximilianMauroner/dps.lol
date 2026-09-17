@@ -25,6 +25,27 @@ export function quantile(values: number[], p: number): number {
   return sorted[low]! + (sorted[low + 1] ?? sorted[low]!) * fraction - sorted[low]! * fraction;
 }
 
+export function weightedQuantile(
+  values: Array<{ value: number; weight: number }>,
+  p: number,
+): number {
+  if (values.length === 0) return 0;
+  const sorted = values
+    .filter(
+      (entry) => Number.isFinite(entry.value) && Number.isFinite(entry.weight) && entry.weight > 0,
+    )
+    .sort((a, b) => a.value - b.value);
+  if (sorted.length === 0) return 0;
+  const total = sorted.reduce((sum, entry) => sum + entry.weight, 0);
+  const target = Math.max(0, Math.min(1, p)) * total;
+  let running = 0;
+  for (const entry of sorted) {
+    running += entry.weight;
+    if (running >= target) return entry.value;
+  }
+  return sorted[sorted.length - 1]!.value;
+}
+
 export function round(value: number, digits = 1): number {
   const scale = 10 ** digits;
   return Math.round(value * scale) / scale;

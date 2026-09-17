@@ -22,9 +22,15 @@ export interface Target {
   armor: number;
   magicResist: number;
   bonusHealth: number;
+  bonusHealthStatus?: "derived" | "missing-static" | "clamped" | "unknown";
   level: number;
   minute?: number;
   itemIds?: number[];
+  sampleWeight?: number;
+  /** Short opaque match key used only for match-balanced aggregation. */
+  sourceMatchKey?: string;
+  anchorEventTimestampMs?: number;
+  anchorFrameDistanceMs?: number;
   provenance?: "fixture" | "riot";
 }
 
@@ -36,6 +42,8 @@ export interface SimulationInput {
   durationSeconds: number;
   actions: readonly ActionKind[];
   continueAutos: boolean;
+  /** Mortal targets are the default. `uncapped` is an explicit training-dummy mode. */
+  targetMode?: "mortal" | "uncapped";
 }
 
 export interface DamageEvent {
@@ -45,7 +53,11 @@ export interface DamageEvent {
   raw: number;
   resistance: number;
   multiplier: number;
+  /** Damage attempted after mitigation and item modifiers, before target-health capping. */
+  attemptedFinal: number;
   final: number;
+  /** Overkill is reported separately and is never counted in totalDamage. */
+  overkill: number;
   targetHealthAfter: number;
   notes: string[];
 }
@@ -58,6 +70,11 @@ export interface SimulationResult {
   split: Record<DamageType, number>;
   sources: Record<string, number>;
   events: DamageEvent[];
+  killed: boolean;
+  /** True when the target was not killed before the configured window (mortal mode). */
+  censored: boolean;
+  overkill: number;
+  targetMode: "mortal" | "uncapped";
   warnings: string[];
   stats: {
     attackDamage: number;
@@ -69,11 +86,20 @@ export interface SimulationResult {
 }
 
 export interface SampleComparison {
+  metric: "damage" | "ttk";
   count: number;
+  distinctMatchCount: number;
+  totalWeight: number;
   buildAWinRate: number;
   medianRelativeDelta: number;
   p25RelativeDelta: number;
   p75RelativeDelta: number;
+  aWins: number;
+  bWins: number;
+  ties: number;
+  censored: number;
+  aNotKilled: number;
+  bNotKilled: number;
   byRole: Array<{ role: string; count: number; buildAWinRate: number }>;
   byChampion: Array<{ champion: string; count: number; buildAWinRate: number }>;
   rows: Array<{
@@ -81,5 +107,7 @@ export interface SampleComparison {
     a: SimulationResult;
     b: SimulationResult;
     relativeDelta: number;
+    metricDelta: number | null;
+    outcome: "a" | "b" | "tie" | "censored";
   }>;
 }

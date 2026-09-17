@@ -7,9 +7,20 @@ const BASE_AD = 55;
 const AD_GROWTH = 3;
 const BASE_AS = 0.65;
 const AS_GROWTH = 0.02;
-const BASE_CRIT_DAMAGE = 1.75;
+// Patch 26.18 inherits the global 2.00x critical-strike baseline introduced in 26.1.
+const BASE_CRIT_DAMAGE = 2;
+const Q_DURATION_SECONDS = 5;
+const R_DURATION_SECONDS = 15;
+const ABILITY_CAST_SECONDS = { Q: 0.25, W: 0.5, R: 0.25 } as const;
+const SCRIPTED_ATTACK_LOCK_SECONDS = 0.25;
 
-type State = { qUntil: number; rUntil: number; attacks: number; targetHealth: number };
+type State = {
+  qUntil: number;
+  rUntil: number;
+  attacks: number;
+  targetHealth: number;
+  nextAttackReady: number;
+};
 
 function qMagicOnHit(rank: number, ap: number): number {
   return [0, 5, 10, 15, 20, 25][rank]! + 0.2 * ap;
@@ -24,6 +35,7 @@ export const yunara: ChampionPlugin = {
   slug: "yunara",
   patch: "26.18",
   simulate(input): SimulationResult {
+    const targetMode = input.targetMode ?? "mortal";
     const items = itemStats(input.build.itemIds);
     const totalAd = BASE_AD + growthAtLevel(AD_GROWTH, input.level) + items.attackDamage;
     const critChance = Math.min(1, items.critChance);
@@ -34,13 +46,28 @@ export const yunara: ChampionPlugin = {
     const abilityPower = 0;
     const targetAmp = hasLdr ? giantSlayerMultiplier(input.target.bonusHealth) : 1;
     const effectiveArmor = applyPercentArmorPenetration(input.target.armor, items.armorPenPercent);
-    const state: State = { qUntil: -1, rUntil: -1, attacks: 0, targetHealth: input.target.health };
+    const state: State = {
+      qUntil: -1,
+      rUntil: -1,
+      attacks: 0,
+      targetHealth: input.target.health,
+      nextAttackReady: 0,
+    };
     const events: DamageEvent[] = [];
     const warnings = [
       "Expected crit mode averages crits; individual attacks are not RNG rolls.",
+      "Mortal-target mode stops at first death; damage shown excludes overkill.",
+      "AA timing uses attack-readiness intervals and a 0.25s scripted action lock; champion windups/resets are not modeled.",
       "E is mobility-only and intentionally contributes no damage.",
     ];
+    if (targetMode === "uncapped") {
+      warnings.push(
+        "Training-dummy mode is explicitly uncapped: the target never stops receiving events; it is not a time-to-kill result.",
+      );
+    }
     if (hasRunaans) warnings.push("Runaan's bolts are excluded from single-target damage.");
+
+    const isDead = () => targetMode === "mortal" && state.targetHealth <= 1e-9;
 
     const add = (
       time: number,
@@ -49,34 +76,47 @@ export const yunara: ChampionPlugin = {
       raw: number,
       notes: string[] = [],
     ) => {
-      if (time > input.durationSeconds || raw <= 0) return;
+      if (time > input.durationSeconds || raw <= 0 || isDead()) return false;
       const resistance =
         type === "physical" ? effectiveArmor : type === "magic" ? input.target.magicResist : 0;
-      const multiplier = (type === "true" ? 1 : undefined) ?? 1;
-      let final = type === "true" ? raw : mitigate(raw, resistance);
-      final *= targetAmp;
-      if (hasLdr) notes = [...notes, `Giant Slayer ×${round(targetAmp, 3)}`];
+      const attemptedFinal = (type === "true" ? raw : mitigate(raw, resistance)) * targetAmp;
+      const remaining = Math.max(0, state.targetHealth);
+      const final = targetMode === "mortal" ? Math.min(attemptedFinal, remaining) : attemptedFinal;
+      const overkill = targetMode === "mortal" ? Math.max(0, attemptedFinal - final) : 0;
       state.targetHealth -= final;
+      if (hasLdr) notes = [...notes, `Giant Slayer ×${round(targetAmp, 3)}`];
       events.push({
         time: round(time, 3),
         source,
         type,
         raw: round(raw, 3),
         resistance: round(resistance, 2),
-        multiplier: round(multiplier * targetAmp, 3),
+        multiplier: round(targetAmp, 3),
+        attemptedFinal: round(attemptedFinal, 3),
         final: round(final, 3),
-        targetHealthAfter: round(state.targetHealth, 2),
+        overkill: round(overkill, 3),
+        targetHealthAfter: round(Math.max(0, state.targetHealth), 2),
         notes,
       });
+      return final > 0 || overkill > 0;
+    };
+
+    const attackSpeedAt = (time: number) => {
+      const qBonus = time < state.qUntil ? qAttackSpeed(input.ranks.q) : 0;
+      return Math.min(
+        2.5,
+        BASE_AS * (1 + growthAtLevel(AS_GROWTH, input.level) + items.attackSpeed + qBonus),
+      );
     };
 
     const attack = (time: number) => {
+      if (isDead() || time > input.durationSeconds) return false;
       state.attacks += 1;
       const expectedPhysical = totalAd * (1 + critChance * (critDamage - 1));
       add(time, "Basic attack", "physical", expectedPhysical, [
         `${Math.round(critChance * 100)}% expected crit at ${Math.round(critDamage * 100)}%`,
       ]);
-      // Passive is 10% of the pre-mitigation physical critical strike, weighted by crit chance.
+      // Passive is 10% of the pre-mitigation critical strike, weighted by expected crit chance.
       add(time, "Vow of the First Lands", "magic", critChance * totalAd * critDamage * 0.1, [
         "10% of critical strike pre-mitigation damage",
       ]);
@@ -87,7 +127,7 @@ export const yunara: ChampionPlugin = {
         qMagicOnHit(input.ranks.q, abilityPower),
         ["Passive on-hit; 5–25 + 20% AP"],
       );
-      if (time <= state.qUntil) {
+      if (time < state.qUntil) {
         add(
           time,
           "Cultivation of Spirit — active",
@@ -96,10 +136,10 @@ export const yunara: ChampionPlugin = {
           ["Active adds the same magic on-hit; secondary spread excluded"],
         );
       }
-      if (hasKraken && state.attacks % 3 === 0) {
+      if (hasKraken && state.attacks % 3 === 0 && !isDead()) {
         const missingFraction = Math.max(
           0,
-          Math.min(1, 1 - state.targetHealth / input.target.health),
+          Math.min(1, 1 - Math.max(0, state.targetHealth) / input.target.health),
         );
         const missingHealthAmp = 1 + 0.75 * missingFraction;
         add(
@@ -113,20 +153,22 @@ export const yunara: ChampionPlugin = {
           ],
         );
       }
+      state.nextAttackReady = time + 1 / attackSpeedAt(time);
+      return true;
     };
 
     let cursor = 0;
     for (const action of input.actions) {
-      if (cursor > input.durationSeconds) break;
+      if (cursor > input.durationSeconds || isDead()) break;
       if (action === "R") {
-        state.rUntil = cursor + 15;
-        state.qUntil = cursor + 15;
-        cursor += 0.25;
+        state.rUntil = cursor + R_DURATION_SECONDS;
+        state.qUntil = Math.max(state.qUntil, cursor + R_DURATION_SECONDS);
+        cursor += ABILITY_CAST_SECONDS.R;
       } else if (action === "Q") {
-        state.qUntil = Math.max(state.qUntil, cursor + 6);
-        cursor += 0.25;
+        state.qUntil = Math.max(state.qUntil, cursor + Q_DURATION_SECONDS);
+        cursor += ABILITY_CAST_SECONDS.Q;
       } else if (action === "W") {
-        if (cursor <= state.rUntil) {
+        if (cursor < state.rUntil) {
           const base = [0, 160, 320, 480][input.ranks.r]!;
           add(
             cursor,
@@ -143,37 +185,35 @@ export const yunara: ChampionPlugin = {
             "One representative 60% lingering tick",
           ]);
         }
-        cursor += 0.5;
+        cursor += ABILITY_CAST_SECONDS.W;
       } else {
-        attack(cursor);
-        cursor += 0.25;
+        const attackTime = Math.max(cursor, state.nextAttackReady);
+        if (attack(attackTime)) cursor = attackTime + SCRIPTED_ATTACK_LOCK_SECONDS;
       }
     }
 
-    if (input.continueAutos) {
-      let next = cursor;
-      while (next <= input.durationSeconds + 1e-9) {
-        const qBonus = next <= state.qUntil ? qAttackSpeed(input.ranks.q) : 0;
-        const attackSpeed = Math.min(
-          2.5,
-          BASE_AS * (1 + growthAtLevel(AS_GROWTH, input.level) + items.attackSpeed + qBonus),
-        );
+    if (input.continueAutos && !isDead()) {
+      let next = Math.max(cursor, state.nextAttackReady);
+      while (next <= input.durationSeconds + 1e-9 && !isDead()) {
         attack(next);
-        next += 1 / attackSpeed;
+        next = state.nextAttackReady;
       }
     }
 
     const split = { physical: 0, magic: 0, true: 0 };
     const sources: Record<string, number> = {};
     let ttk: number | null = null;
+    let overkill = 0;
     for (const event of events) {
       split[event.type] += event.final;
       sources[event.source] = (sources[event.source] ?? 0) + event.final;
-      if (ttk === null && event.targetHealthAfter <= 0) ttk = event.time;
+      overkill += event.overkill;
+      if (ttk === null && event.targetHealthAfter <= 0 && targetMode === "mortal") ttk = event.time;
     }
     const totalDamage = Object.values(split).reduce((sum, value) => sum + value, 0);
     const initialQ =
       input.actions[0] === "Q" || input.actions[0] === "R" ? qAttackSpeed(input.ranks.q) : 0;
+    const killed = targetMode === "mortal" && state.targetHealth <= 1e-9;
     return {
       build: input.build.name,
       totalDamage: round(totalDamage),
@@ -185,6 +225,10 @@ export const yunara: ChampionPlugin = {
       >,
       sources: Object.fromEntries(Object.entries(sources).map(([k, v]) => [k, round(v)])),
       events,
+      killed,
+      censored: targetMode === "mortal" && !killed,
+      overkill: round(overkill),
+      targetMode,
       warnings,
       stats: {
         attackDamage: round(totalAd),
