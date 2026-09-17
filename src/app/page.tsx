@@ -1064,7 +1064,7 @@ export default function Home() {
                     <span>{key.toUpperCase()}</span>
                     <div className="stepper">
                       <button
-                        aria-label={`Decrease ${key}`}
+                        aria-label={`Decrease ${key.toUpperCase()}`}
                         disabled={ranks[key] <= skillBounds(level)[key].min}
                         onClick={() => adjustRank(key, -1)}
                       >
@@ -1076,7 +1076,7 @@ export default function Home() {
                         {ranks[key]}
                       </strong>
                       <button
-                        aria-label={`Increase ${key}`}
+                        aria-label={`Increase ${key.toUpperCase()}`}
                         disabled={ranks[key] >= skillBounds(level)[key].max}
                         onClick={() => adjustRank(key, 1)}
                       >
