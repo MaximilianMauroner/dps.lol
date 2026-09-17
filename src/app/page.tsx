@@ -307,7 +307,7 @@ export default function Home() {
                 >
                   <option value="yunara-third-item">Yunara third item</option>
                   <option value="bot-carry-third-item">Bot carry fallback</option>
-                  <option value="minute-window-25">Around minute 25</option>
+                  <option value="minute-window">Around minute 25</option>
                 </select>
                 <select value={role} onChange={(event) => setRole(event.target.value)}>
                   <option value="ALL">All roles</option>

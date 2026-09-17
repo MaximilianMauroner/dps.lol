@@ -48,7 +48,7 @@ export async function getRealisticTargets(filters?: {
   const candidates = [
     { phase: "yunara-third-item", fallback: 0 },
     { phase: "bot-carry-third-item", fallback: 1 },
-    { phase: "minute-window-25", fallback: 2 },
+    { phase: "minute-window", fallback: 2 },
   ];
   if (phase && candidates.some((candidate) => candidate.phase === phase)) {
     candidates.sort((a, b) => Number(a.phase !== phase) - Number(b.phase !== phase));

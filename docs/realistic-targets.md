@@ -20,7 +20,7 @@ Events are replayed in timestamp order. Purchases append an item, sales and dest
 
 ## Third-item timing
 
-During ingestion, a Yunara participant is the preferred anchor. The first frame where her reconstructed inventory contains three completed legendaries is the “Yunara third-item” timestamp; all enemy participants’ snapshots at that frame become scenario samples. If there are no exact Yunara anchors, the same logic uses bottom/carry participants and marks fallback level 1. If the database has no matching rows, the app reports no live sample rather than labeling fixture values as Riot data. The UI displays phase, fallback level, sample count, and provenance.
+During ingestion, a Yunara participant is the preferred anchor. The first frame where her reconstructed inventory contains three completed legendaries is the “Yunara third-item” timestamp; all enemy participants’ snapshots at that frame become scenario samples. If there are no exact Yunara anchors, the same logic uses bottom/carry participants and marks fallback level 1. Every ingested match also gets a `minute-window` anchor at the nearest frame to `SCENARIO_MINUTE` (25 by default), which is fallback level 2 when item timing is unavailable. If the database has no matching rows, the app reports no live sample rather than labeling fixture values as Riot data. The UI displays phase, fallback level, sample count, and provenance.
 
 Filters currently include platform region, enemy role, and target champion. A target distribution is summarized with p25, median, and p75 for HP, estimated bonus HP, armor, MR, level, and game minute. Results also include per-role win rates when there are at least two observations in that role.
 

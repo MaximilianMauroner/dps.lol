@@ -48,7 +48,7 @@ bun scripts/ingest.ts --region EUW1 --routing EUROPE --tiers MASTER --players 10
 
 The ingestion path seeds Challenger/Grandmaster/Master ranked players via League-V4, resolves missing PUUIDs through Summoner-V4, deduplicates Match-V5 IDs, fetches details and timelines, retries 429/5xx responses, and persists progress in `lol_dps.ingestion_runs`. It filters to game versions beginning with `16.18` for patch 26.18. A future patch should change `LOL_PATCH`, `DDRAGON_VERSION`, and the release date in the sync command/config rather than silently using “latest”.
 
-Timeline participant frames are stored with actual `healthMax`, armor, MR, attack stats, level, gold, and a reconstructed inventory. Scenario samples are anchored to Yunara’s first observed third completed legendary item and point to enemy snapshots at that same frame. The query falls back to bot-lane carry timing and then reports no-sample status rather than fabricating live rows. See [docs/realistic-targets.md](docs/realistic-targets.md).
+Timeline participant frames are stored with actual `healthMax`, armor, MR, attack stats, level, gold, and a reconstructed inventory. Scenario samples are anchored to Yunara’s first observed third completed legendary item and point to enemy snapshots at that same frame. The query falls back to bot-lane carry timing, then a configurable `SCENARIO_MINUTE` window (25 by default), and finally reports no-sample status rather than fabricating live rows. See [docs/realistic-targets.md](docs/realistic-targets.md).
 
 ## Architecture
 

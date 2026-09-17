@@ -13,6 +13,7 @@ const routing = arg("--routing") ?? "EUROPE";
 const tiers = (arg("--tiers") ?? "CHALLENGER,GRANDMASTER,MASTER").split(",");
 const maxPlayers = Number(arg("--players") ?? process.env.INGEST_MAX_PLAYERS ?? 100);
 const maxMatches = Number(arg("--matches") ?? process.env.INGEST_MAX_MATCHES ?? 100);
+const scenarioMinute = Number(process.env.SCENARIO_MINUTE ?? 25);
 const gameVersionPrefix = process.env.DDRAGON_VERSION?.replace(/\.1$/, "") ?? "16.18";
 
 if (!hasDatabase())
@@ -345,6 +346,43 @@ async function createScenarioSamples(
           targetSnapshot,
         ],
       );
+    }
+  }
+  const minuteAnchor =
+    participants.find((participant) =>
+      ["BOTTOM", "CARRY", "BOT"].includes(
+        participant.teamPosition || participant.individualPosition,
+      ),
+    ) ?? participants[0];
+  if (minuteAnchor) {
+    const id = Number(minuteAnchor.participantId);
+    const frames = anchorFrames.get(id) ?? [];
+    const anchorFrame = frames.reduce<{ timestamp: number; inventory: number[] } | null>(
+      (closest, frame) =>
+        !closest ||
+        Math.abs(frame.timestamp - scenarioMinute * 60_000) <
+          Math.abs(closest.timestamp - scenarioMinute * 60_000)
+          ? frame
+          : closest,
+      null,
+    );
+    if (anchorFrame) {
+      const enemies = (enemyByTeam.get(Number(minuteAnchor.teamId)) ?? []).filter(
+        (enemyId) => enemyId !== id,
+      );
+      for (const enemyId of enemies) {
+        const targetSnapshot = snapshotIds.get(`${enemyId}:${anchorFrame.timestamp}`);
+        if (!targetSnapshot) continue;
+        const key = `minute-window:${id}:${targetSnapshot}`;
+        if (used.has(key)) continue;
+        used.add(key);
+        await client.query(
+          `INSERT INTO lol_dps.scenario_samples
+           (patch,platform_region,phase,fallback_level,anchor_match_id,anchor_participant_id,anchor_timestamp_ms,target_snapshot_id)
+           VALUES ($1,$2,'minute-window',2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+          [patch, platform, input.matchId, id, anchorFrame.timestamp, targetSnapshot],
+        );
+      }
     }
   }
 }
