@@ -27,6 +27,7 @@ export async function POST(request: Request) {
       r: boundedInt(body.ranks?.r, 1, 3, 2, "R rank"),
     };
     const actions = normalizeActions(body.actions);
+    const yunTalStacks = boundedInt(body.yunTalStacks, 0, 125, 0, "yunTalStacks");
     const buildA = normalizeBuild(body.buildA, DEFAULT_A);
     const buildB = normalizeBuild(body.buildB, DEFAULT_B);
     const dataset = await getRealisticTargets({
@@ -99,6 +100,7 @@ export async function POST(request: Request) {
       durationSeconds: duration,
       actions,
       continueAutos: body.continueAutos !== false,
+      yunTalStacks,
       targetMode,
     };
     const requestedTarget =
@@ -122,7 +124,7 @@ export async function POST(request: Request) {
       patch: "26.18",
       dataVersion: "16.18.1",
       engineVersion: "yunara-engine-v1",
-      assumptions: `Level ${base.level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Kraken + Runaan + boots included.`,
+      assumptions: `Level ${base.level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Yun Tal starts at ${yunTalStacks}/125 ranged stacks.`,
       warnings: [
         "Expected crit mode averages crits; it is not a kill probability.",
         targetMode === "mortal"

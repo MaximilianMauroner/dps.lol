@@ -13,6 +13,11 @@ const Q_DURATION_SECONDS = 5;
 const R_DURATION_SECONDS = 15;
 const ABILITY_CAST_SECONDS = { Q: 0.25, W: 0.5, R: 0.25 } as const;
 const SCRIPTED_ATTACK_LOCK_SECONDS = 0.25;
+const YUN_TAL_MAX_STACKS = 125;
+const YUN_TAL_CRIT_PER_STACK = 0.002;
+const YUN_TAL_FLURRY_ATTACK_SPEED = 0.3;
+const YUN_TAL_FLURRY_DURATION_SECONDS = 6;
+const YUN_TAL_FLURRY_COOLDOWN_SECONDS = 30;
 
 type State = {
   qUntil: number;
@@ -20,6 +25,10 @@ type State = {
   attacks: number;
   targetHealth: number;
   nextAttackReady: number;
+  yunTalStacks: number;
+  flurryUntil: number;
+  flurryReadyAt: number;
+  flurryActivations: number;
 };
 
 function qMagicOnHit(rank: number, ap: number): number {
@@ -38,11 +47,12 @@ export const yunara: ChampionPlugin = {
     const targetMode = input.targetMode ?? "mortal";
     const items = itemStats(input.build.itemIds);
     const totalAd = BASE_AD + growthAtLevel(AD_GROWTH, input.level) + items.attackDamage;
-    const critChance = Math.min(1, items.critChance);
     const critDamage = BASE_CRIT_DAMAGE + items.critDamage;
     const hasLdr = input.build.itemIds.includes(3036);
     const hasKraken = input.build.itemIds.includes(6672);
     const hasRunaans = input.build.itemIds.includes(3085);
+    const hasYunTal = input.build.itemIds.includes(3032);
+    const yunTalStacksStart = clampYunTalStacks(input.yunTalStacks);
     const abilityPower = 0;
     const targetAmp = hasLdr ? giantSlayerMultiplier(input.target.bonusHealth) : 1;
     const effectiveArmor = applyPercentArmorPenetration(input.target.armor, items.armorPenPercent);
@@ -52,6 +62,10 @@ export const yunara: ChampionPlugin = {
       attacks: 0,
       targetHealth: input.target.health,
       nextAttackReady: 0,
+      yunTalStacks: yunTalStacksStart,
+      flurryUntil: -1,
+      flurryReadyAt: 0,
+      flurryActivations: 0,
     };
     const events: DamageEvent[] = [];
     const warnings = [
@@ -60,6 +74,16 @@ export const yunara: ChampionPlugin = {
       "AA timing uses attack-readiness intervals and a 0.25s scripted action lock; champion windups/resets are not modeled.",
       "E is mobility-only and intentionally contributes no damage.",
     ];
+    if (hasYunTal) {
+      warnings.push(
+        "Yun Tal Practice Makes Lethal starts at " +
+          yunTalStacksStart +
+          "/125 ranged stacks; Match-V5 frames do not expose crit chance, so this is an explicit assumption.",
+      );
+      warnings.push(
+        "Yun Tal Flurry is modeled at +30% bonus AS for 6s; its cooldown uses expected 1s + crit-chance on-hit reduction rather than sampled crit rolls.",
+      );
+    }
     if (targetMode === "uncapped") {
       warnings.push(
         "Training-dummy mode is explicitly uncapped: the target never stops receiving events; it is not a time-to-kill result.",
@@ -71,6 +95,10 @@ export const yunara: ChampionPlugin = {
     }
 
     const isDead = () => targetMode === "mortal" && state.targetHealth <= 1e-9;
+    const yunTalCritChance = () =>
+      hasYunTal
+        ? Math.min(1, items.critChance + state.yunTalStacks * YUN_TAL_CRIT_PER_STACK)
+        : Math.min(1, items.critChance);
 
     const add = (
       time: number,
@@ -106,21 +134,35 @@ export const yunara: ChampionPlugin = {
 
     const attackSpeedAt = (time: number) => {
       const qBonus = time < state.qUntil ? qAttackSpeed(input.ranks.q) : 0;
+      const flurryBonus = hasYunTal && time < state.flurryUntil ? YUN_TAL_FLURRY_ATTACK_SPEED : 0;
       return Math.min(
         2.5,
-        BASE_AS * (1 + growthAtLevel(AS_GROWTH, input.level) + items.attackSpeed + qBonus),
+        BASE_AS *
+          (1 + growthAtLevel(AS_GROWTH, input.level) + items.attackSpeed + qBonus + flurryBonus),
       );
     };
 
     const attack = (time: number) => {
       if (isDead() || time > input.durationSeconds) return false;
+      const attackCritChance = yunTalCritChance();
+      if (hasYunTal && time >= state.flurryReadyAt - 1e-9) {
+        state.flurryUntil = time + YUN_TAL_FLURRY_DURATION_SECONDS;
+        state.flurryReadyAt = time + YUN_TAL_FLURRY_COOLDOWN_SECONDS;
+        state.flurryActivations += 1;
+      }
       state.attacks += 1;
-      const expectedPhysical = totalAd * (1 + critChance * (critDamage - 1));
+      const expectedPhysical = totalAd * (1 + attackCritChance * (critDamage - 1));
       add(time, "Basic attack", "physical", expectedPhysical, [
-        `${Math.round(critChance * 100)}% expected crit at ${Math.round(critDamage * 100)}%`,
+        `${Math.round(attackCritChance * 100)}% expected crit at ${Math.round(critDamage * 100)}%`,
+        ...(hasYunTal
+          ? [
+              `Yun Tal stacks ${state.yunTalStacks}/${YUN_TAL_MAX_STACKS}`,
+              ...(time < state.flurryUntil ? ["Flurry +30% bonus AS active"] : []),
+            ]
+          : []),
       ]);
       // Passive is 10% of the pre-mitigation critical strike, weighted by expected crit chance.
-      add(time, "Vow of the First Lands", "magic", critChance * totalAd * critDamage * 0.1, [
+      add(time, "Vow of the First Lands", "magic", attackCritChance * totalAd * critDamage * 0.1, [
         "10% of critical strike pre-mitigation damage",
       ]);
       add(
@@ -155,6 +197,12 @@ export const yunara: ChampionPlugin = {
             "80% ranged modifier",
           ],
         );
+      }
+      if (hasYunTal) {
+        state.yunTalStacks = Math.min(YUN_TAL_MAX_STACKS, state.yunTalStacks + 1);
+        if (state.flurryReadyAt > time) {
+          state.flurryReadyAt = Math.max(time, state.flurryReadyAt - (1 + attackCritChance));
+        }
       }
       state.nextAttackReady = time + 1 / attackSpeedAt(time);
       return true;
@@ -217,6 +265,10 @@ export const yunara: ChampionPlugin = {
     const initialQ =
       input.actions[0] === "Q" || input.actions[0] === "R" ? qAttackSpeed(input.ranks.q) : 0;
     const killed = targetMode === "mortal" && state.targetHealth <= 1e-9;
+    const yunTalCritChanceStart = hasYunTal
+      ? Math.min(1, items.critChance + yunTalStacksStart * YUN_TAL_CRIT_PER_STACK)
+      : Math.min(1, items.critChance);
+    const yunTalCritChanceEnd = yunTalCritChance();
     return {
       build: input.build.name,
       totalDamage: round(totalDamage),
@@ -242,10 +294,19 @@ export const yunara: ChampionPlugin = {
           ),
           2,
         ),
-        critChance,
+        critChance: yunTalCritChanceStart,
         critDamage,
         armorPenPercent: items.armorPenPercent,
+        yunTalStacksStart,
+        yunTalStacksEnd: state.yunTalStacks,
+        yunTalCritChanceStart,
+        yunTalCritChanceEnd,
+        flurryActivations: state.flurryActivations,
       },
     };
   },
 };
+
+function clampYunTalStacks(value: number | undefined): number {
+  return Math.max(0, Math.min(YUN_TAL_MAX_STACKS, Math.round(Number(value ?? 0))));
+}

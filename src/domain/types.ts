@@ -42,6 +42,8 @@ export interface SimulationInput {
   durationSeconds: number;
   actions: readonly ActionKind[];
   continueAutos: boolean;
+  /** Starting ranged Yun Tal Wildarrows stacks (0–125). Match-V5 does not expose this state. */
+  yunTalStacks?: number;
   /** Mortal targets are the default. `uncapped` is an explicit training-dummy mode. */
   targetMode?: "mortal" | "uncapped";
 }
@@ -82,6 +84,11 @@ export interface SimulationResult {
     critChance: number;
     critDamage: number;
     armorPenPercent: number;
+    yunTalStacksStart: number;
+    yunTalStacksEnd: number;
+    yunTalCritChanceStart: number;
+    yunTalCritChanceEnd: number;
+    flurryActivations: number;
   };
 }
 

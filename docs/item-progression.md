@@ -26,10 +26,11 @@ For a chosen completed-legendary count `k`, progression percentile is the empiri
 These describe economic/item progression only, never skill, rank quality, or win probability.
 Build cards show each build's count, both rarity measures, exact count frequency, and observed core
 frequency independently. Manual item edits are preserved across level changes; “Use realistic level
-default” explicitly resets both builds. The selection also returns the excluded observed item IDs
-and names: if the modal observed core contains an item without a verified combat plugin (for
-example Yun Tal Wildarrows (3032) in this corpus), the UI calls it out beside the build cards and
-removes it from both simulated builds. The omitted item is not treated as a zero-stat item; the
-result is explicitly a nearest-supported subset until that item's patch mechanics are verified.
-Gluttonous Greaves (3008) remains selectable and costed, while its omnivamp/takedown effects are
-called out as unmodeled.
+default” explicitly resets both builds. The selection also returns excluded observed item IDs and
+names for any future item without a verified combat plugin. Yun Tal Wildarrows (3032), which is
+common in the level-13 modal core in this corpus, is now fully modeled in the Yunara plugin, so the
+default includes the complete observed three-item core rather than silently dropping Yun Tal. Its
+starting Practice Makes Lethal stack count cannot be recovered from the stored Match-V5 telemetry:
+the UI defaults to 0/125, shows that assumption in the setup and warnings, and lets the user
+override it. Gluttonous Greaves (3008) remains selectable and costed, while its omnivamp/takedown
+effects are called out as unmodeled.

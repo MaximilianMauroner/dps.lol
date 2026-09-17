@@ -16,6 +16,16 @@ export const ITEMS: Record<number, ItemMechanic> = {
   // stacking is intentionally outside this damage-only prototype, but the observed boot must
   // remain selectable and costed rather than being silently dropped from the level default.
   3008: { id: 3008, name: "Gluttonous Greaves", goldTotal: 1000, boots: true },
+  // Data Dragon / CommunityDragon 16.18.1: 50 AD, 45% AS, 0% crit.
+  // Practice Makes Lethal and Flurry are modeled in the Yunara plugin because they
+  // depend on attack timing and the explicit starting-stack assumption.
+  3032: {
+    id: 3032,
+    name: "Yun Tal Wildarrows",
+    goldTotal: 3000,
+    attackDamage: 50,
+    attackSpeed: 0.45,
+  },
   3031: {
     id: 3031,
     name: "Infinity Edge",

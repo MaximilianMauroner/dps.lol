@@ -16,6 +16,7 @@ const itemNames: Record<number, string> = {
   3085: "Runaan's Hurricane",
   3006: "Berserker's Greaves",
   3008: "Gluttonous Greaves",
+  3032: "Yun Tal Wildarrows",
   3031: "Infinity Edge",
   3036: "Lord Dominik's Regards",
 };
@@ -24,6 +25,7 @@ const itemIcons: Record<number, string> = {
   3085: "3085.png",
   3006: "3006.png",
   3008: "3008.png",
+  3032: "3032.png",
   3031: "3031.png",
   3036: "3036.png",
 };
@@ -56,6 +58,7 @@ export default function Home() {
   const [targetChampion, setTargetChampion] = useState("");
   const [selectedTargetId, setSelectedTargetId] = useState("");
   const [continueAutos, setContinueAutos] = useState(true);
+  const [yunTalStacks, setYunTalStacks] = useState(0);
   const [buildAItems, setBuildAItems] = useState<number[]>(INITIAL_REALISTIC_BUILD);
   const [buildBItems, setBuildBItems] = useState<number[]>(INITIAL_REALISTIC_BUILD);
   const [buildsEdited, setBuildsEdited] = useState(false);
@@ -153,6 +156,7 @@ export default function Home() {
         durationSeconds: duration,
         actions,
         continueAutos,
+        yunTalStacks,
         targetMode: "mortal" as const,
       };
       const request: WorkerSimulationRequest = {
@@ -178,7 +182,7 @@ export default function Home() {
         patch: "26.18",
         dataVersion: "16.18.1",
         engineVersion: "yunara-engine-v1",
-        assumptions: `Level ${level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Kraken + Runaan + boots included.`,
+        assumptions: `Level ${level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Yun Tal starts at ${yunTalStacks}/125 ranged stacks.`,
         warnings: simulationWarnings,
         dataset: { ...cohort.dataset, count: targets.length },
         builds: { a: buildA, b: buildB },
@@ -358,6 +362,7 @@ export default function Home() {
     ranks,
     actions,
     continueAutos,
+    yunTalStacks,
     manual,
     selectedTargetId,
   });
@@ -403,13 +408,14 @@ export default function Home() {
     setBuildBItems(recommended);
     buildsEditedRef.current = false;
     setBuildsEdited(false);
+    setYunTalStacks(0);
   }
 
   function setIeLdrComparison() {
     markBuildEdited();
     const baseline = progression ? recommendedBuild(progression) : INITIAL_REALISTIC_BUILD;
-    const completed = baseline.filter((id) => !isBootItem(id));
-    const core = completed.length > 0 ? completed.slice(0, -1) : [];
+    const completed = baseline.filter((id) => !isBootItem(id) && id !== 3031 && id !== 3036);
+    const core = [...new Set(completed)];
     const withBoot = [...core, ...baseline.filter((id) => isBootItem(id))];
     setBuildAItems([...withBoot, 3031]);
     setBuildBItems([...withBoot, 3036]);
@@ -807,9 +813,26 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+              <label className="fl" htmlFor="yun-tal-stacks">
+                Yun Tal starting stacks (ranged)
+              </label>
+              <input
+                id="yun-tal-stacks"
+                type="number"
+                min={0}
+                max={125}
+                step={1}
+                value={yunTalStacks}
+                onChange={(event) =>
+                  setYunTalStacks(
+                    Math.max(0, Math.min(125, Math.round(Number(event.target.value) || 0))),
+                  )
+                }
+              />
               <p className="dim" style={{ marginTop: 10 }}>
                 Patch pinned to 26.18 · Q/W/E/R ranks are manual assumptions (not inferred from
-                timelines) · E is mobility-only
+                timelines) · E is mobility-only · 3032 starts at the explicit stack value above;
+                stored frames do not expose crit chance
               </p>
             </div>
 

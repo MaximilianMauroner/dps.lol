@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { deriveBonusHealth } from "../src/domain/health";
 import { deriveBonusHealthEstimate } from "../src/domain/health";
-import { giantSlayerMultiplier } from "../src/domain/items";
+import { giantSlayerMultiplier, itemStats } from "../src/domain/items";
 import {
   applyPercentArmorPenetration,
   growthAtLevel,
@@ -202,7 +202,7 @@ describe("Yunara inventory progression", () => {
     expect(core?.observations).toBe(1);
   });
 
-  test("marks observed mode-core items excluded from the supported simulated default", () => {
+  test("keeps the observed Yun Tal modal core fully supported", () => {
     const result = aggregateProgression(
       [
         {
@@ -222,12 +222,13 @@ describe("Yunara inventory progression", () => {
       ],
       catalog,
       13,
-      { sampleThreshold: 1, supportedItemIds: [3031, 3085] },
+      { sampleThreshold: 1, supportedItemIds: [3031, 3032, 3085] },
     );
     expect(result.selection.recommendedObservedItemIds).toEqual([3031, 3032, 3085]);
-    expect(result.selection.recommendedSupportedItemIds).toEqual([3031, 3085]);
-    expect(result.selection.recommendedExcludedItemIds).toEqual([3032]);
-    expect(result.selection.recommendedExcludedItemNames).toEqual(["Yun Tal Wildarrows"]);
+    expect(result.selection.recommendedSupportedItemIds).toEqual([3031, 3032, 3085]);
+    expect(result.selection.recommendedExcludedItemIds).toEqual([]);
+    expect(result.selection.recommendedExcludedItemNames).toEqual([]);
+    expect(result.selection.modeCompletedLegendary).toBe(3);
   });
 });
 
@@ -251,6 +252,78 @@ const base = {
 };
 
 describe("Yunara fixture and comparisons", () => {
+  test("models pinned Yun Tal stats, stack crit growth, and cap", () => {
+    expect(itemStats([3032])).toMatchObject({ attackDamage: 50, attackSpeed: 0.45, critChance: 0 });
+    const run = (stacks: number) =>
+      simulateYunara({
+        level: 13,
+        ranks: { q: 5, w: 3, e: 1, r: 2 },
+        durationSeconds: 0.1,
+        actions: ["AA"],
+        continueAutos: false,
+        yunTalStacks: stacks,
+        build: { name: "Yun Tal", itemIds: [3032] },
+        target: { ...target, health: 100000, armor: 0, magicResist: 0 },
+      });
+    expect(run(0).stats.yunTalCritChanceStart).toBe(0);
+    expect(run(60).stats.yunTalCritChanceStart).toBeCloseTo(0.12);
+    expect(run(125).stats.yunTalCritChanceStart).toBeCloseTo(0.25);
+    expect(run(999).stats.yunTalStacksStart).toBe(125);
+  });
+
+  test("activates Flurry on the first attack for six seconds", () => {
+    const result = simulateYunara({
+      level: 13,
+      ranks: { q: 5, w: 3, e: 1, r: 2 },
+      durationSeconds: 10,
+      actions: ["AA"],
+      continueAutos: true,
+      yunTalStacks: 0,
+      build: { name: "Yun Tal", itemIds: [3032] },
+      target: { ...target, health: 100000, armor: 0, magicResist: 0 },
+    });
+    expect(result.stats.flurryActivations).toBe(1);
+    expect(result.events.some((event) => event.notes.includes("Flurry +30% bonus AS active"))).toBe(
+      true,
+    );
+    expect(result.events.filter((event) => event.source === "Basic attack").length).toBeGreaterThan(
+      3,
+    );
+  });
+
+  test("level-13 three-item modal core is fully simulated", () => {
+    const build = { name: "Observed core", itemIds: [3031, 3032, 3085] };
+    const result = simulateYunara({
+      ...base,
+      build,
+      target: { ...target, health: 100000 },
+      yunTalStacks: 0,
+    });
+    expect(build.itemIds.filter((id) => ![3006, 3008].includes(id))).toHaveLength(3);
+    expect(
+      result.warnings.some(
+        (warning) => warning.includes("Yun Tal") && warning.includes("not modeled"),
+      ),
+    ).toBe(false);
+    expect(result.stats.attackDamage).toBeGreaterThan(200);
+  });
+
+  test("Yun Tal summary and detailed trace totals reconcile", () => {
+    const input = {
+      ...base,
+      yunTalStacks: 40,
+      build: { name: "Observed core", itemIds: [3031, 3032, 3085] },
+      target: { ...target, health: 10000 },
+    };
+    const full = simulateYunara(input);
+    const summed = full.events.reduce((sum, event) => sum + event.final, 0);
+    expect(Math.abs(full.totalDamage - summed)).toBeLessThan(0.1);
+    expect(full.split.physical + full.split.magic + full.split.true).toBeCloseTo(
+      full.totalDamage,
+      2,
+    );
+  });
+
   test("averages crits and adds Infinity Edge's 30-point crit modifier", () => {
     const result = simulateYunara({
       level: 1,

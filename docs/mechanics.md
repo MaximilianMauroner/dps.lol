@@ -28,6 +28,17 @@ Patch 26.18 uses the global **200%** critical-damage baseline introduced in [Pat
 
 The patch data gives Yunara 55 base AD, 3 AD/level, 0.65 base AS, and 2% AS/level. Q rank 1–5 supplies 20–60% AS and 5/10/15/20/25 (+20% AP) passive magic on-hit; the pinned CommunityDragon 16.18 `Buff_Duration` is 5 seconds, and while active Q adds the same amount again. W’s initial damage is magic, with a base of 55/95/135/175/215 plus 85% bonus AD; one representative 60% lingering magic tick is emitted. During R, W is upgraded to a 160/320/480 rank-1/2/3 magic hit plus 120% bonus AD. R’s modeled state lasts 15 seconds and activates Q’s on-hit/attack-speed state for that window. E is a mobility spell and has no damage event.
 
+Yun Tal Wildarrows (3032) is pinned to 50 AD, 45% AS, and 0% base crit in Data Dragon
+[16.18.1](https://ddragon.leagueoflegends.com/cdn/16.18.1/data/en_US/item.json). The pinned
+[CommunityDragon item data](https://raw.communitydragon.org/16.18/game/data/items/3032.bin.json)
+confirms ranged Practice Makes Lethal: each basic attack grants 0.2 percentage points of crit
+chance, up to 125 stacks (25 percentage points). Flurry grants 30% bonus AS for 6 seconds, has a
+30-second cooldown, and is reduced by 1 second per basic attack or 2 seconds per critical attack.
+Because this engine averages expected crits rather than sampling rolls, it applies an expected
+`1 + critChance` seconds of cooldown reduction per on-hit. Stored Match-V5 `championStats` do not
+expose Yun Tal stacks or crit chance, so the initial stack count is an explicit 0–125 user
+assumption (0 by default), not a telemetry-derived state.
+
 ## Timing, target death, and comparison semantics
 
 Scripted basic attacks use the current attack-readiness interval, including Q attack speed, rather
