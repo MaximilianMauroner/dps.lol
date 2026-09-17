@@ -135,6 +135,8 @@ common archived skill-rank pattern (or a clearly labelled legal fallback), and a
 enemy cohort. The combo builder has simulator presets, reorder/remove controls, and an explicit
 mobility-only E action. Item/build edits, rank edits, combo edits, duration, and Yun Tal stack
 assumptions stay local to the cached cohort; only level or target filters retrieve a new cohort.
+Archived skill extraction is participant-scoped: the archive query supplies the Yunara participant
+ID, so skill events from the other nine players in the match cannot affect the displayed pattern.
 
 ## Current limitations and practice-tool validation
 

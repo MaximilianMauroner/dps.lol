@@ -16,10 +16,14 @@ updated after each data/deployment checkpoint; it does not claim in-game or stat
   censored/not-killed outcomes.
 - Raw match and timeline responses are archived before extraction in the private Railway bucket;
   Postgres stores typed hot snapshots, items, scenario rows, manifests, and ingestion state.
+- The level-first UI retrieves a same-match/frame enemy cohort for the selected Yunara level. Common
+  skill ranks are derived only from the Yunara participant ID associated with each archived match;
+  other participants' `SKILL_LEVEL_UP` events are ignored. When archives/events are unavailable,
+  the UI labels a legal fallback instead of presenting it as observed.
 
 ## Access and deployment
 
-Final Railway deployment: `3f6d8cd9-b6bf-4f60-8fd8-33aa2cc6a605` (`SUCCESS`). The private HTTPS
+Final Railway deployment: `f4d0320d-7115-4973-b2f0-7dcc0aa93369` (`SUCCESS`). The private HTTPS
 test URL is `https://web-production-25228.up.railway.app/`. Login is server-side and unauthenticated
 page/API requests must redirect or return `401`; the password is in ignored `.prototype-access` and
 can be copied with `tr -d '\n' < .prototype-access`.
@@ -85,6 +89,10 @@ winner/censoring, legal attack readiness, Q five-second/R fifteen-second boundar
 inventory and undo, missing static HP, bounded minute anchors, event/frame provenance, archive
 envelope replay, and summary/trace equality.
 
+The focused suite also covers level-anchor dedupe/weights, legal skill breakpoints, Yunara-only
+archived skill-event filtering, and the explicit identical-build result state. Current run:
+**31 tests / 109 assertions**, with format, lint, typecheck, and production build passing.
+
 Browser acceptance is performed on the HTTPS deployment with the T3 preview or local Playwright:
 
 1. Open the URL unauthenticated and confirm redirect to `/login`; request `/api/cohort` without the
@@ -100,11 +108,14 @@ Browser acceptance is performed on the HTTPS deployment with the T3 preview or l
 6. Reload after a cold/restarted web process; confirm the app uses Railway data rather than local
    files or a dev server.
 
-Evidence for this revision: the existing authenticated T3 session was checked once against the
-final deployment and rendered the default exact-Yunara phase (`33 distinct match(es) · 165
-snapshots`), the selected-target trace, and the warnings/provenance panels. The prior browser run
-also recorded one cohort request while changing builds/level/duration, zero `/api/simulate` calls,
-manual-target and bot-carry controls, and a restarted web process serving the same Railway counts.
+Evidence for this revision: authenticated headless Chromium/CDP checks against the HTTPS deployment
+rendered the explicit identical-default explanation, the exact-Yunara level-13 phase (`33 distinct
+match(es) · 165 snapshots`), selected-target trace, warnings/provenance panels, and timeline-derived
+skill provenance. A level switch incremented `/api/cohort` and `/api/progression`; Build B item edits,
+combo presets, and Yun Tal stack edits changed results while the cohort request count stayed fixed.
+The checks also exercised manual target mode and unauthenticated page/API gating. The prior browser
+run recorded a restarted web process serving the same Railway counts and the archive replay check
+rebuilt 330 derived snapshots from one verified original source envelope without changing production rows.
 The archive replay check rebuilt 330 derived snapshots from one verified original source envelope
 without changing production rows. These are prototype checks; a full idle sleep/wake cycle was not
 run, and target samples do not prove in-game mechanic exactness.
