@@ -165,18 +165,21 @@ export default function Home() {
         metric,
       };
       const result = await runWorker(request);
+      const simulationWarnings = [
+        "Expected crit mode averages crits; it is not a kill probability.",
+        "Yunara E is unsupported for damage, and Runaan's bolts are excluded for this single-target comparison.",
+        "Builds are compared at listed costs, not equal gold.",
+        "Mortal-target mode stops at death; fixed-window applied damage excludes overkill.",
+        "Expected-crit TTK is a first-crossing model, not a kill probability.",
+        ...result.representative.a.warnings,
+        ...result.representative.b.warnings,
+      ].filter((warning, index, warnings) => warnings.indexOf(warning) === index);
       setData({
         patch: "26.18",
         dataVersion: "16.18.1",
         engineVersion: "yunara-engine-v1",
         assumptions: `Level ${level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Kraken + Runaan + boots included.`,
-        warnings: [
-          "Expected crit mode averages crits; it is not a kill probability.",
-          "Yunara E is unsupported for damage, and Runaan's bolts are excluded for this single-target comparison.",
-          "Builds are compared at listed costs, not equal gold.",
-          "Mortal-target mode stops at death; fixed-window applied damage excludes overkill.",
-          "Expected-crit TTK is a first-crossing model, not a kill probability.",
-        ],
+        warnings: simulationWarnings,
         dataset: { ...cohort.dataset, count: targets.length },
         builds: { a: buildA, b: buildB },
         target: result.representative.target,
