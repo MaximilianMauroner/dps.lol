@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import type { ActionKind, Target } from "@/domain/types";
 import { weightedHeadlineWinner } from "@/domain/simulator";
+import { buildGoldTotal, ITEMS } from "@/domain/items";
 import type {
   WorkerSimulationRequest,
   WorkerSimulationResponse,
@@ -24,8 +25,22 @@ const itemIcons: Record<number, string> = {
   3031: "3031.png",
   3036: "3036.png",
 };
+const SUPPORTED_BUILD_ITEMS = Object.keys(ITEMS)
+  .map(Number)
+  .sort((left, right) => left - right);
+const INITIAL_REALISTIC_BUILD = [6672, 3085, 3006];
+const WINDOWS = [3, 5, 20] as const;
 
 type ResponseData = any;
+
+interface MatrixRow {
+  key: string;
+  label: string;
+  detail: string;
+  n: number;
+  delta: number | null;
+  outcome: "a" | "b" | "tie";
+}
 
 export default function Home() {
   const [level, setLevel] = useState(13);
@@ -39,8 +54,12 @@ export default function Home() {
   const [targetChampion, setTargetChampion] = useState("");
   const [selectedTargetId, setSelectedTargetId] = useState("");
   const [continueAutos, setContinueAutos] = useState(true);
-  const [thirdA, setThirdA] = useState<3031 | 3036>(3031);
-  const [thirdB, setThirdB] = useState<3031 | 3036>(3036);
+  const [buildAItems, setBuildAItems] = useState<number[]>(INITIAL_REALISTIC_BUILD);
+  const [buildBItems, setBuildBItems] = useState<number[]>(INITIAL_REALISTIC_BUILD);
+  const [buildsEdited, setBuildsEdited] = useState(false);
+  const [progression, setProgression] = useState<any>(null);
+  const [progressionLoading, setProgressionLoading] = useState(true);
+  const [progressionError, setProgressionError] = useState("");
   const [ranks, setRanks] = useState({ q: 5, w: 3, e: 1, r: 2 });
   const [actions, setActions] = useState<ActionKind[]>(["R", "Q", "W", "AA", "AA"]);
   const [manual, setManual] = useState({
@@ -51,21 +70,62 @@ export default function Home() {
     level: 13,
   });
   const [data, setData] = useState<ResponseData>();
+  const [matrix, setMatrix] = useState<MatrixRow[] | null>(null);
+  const [matrixLoading, setMatrixLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showLog, setShowLog] = useState(false);
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
   const cohortRef = useRef<{ key: string; payload: any } | null>(null);
+  const progressionCacheRef = useRef(new Map<number, any>());
+  const buildsEditedRef = useRef(false);
 
   const buildA = useMemo(
-    () => ({ name: itemNames[thirdA], itemIds: [6672, 3085, 3006, thirdA] }),
-    [thirdA],
+    () => ({ name: buildDisplayName(buildAItems, "Build A"), itemIds: buildAItems }),
+    [buildAItems],
   );
   const buildB = useMemo(
-    () => ({ name: itemNames[thirdB], itemIds: [6672, 3085, 3006, thirdB] }),
-    [thirdB],
+    () => ({ name: buildDisplayName(buildBItems, "Build B"), itemIds: buildBItems }),
+    [buildBItems],
   );
+
+  useEffect(() => {
+    let active = true;
+    async function loadProgression() {
+      setProgressionLoading(true);
+      setProgressionError("");
+      try {
+        const cached = progressionCacheRef.current.get(level);
+        const next =
+          cached ??
+          (await fetch(`/api/progression?champion=Yunara&level=${level}`, {
+            headers: { accept: "application/json" },
+          }).then(async (response) => {
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error ?? "Progression query failed");
+            progressionCacheRef.current.set(level, payload);
+            return payload;
+          }));
+        if (!active) return;
+        setProgression(next);
+        if (!buildsEditedRef.current) {
+          const recommended = recommendedBuild(next);
+          setBuildAItems(recommended);
+          setBuildBItems(recommended);
+        }
+      } catch (caught) {
+        if (active)
+          setProgressionError(caught instanceof Error ? caught.message : "Progression unavailable");
+      } finally {
+        if (active) setProgressionLoading(false);
+      }
+    }
+    void loadProgression();
+    return () => {
+      active = false;
+    };
+  }, [level]); // manual build edits intentionally do not trigger a default overwrite
 
   useEffect(() => {
     const worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
@@ -85,16 +145,17 @@ export default function Home() {
       const cohort = await loadCohort();
       const targets = cohort.dataset.targets as Target[];
       if (!targets.length) throw new Error("No target snapshots matched these filters.");
+      const base = {
+        level,
+        ranks,
+        durationSeconds: duration,
+        actions,
+        continueAutos,
+        targetMode: "mortal" as const,
+      };
       const request: WorkerSimulationRequest = {
         id: ++requestIdRef.current,
-        base: {
-          level,
-          ranks,
-          durationSeconds: duration,
-          actions,
-          continueAutos,
-          targetMode: "mortal",
-        },
+        base,
         buildA,
         buildB,
         targets,
@@ -124,10 +185,81 @@ export default function Home() {
         },
         breakpoints: result.breakpoints,
       });
+      await runMatrix(base, targets, result.comparison);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Simulation failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runMatrix(
+    base: WorkerSimulationRequest["base"],
+    targets: Target[],
+    main: WorkerSimulationResponse["comparison"],
+  ) {
+    if (targetMode !== "realistic" || targets.length < 6) {
+      setMatrix(null);
+      return;
+    }
+    setMatrixLoading(true);
+    try {
+      const take = Math.max(2, Math.ceil(targets.length / 3));
+      const topBy = (pick: (target: Target) => number) =>
+        [...targets].sort((x, y) => pick(y) - pick(x)).slice(0, take);
+      const groups = [
+        {
+          key: "hp",
+          label: "HP-heavy draft",
+          detail: "Top third by bonus HP",
+          list: topBy((t) => t.bonusHealth),
+        },
+        {
+          key: "armor",
+          label: "Armor-heavy draft",
+          detail: "Top third by armor",
+          list: topBy((t) => t.armor),
+        },
+        {
+          key: "mr",
+          label: "MR-heavy draft",
+          detail: "Top third by magic resist",
+          list: topBy((t) => t.magicResist),
+        },
+      ];
+      const rows: MatrixRow[] = [
+        {
+          key: "avg",
+          label: "Average draft",
+          detail: `${targets.length} snapshots`,
+          n: targets.length,
+          delta: main.medianRelativeDelta,
+          outcome: weightedHeadlineWinner(main),
+        },
+      ];
+      for (const group of groups) {
+        const response = await runWorker({
+          id: ++requestIdRef.current,
+          base,
+          buildA,
+          buildB,
+          targets: group.list,
+          metric,
+        });
+        rows.push({
+          key: group.key,
+          label: group.label,
+          detail: `${group.list.length} snapshots`,
+          n: group.list.length,
+          delta: response.comparison.medianRelativeDelta,
+          outcome: weightedHeadlineWinner(response.comparison),
+        });
+      }
+      setMatrix(rows);
+    } catch {
+      setMatrix(null);
+    } finally {
+      setMatrixLoading(false);
     }
   }
 
@@ -205,11 +337,30 @@ export default function Home() {
     });
   }
 
-  // The initial request loads one cohort; later build/level changes reuse it in the worker.
+  // Recompute from the cached cohort whenever an input changes; the champion
+  // text field and manualRun-only edits commit through their Apply buttons.
+  const autoKey = JSON.stringify({
+    level,
+    duration,
+    metric,
+    targetMode,
+    region,
+    rank,
+    phase,
+    role,
+    buildAItems,
+    buildBItems,
+    ranks,
+    actions,
+    continueAutos,
+    manual,
+    selectedTargetId,
+  });
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
-    void run();
-  }, []);
+    const timer = setTimeout(() => void run(), 280);
+    return () => clearTimeout(timer);
+  }, [autoKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   function addAction(action: ActionKind) {
@@ -219,497 +370,730 @@ export default function Home() {
     setActions((current) => current.filter((_, i) => i !== index));
   }
 
+  function markBuildEdited() {
+    buildsEditedRef.current = true;
+    setBuildsEdited(true);
+  }
+
+  function updateBuild(side: "a" | "b", index: number, value: number | null) {
+    markBuildEdited();
+    const setter = side === "a" ? setBuildAItems : setBuildBItems;
+    setter((current) => {
+      if (value === null) return current.filter((_, itemIndex) => itemIndex !== index);
+      const next = [...current];
+      next[index] = value;
+      return next.length > 0 ? next : [value];
+    });
+  }
+
+  function addBuildItem(side: "a" | "b") {
+    markBuildEdited();
+    const setter = side === "a" ? setBuildAItems : setBuildBItems;
+    setter((current) => (current.length >= 6 ? current : [...current, SUPPORTED_BUILD_ITEMS[0]!]));
+  }
+
+  function resetRealisticBuild() {
+    const recommended = recommendedBuild(progression);
+    setBuildAItems(recommended);
+    setBuildBItems(recommended);
+    buildsEditedRef.current = false;
+    setBuildsEdited(false);
+  }
+
+  function setIeLdrComparison() {
+    markBuildEdited();
+    const baseline = progression ? recommendedBuild(progression) : INITIAL_REALISTIC_BUILD;
+    const completed = baseline.filter((id) => id !== 3006);
+    const boot = baseline.find((id) => id === 3006);
+    const core = completed.length > 0 ? completed.slice(0, -1) : [];
+    const withBoot = boot ? [...core, boot] : core;
+    setBuildAItems([...withBoot, 3031]);
+    setBuildBItems([...withBoot, 3036]);
+  }
+
   const resultA = data?.results?.a;
   const resultB = data?.results?.b;
   const comparison = data?.results?.comparison;
   const headlineOutcome = comparison ? weightedHeadlineWinner(comparison) : "tie";
-  const winner =
-    headlineOutcome === "a" ? buildA.name : headlineOutcome === "b" ? buildB.name : "—";
+  const winnerName =
+    headlineOutcome === "a" ? buildA.name : headlineOutcome === "b" ? buildB.name : null;
+  const scope = targetMode === "manual" ? "custom target" : "average frontline";
+  const verdictTitle = winnerName ? (
+    <>
+      <span className="winner">{winnerName}</span> wins the {scope}
+    </>
+  ) : (
+    <>Dead heat on the {scope}</>
+  );
+  const delta = comparison?.medianRelativeDelta ?? 0;
+  const signed = `${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}%`;
+  const winnerShare = comparison
+    ? headlineOutcome === "a"
+      ? comparison.buildAWinRate
+      : headlineOutcome === "b"
+        ? 1 - comparison.buildAWinRate
+        : 0.5
+    : 0.5;
+  const verdictSub =
+    metric === "ttk"
+      ? `Median first-crossing ${signed} · ${Math.round(winnerShare * 100)}% of cohort mass`
+      : `${signed} damage at ${duration}s · ${Math.round(winnerShare * 100)}% of cohort mass`;
 
   return (
-    <main className="shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">✦</span>
-          <span>
-            RIFT <i>DELTA</i>
+    <main className="page">
+      <header className="top">
+        <div className="top-in">
+          <span className="logo" aria-hidden>
+            Δ
           </span>
-          <small>PATCH-PINNED LAB</small>
-        </div>
-        <div className="top-actions">
-          <span className="patch-pill">26.18 · 16.18.1</span>
-          <span className="live-dot" /> <span className="muted">engine ready</span>
+          <strong>Rift Delta</strong>
+          <nav aria-label="Sections">
+            <a href="#verdict">Lab</a>
+            <a href="#drafts">Drafts</a>
+            <a href="#trace">Traces</a>
+          </nav>
+          <div className="top-right">
+            <span className="pill pill-gold">Patch 26.18 · 16.18.1</span>
+            <span className="pill">
+              <span className="dot" aria-hidden /> Engine ready
+            </span>
+          </div>
         </div>
       </header>
-      <div className="workspace">
-        <aside className="sidebar">
-          <div className="eyebrow">SCENARIO BUILDER</div>
-          <h1>
-            Yunara <span>vs.</span> the frontline
-          </h1>
-          <p className="lede">
-            A transparent answer to the third-item question. Every number can be traced to a formula
-            or a match snapshot.
-          </p>
-          <label className="field-label">ATTACKER</label>
-          <div className="champion-card">
-            <div className="champion-avatar">Y</div>
-            <div>
-              <strong>Yunara</strong>
-              <small>The Unbroken Faith · ADC</small>
-            </div>
-            <span className="chevron">⌄</span>
+
+      <div className="wrap">
+        <section className="card verdict" id="verdict" aria-live="polite">
+          <div>
+            <h1>{loading && !comparison ? "Computing the verdict…" : verdictTitle}</h1>
+            <p>
+              <strong>{verdictSub}</strong>
+              {" · "}Level-aware attacker inventory{" · "}R-Q-W-AA-AA + autos{" · "}
+              {buildGoldTotal(buildB.itemIds).toLocaleString()}g vs{" "}
+              {buildGoldTotal(buildA.itemIds).toLocaleString()}g
+            </p>
           </div>
-          <div className="two-fields">
-            <label>
-              <span>LEVEL</span>
-              <select value={level} onChange={(event) => setLevel(Number(event.target.value))}>
-                {Array.from({ length: 18 }, (_, i) => (
-                  <option key={i + 1}>{i + 1}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>PATCH</span>
-              <div className="locked">
-                26.18 <b>⌁</b>
-              </div>
-            </label>
-          </div>
-          <div className="field-label ability-head">
-            <span>ABILITY RANKS</span>
-            <em>assumed at level {level}</em>
-          </div>
-          <div className="ability-row">
-            <span className="spell q">Q</span>
-            <select
-              className="rank-select"
-              value={ranks.q}
-              onChange={(event) => setRanks({ ...ranks, q: Number(event.target.value) })}
-            >
-              {[1, 2, 3, 4, 5].map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-            <span>Cultivation of Spirit</span>
-          </div>
-          <div className="ability-row">
-            <span className="spell w">W</span>
-            <select
-              className="rank-select"
-              value={ranks.w}
-              onChange={(event) => setRanks({ ...ranks, w: Number(event.target.value) })}
-            >
-              {[1, 2, 3, 4, 5].map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-            <span>Arc of Judgment</span>
-          </div>
-          <div className="ability-row">
-            <span className="spell e">E</span>
-            <select
-              className="rank-select"
-              value={ranks.e}
-              onChange={(event) => setRanks({ ...ranks, e: Number(event.target.value) })}
-            >
-              {[1, 2, 3, 4, 5].map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-            <span>Kanmei&apos;s Steps</span>
-          </div>
-          <div className="ability-row">
-            <span className="spell r">R</span>
-            <select
-              className="rank-select"
-              value={ranks.r}
-              onChange={(event) => setRanks({ ...ranks, r: Number(event.target.value) })}
-            >
-              {[1, 2, 3].map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-            <span>Transcend One&apos;s Self</span>
-          </div>
-          <label className="field-label">SCRIPTED OPENER</label>
-          <div className="timeline">
-            {actions.map((action, index) => (
+          <div className="segs" role="group" aria-label="Fight length">
+            {WINDOWS.map((value) => (
               <button
-                className={`timeline-chip ${action.toLowerCase()}`}
-                key={`${action}-${index}`}
-                onClick={() => removeAction(index)}
-                title="Remove action"
-              >
-                <span>{action}</span>
-                <b>×</b>
-              </button>
-            ))}
-            <span className="timeline-line" />
-          </div>
-          <div className="action-buttons">
-            {(["AA", "Q", "W", "R"] as ActionKind[]).map((action) => (
-              <button key={action} onClick={() => addAction(action)}>
-                + {action}
-              </button>
-            ))}
-          </div>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={continueAutos}
-              onChange={(event) => setContinueAutos(event.target.checked)}
-            />
-            <span>Continue optimal autos after opener</span>
-          </label>
-          <label className="field-label">WINDOW</label>
-          <div className="segmented">
-            {[2, 5, 10].map((value) => (
-              <button
-                className={duration === value ? "selected" : ""}
                 key={value}
+                className={duration === value ? "on" : ""}
                 onClick={() => setDuration(value)}
+                aria-pressed={duration === value}
               >
                 {value}s
               </button>
             ))}
-            <label
-              className={
-                ![2, 5, 10].includes(duration) ? "selected custom-duration" : "custom-duration"
-              }
-            >
-              <input
-                aria-label="Custom duration"
-                type="number"
-                min="1"
-                max="60"
-                value={duration}
-                onChange={(event) => setDuration(Number(event.target.value))}
-              />
-              s
-            </label>
           </div>
-          <label className="field-label">COMPARISON METRIC</label>
-          <div className="segmented metric-toggle">
-            <button
-              className={metric === "damage" ? "selected" : ""}
-              onClick={() => setMetric("damage")}
-            >
-              APPLIED DAMAGE
-            </button>
-            <button className={metric === "ttk" ? "selected" : ""} onClick={() => setMetric("ttk")}>
-              EXPECTED TTK
-            </button>
+        </section>
+
+        {error && (
+          <div className="error" role="alert">
+            {error}
           </div>
-          <p className="quiet metric-note">
-            {metric === "ttk"
-              ? "Lower first-crossing time wins; uncensored kills only."
-              : "Mortal targets stop at death; both kills are an applied-damage tie."}
+        )}
+
+        <section aria-labelledby="builds-h">
+          <h2 id="builds-h">Build comparison</h2>
+          <p className="sub">
+            Same opener, same targets, mortal-target rules. The winner is computed over the whole
+            cohort.
           </p>
-          <button className="run-button" onClick={() => void run()} disabled={loading}>
-            <span>{loading ? "CALCULATING…" : "RUN COMPARISON"}</span>
-            <b>↗</b>
-          </button>
-        </aside>
-        <section className="content">
-          <div className="content-head">
-            <div>
-              <div className="eyebrow">THIRD-ITEM DECISION / EXPECTED CRITS</div>
-              <h2>
-                Infinity Edge <span>or</span> Lord Dominik&apos;s Regards?
-              </h2>
-            </div>
-            <div className="head-meta">
-              <span className="target-count">{data?.dataset?.count ?? "—"} targets</span>
-              <span>·</span>
-              <span>{metric === "ttk" ? "TTK metric" : `${duration}s window`}</span>
-            </div>
-          </div>
-          {error && <div className="error-banner">{error}</div>}
-          <div className="target-bar">
-            <div className="target-mode">
-              <button
-                className={targetMode === "realistic" ? "active" : ""}
-                onClick={() => setTargetMode("realistic")}
-              >
-                ◈ REALISTIC TARGETS
-              </button>
-              <button
-                className={targetMode === "manual" ? "active" : ""}
-                onClick={() => setTargetMode("manual")}
-              >
-                ✎ MANUAL
-              </button>
-            </div>
-            {targetMode === "realistic" ? (
-              <div className="filters">
-                <select
-                  value={region}
-                  onChange={(event) => setRegion(event.target.value)}
-                  aria-label="Region"
-                >
-                  <option value="EUW1">EUW1</option>
-                  <option value="NA1">NA1</option>
-                  <option value="KR">KR</option>
-                </select>
-                <select
-                  value={rank}
-                  onChange={(event) => setRank(event.target.value)}
-                  aria-label="Rank"
-                >
-                  <option value="ALL">All ranks</option>
-                  <option value="CHALLENGER">Challenger</option>
-                  <option value="GRANDMASTER">Grandmaster</option>
-                  <option value="MASTER">Master</option>
-                </select>
-                <select
-                  value={phase}
-                  onChange={(event) => setPhase(event.target.value)}
-                  aria-label="Phase"
-                >
-                  <option value="yunara-third-item">Yunara third item</option>
-                  <option value="bot-carry-third-item">Bot carry fallback</option>
-                  <option value="minute-window">Around minute 25</option>
-                </select>
-                <select value={role} onChange={(event) => setRole(event.target.value)}>
-                  <option value="ALL">All roles</option>
-                  <option>TOP</option>
-                  <option>JUNGLE</option>
-                  <option>MIDDLE</option>
-                  <option>BOTTOM</option>
-                  <option>UTILITY</option>
-                </select>
-                <input
-                  placeholder="Champion filter"
-                  value={targetChampion}
-                  onChange={(event) => setTargetChampion(event.target.value)}
-                  onKeyDown={(event) => event.key === "Enter" && void run()}
-                />
-                <button onClick={() => void run()}>Apply ↵</button>
-              </div>
-            ) : (
-              <div className="manual-fields">
-                {(
-                  [
-                    ["health", "HP"],
-                    ["armor", "ARMOR"],
-                    ["magicResist", "MR"],
-                    ["bonusHealth", "BONUS HP"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <label key={key}>
-                    <span>{label}</span>
-                    <input
-                      type="number"
-                      value={manual[key]}
-                      onChange={(event) =>
-                        setManual({ ...manual, [key]: Number(event.target.value) })
-                      }
-                    />
-                  </label>
-                ))}
-              </div>
+          <div className="build-actions">
+            <button className="ghost-btn" onClick={resetRealisticBuild} disabled={!progression}>
+              Use realistic level default
+            </button>
+            <button className="ghost-btn" onClick={setIeLdrComparison}>
+              Compare IE vs LDR
+            </button>
+            {buildsEdited && (
+              <span className="dim">Manual build edits are preserved on level changes.</span>
             )}
           </div>
-          <div className="provenance">
-            <span className={data?.dataset?.provenance === "riot" ? "riot-badge" : "fixture-badge"}>
-              {data?.dataset?.provenance === "riot" ? "RIOT SNAPSHOTS" : "FIXTURE / DEMO MODE"}
-            </span>
-            <span>{data?.dataset?.note ?? "Loading target provenance…"}</span>
-            {data?.dataset && (
-              <span className="quiet">
-                {data.dataset.distinctMatchCount ?? 0} distinct match(es) ·{" "}
-                {data.dataset.snapshotCount ?? data.dataset.count ?? 0} snapshots ·{" "}
-                {data.dataset.uniqueChampions?.length ?? 0} champions
-              </span>
-            )}
-            {data?.dataset?.warning && <span className="warning-text">{data.dataset.warning}</span>}
-            {data?.warnings?.map((warning: string) => (
-              <span className="warning-text" key={warning}>
-                {warning}
-              </span>
-            ))}
-            <span className="assumption">{data?.assumptions}</span>
-          </div>
-          <div className="selected-target-bar">
-            <label>
-              <span>SELECTED ACTUAL TARGET TRACE</span>
-              <select
-                value={selectedTargetId}
-                onChange={(event) => {
-                  setSelectedTargetId(event.target.value);
-                  void run(event.target.value);
-                }}
-              >
-                {(data?.dataset?.targets ?? []).map((target: Target) => (
-                  <option value={target.id} key={target.id}>
-                    {target.champion} · {target.role ?? "unknown role"} ·{" "}
-                    {Math.round(target.health)} HP / {Math.round(target.armor)} armor
-                  </option>
-                ))}
-              </select>
-            </label>
-            <small>
-              Headline uses the whole cohort; this panel and trace use one observed vector. A new
-              target selection reuses the cached cohort.
-            </small>
-          </div>
-          <div className="result-grid">
-            <ResultCard
-              result={resultA}
-              label="BUILD A"
-              title={buildA.name}
+          <div className="duel">
+            <BuildCard
+              side="a"
+              name={buildA.name}
               itemIds={buildA.itemIds}
-              thirdItem={thirdA}
-              onThirdItemChange={setThirdA}
-              winner={winner === buildA.name}
+              cost={buildGoldTotal(buildA.itemIds)}
+              result={resultA}
+              onChange={updateBuild}
+              onAdd={addBuildItem}
+              tag={headlineOutcome === "a" ? "WINNER" : "2ND"}
+              leads={headlineOutcome === "a"}
+              maxSource={maxSource(resultA, resultB)}
+              rarity={buildRarity(progression, buildA.itemIds)}
             />
-            <div className="versus">VS</div>
-            <ResultCard
-              result={resultB}
-              label="BUILD B"
-              title={buildB.name}
+            <div className="vs" aria-hidden>
+              <span>VS</span>
+            </div>
+            <BuildCard
+              side="b"
+              name={buildB.name}
               itemIds={buildB.itemIds}
-              thirdItem={thirdB}
-              onThirdItemChange={setThirdB}
-              winner={winner === buildB.name}
+              cost={buildGoldTotal(buildB.itemIds)}
+              result={resultB}
+              onChange={updateBuild}
+              onAdd={addBuildItem}
+              tag={headlineOutcome === "b" ? "WINNER" : "2ND"}
+              leads={headlineOutcome === "b"}
+              maxSource={maxSource(resultA, resultB)}
+              rarity={buildRarity(progression, buildB.itemIds)}
             />
           </div>
-          <div className="distribution-card">
-            <div className="section-head">
-              <div>
-                <div className="eyebrow">DISTRIBUTION READOUT</div>
-                <h3>How often does each build win?</h3>
-              </div>
-              <span className="quiet">{data?.dataset?.phase ?? "Inspecting snapshots"}</span>
+          <div className="card dist">
+            <div
+              className="winbar"
+              role="img"
+              aria-label={`Build A wins ${Math.round((comparison?.buildAWinRate ?? 0) * 100)} percent of cohort mass`}
+            >
+              <i style={{ width: `${(comparison?.buildAWinRate ?? 0) * 100}%` }} />
             </div>
-            <div className="win-bar">
-              <div style={{ width: `${(comparison?.buildAWinRate ?? 0) * 100}%` }} />
+            <div className="winlbl">
               <span>
-                {comparison ? `${Math.round(comparison.buildAWinRate * 100)}% weighted A/B` : "—"}
+                <strong>{buildA.name}</strong> {aWinsLabel(comparison)}
+              </span>
+              <span>
+                <strong>{buildB.name}</strong> {bWinsLabel(comparison)}
               </span>
             </div>
-            <div className="win-labels">
+            <div className="dist-meta">
               <span>
-                <i className="orange-dot" /> Infinity Edge{" "}
-                <b>
+                Median <strong>{comparison ? `${signed}` : "—"}</strong>
+                {metric === "ttk" ? " first-crossing" : " damage"}
+              </span>
+              <span>
+                P25 → P75{" "}
+                <strong>
                   {comparison
-                    ? `${comparison.aWins} rows · ${Math.round(weightedShare(comparison, "a") * 100)}% mass`
-                    : "—"}
-                </b>
-              </span>
-              <span>
-                <i className="blue-dot" /> LDR{" "}
-                <b>
-                  {comparison
-                    ? `${comparison.bWins} rows · ${Math.round(weightedShare(comparison, "b") * 100)}% mass`
-                    : "—"}
-                </b>
-              </span>
-            </div>
-            <div className="outcome-line">
-              {comparison
-                ? `${comparison.ties} ties · ${comparison.censored} censored (both not killed) · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B · headline tie policy: ties/censored neutral`
-                : "—"}
-            </div>
-            <div className="stats-grid">
-              <Stat
-                label="MEDIAN DELTA"
-                value={
-                  comparison
-                    ? `${comparison.medianRelativeDelta > 0 ? "+" : ""}${comparison.medianRelativeDelta}%`
-                    : "—"
-                }
-                hint={metric === "ttk" ? "positive = IE faster" : "IE relative to LDR"}
-              />
-              <Stat
-                label="P25 → P75"
-                value={
-                  comparison
                     ? `${comparison.p25RelativeDelta}% → ${comparison.p75RelativeDelta}%`
-                    : "—"
-                }
-                hint={metric === "ttk" ? "uncensored kills only" : "spread across targets"}
-              />
-              <Stat
-                label="SAMPLE SIZE"
-                value={data?.dataset?.count ?? "—"}
-                hint={
-                  data?.dataset?.fallbackLevel
-                    ? `fallback level ${data.dataset.fallbackLevel}`
-                    : "exact Yunara anchors"
-                }
-              />
+                    : "—"}
+                </strong>
+              </span>
+              <span>
+                Sample <strong>{data?.dataset?.count ?? "—"}</strong>
+                {data?.dataset?.fallbackLevel
+                  ? ` · fallback level ${data.dataset.fallbackLevel}`
+                  : ""}
+              </span>
+              <span>
+                {comparison
+                  ? `${comparison.ties} ties · ${comparison.censored} censored · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B`
+                  : "Inspecting snapshots"}
+              </span>
             </div>
-            <div className="breakdown-strip">
-              <span>ROLE BREAKDOWN</span>
+            <div className="chips-row" aria-label="Role breakdown">
+              <span className="chips-label">Roles</span>
               {(comparison?.byRole ?? []).map((group: any) => (
-                <b key={group.role}>
-                  {group.role} <em>{Math.round(group.buildAWinRate * 100)}% IE</em>
-                </b>
+                <span className="chip" key={group.role}>
+                  {group.role} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
+                </span>
               ))}
-              {(comparison?.byRole ?? []).length === 0 && <small>Needs 2+ samples per role</small>}
+              {(comparison?.byRole ?? []).length === 0 && (
+                <span className="dim">Needs 2+ samples per role</span>
+              )}
             </div>
-            <div className="breakdown-strip champion-breakdown">
-              <span>CHAMPION BREAKDOWN</span>
+            <div className="chips-row" aria-label="Champion breakdown">
+              <span className="chips-label">Champions</span>
               {(comparison?.byChampion ?? []).map((group: any) => (
-                <b key={group.champion}>
-                  {group.champion} <em>{Math.round(group.buildAWinRate * 100)}% IE</em>
-                </b>
+                <span className="chip" key={group.champion}>
+                  {group.champion} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
+                </span>
               ))}
               {(comparison?.byChampion ?? []).length === 0 && (
-                <small>Needs duplicate observations</small>
+                <span className="dim">Needs duplicate observations</span>
               )}
             </div>
           </div>
-          <div className="lower-grid">
-            <div className="target-card">
-              <div className="section-head">
-                <div>
-                  <div className="eyebrow">TARGET SNAPSHOT SUMMARY</div>
-                  <h3>Observed enemy stats</h3>
-                </div>
-                <span className="quiet">median · p25 / p75</span>
-              </div>
-              <SummaryTable summary={data?.dataset?.summary} />
+        </section>
+
+        <section className="card progression-panel" aria-labelledby="progression-h">
+          <div className="section-head">
+            <div>
+              <h2 id="progression-h">Yunara inventory at level {level}</h2>
+              <p className="sub">
+                Attacker progression comes from Yunara snapshots; it is independent of the enemy
+                target cohort used for damage.
+              </p>
             </div>
-            <div className="breakpoint-card">
-              <div className="section-head">
-                <div>
-                  <div className="eyebrow">BREAKPOINT MAP</div>
-                  <h3>Where LDR catches up</h3>
-                </div>
-                <span className="quiet">5s damage delta</span>
-              </div>
-              <BreakpointTable rows={data?.breakpoints ?? []} />
-            </div>
+            <span className="pill">Patch 26.18 · Data Dragon 16.18.1</span>
           </div>
-          <div className="audit-card">
-            <button className="audit-toggle" onClick={() => setShowLog(!showLog)}>
-              <span>
-                <span className="eyebrow">DEBUG TRACE</span>
-                <strong>Inspect damage events & modifiers</strong>
-              </span>
-              <b>{showLog ? "⌃" : "⌄"}</b>
-            </button>
-            {showLog && (
-              <div className="event-log">
-                {(resultA?.events ?? []).slice(0, 30).map((event: any, index: number) => (
-                  <div className="event-row" key={`${event.time}-${index}`}>
-                    <time>{event.time.toFixed(2)}s</time>
-                    <strong>{event.source}</strong>
-                    <span className={`damage-type ${event.type}`}>{event.type}</span>
-                    <span>
-                      {event.raw} → <b>{event.final}</b>
-                    </span>
-                    <small>{event.notes.join(" · ")}</small>
+          {progressionLoading && <p className="dim">Loading observed inventory states…</p>}
+          {progressionError && (
+            <p className="warn">{progressionError} Using the last known/default state.</p>
+          )}
+          {progression && (
+            <>
+              <div className="progression-stats">
+                <span>
+                  <strong>{progression.exactLevel.sampleCount}</strong> exact-level observations
+                </span>
+                <span>
+                  <strong>{progression.exactLevel.distinctMatchCount}</strong> distinct matches
+                </span>
+                <span>
+                  Mean <strong>{progression.selection.meanCompletedLegendary.toFixed(2)}</strong>
+                </span>
+                <span>
+                  Median <strong>{progression.selection.medianCompletedLegendary}</strong>
+                </span>
+                <span>
+                  Mode <strong>{progression.selection.modeCompletedLegendary}</strong>
+                </span>
+              </div>
+              <p className="dim progression-note">
+                {progression.selection.fallbackUsed
+                  ? progression.selection.fallbackLabel
+                  : "Exact level sample used."}
+                {progression.selection.lowSample
+                  ? " Low-sample estimate (fewer than 20 exact observations)."
+                  : ""}{" "}
+                {progression.dedupeRule}
+              </p>
+              <div className="progression-grid">
+                <div>
+                  <h3>Completed legendary count</h3>
+                  <div className="distribution-list">
+                    {progression.selection.distribution.map((row: any) => (
+                      <span key={row.count}>
+                        <strong>{row.count}</strong> items · {row.observations} ({row.percent}%)
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h3>Common observed core</h3>
+                  <div className="distribution-list">
+                    {progression.selection.commonPatterns.slice(0, 3).map((pattern: any) => (
+                      <span key={pattern.itemIds.join(",")}>
+                        {pattern.itemNames.join(" + ") || "No completed legendary"} ·{" "}
+                        {pattern.percent}%
+                      </span>
+                    ))}
+                  </div>
+                  <p className="dim">
+                    Boots are separate:{" "}
+                    {progression.selection.commonBootId
+                      ? (itemNames[progression.selection.commonBootId] ??
+                        `item ${progression.selection.commonBootId}`)
+                      : "none observed"}{" "}
+                    ({progression.selection.commonBootTier}). Components/wards do not count as
+                    legendaries.
+                  </p>
+                </div>
+              </div>
+              <p className="provenance">
+                {progression.provenance === "riot"
+                  ? "Observed verified Riot timeline snapshots"
+                  : "Fixture / demo inventory progression"}
+                . {progression.note}
+              </p>
+            </>
+          )}
+        </section>
+
+        {targetMode === "realistic" && (
+          <section aria-labelledby="drafts-h" id="drafts">
+            <h2 id="drafts-h">Enemy draft matrix</h2>
+            <p className="sub">
+              The same question against heavier drafts — each row is a real re-simulation over that
+              slice of the cohort.
+            </p>
+            <div className="card">
+              {matrixLoading && !matrix && <p className="dim">Simulating draft slices…</p>}
+              {(matrix ?? []).map((row) => (
+                <div className="mrow" key={row.key}>
+                  <span>
+                    {row.label}
+                    <small>{row.detail}</small>
+                  </span>
+                  <span className="track" aria-hidden>
+                    {row.delta !== null && (
+                      <i
+                        className={row.delta >= 0 ? "pos" : "neg"}
+                        style={
+                          row.delta >= 0
+                            ? { left: "50%", width: `${Math.min(50, Math.abs(row.delta) * 2.4)}%` }
+                            : { right: "50%", width: `${Math.min(50, Math.abs(row.delta) * 2.4)}%` }
+                        }
+                      />
+                    )}
+                  </span>
+                  <span
+                    className={`delta ${row.outcome === "tie" ? "" : row.delta !== null && row.delta >= 0 ? "u" : "d"}`}
+                  >
+                    {row.delta === null
+                      ? "—"
+                      : row.outcome === "tie"
+                        ? "Tie"
+                        : `${row.outcome === "a" ? buildA.name : buildB.name} ${formatDelta(row.delta)}`}
+                  </span>
+                </div>
+              ))}
+              {!matrixLoading && !matrix && (
+                <p className="dim">Needs 6+ snapshots to slice the cohort.</p>
+              )}
+            </div>
+          </section>
+        )}
+
+        <section aria-labelledby="setup-h">
+          <h2 id="setup-h">Setup</h2>
+          <p className="sub">
+            Attacker, opener, and target. Everything recomputes from the cached cohort.
+          </p>
+          <div className="setup">
+            <div className="card">
+              <h3>Attacker · Yunara</h3>
+              <label className="fl" htmlFor="level">
+                Level
+              </label>
+              <select
+                id="level"
+                value={level}
+                onChange={(event) => setLevel(Number(event.target.value))}
+              >
+                {Array.from({ length: 18 }, (_, i) => (
+                  <option key={i + 1}>{i + 1}</option>
+                ))}
+              </select>
+              <span className="fl">Ability ranks</span>
+              <div className="ranks" role="group" aria-label="Ability ranks">
+                {(["q", "w", "e", "r"] as const).map((key) => (
+                  <div className="rank" key={key}>
+                    <span>{key.toUpperCase()}</span>
+                    <div className="stepper">
+                      <button
+                        aria-label={`Decrease ${key}`}
+                        onClick={() => setRanks((r) => ({ ...r, [key]: Math.max(1, r[key] - 1) }))}
+                      >
+                        −
+                      </button>
+                      <strong>{ranks[key]}</strong>
+                      <button
+                        aria-label={`Increase ${key}`}
+                        onClick={() =>
+                          setRanks((r) => ({
+                            ...r,
+                            [key]: Math.min(key === "r" ? 3 : 5, r[key] + 1),
+                          }))
+                        }
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
+              <p className="dim" style={{ marginTop: 10 }}>
+                Patch pinned to 26.18 · Q/W/E/R ranks are manual assumptions (not inferred from
+                timelines) · E is mobility-only
+              </p>
+            </div>
+
+            <div className="card">
+              <h3>Opener</h3>
+              <div className="opener">
+                {actions.map((action, index) => (
+                  <button
+                    className="op"
+                    key={`${action}-${index}`}
+                    onClick={() => removeAction(index)}
+                    title="Remove action"
+                  >
+                    {action} <small aria-hidden>×</small>
+                  </button>
+                ))}
+              </div>
+              <div className="addrow">
+                {(["AA", "Q", "W", "R"] as ActionKind[]).map((action) => (
+                  <button key={action} onClick={() => addAction(action)}>
+                    + {action}
+                  </button>
+                ))}
+              </div>
+              <span className="fl">After the opener</span>
+              <div className="toggle" role="group" aria-label="Continue autos">
+                <button
+                  className={continueAutos ? "on" : ""}
+                  onClick={() => setContinueAutos(true)}
+                  aria-pressed={continueAutos}
+                >
+                  Keep autoing
+                </button>
+                <button
+                  className={!continueAutos ? "on" : ""}
+                  onClick={() => setContinueAutos(false)}
+                  aria-pressed={!continueAutos}
+                >
+                  Stop
+                </button>
+              </div>
+              <label className="fl" htmlFor="duration">
+                Window (seconds)
+              </label>
+              <input
+                id="duration"
+                type="number"
+                min={1}
+                max={60}
+                value={duration}
+                onChange={(event) => setDuration(Number(event.target.value))}
+              />
+              <button className="run" onClick={() => void run()} disabled={loading}>
+                {loading ? "Calculating…" : "Run comparison"}
+              </button>
+            </div>
+
+            <div className="card">
+              <h3>Target</h3>
+              <div className="toggle" role="group" aria-label="Target mode">
+                <button
+                  className={targetMode === "realistic" ? "on" : ""}
+                  onClick={() => setTargetMode("realistic")}
+                  aria-pressed={targetMode === "realistic"}
+                >
+                  Realistic
+                </button>
+                <button
+                  className={targetMode === "manual" ? "on" : ""}
+                  onClick={() => setTargetMode("manual")}
+                  aria-pressed={targetMode === "manual"}
+                >
+                  Manual
+                </button>
+              </div>
+              {targetMode === "realistic" ? (
+                <>
+                  <label className="fl" htmlFor="region">
+                    Region
+                  </label>
+                  <select
+                    id="region"
+                    value={region}
+                    onChange={(event) => setRegion(event.target.value)}
+                  >
+                    <option value="EUW1">EUW1</option>
+                    <option value="NA1">NA1</option>
+                    <option value="KR">KR</option>
+                  </select>
+                  <div className="two">
+                    <div>
+                      <label className="fl" htmlFor="rank">
+                        Rank
+                      </label>
+                      <select
+                        id="rank"
+                        value={rank}
+                        onChange={(event) => setRank(event.target.value)}
+                      >
+                        <option value="ALL">All ranks</option>
+                        <option value="CHALLENGER">Challenger</option>
+                        <option value="GRANDMASTER">Grandmaster</option>
+                        <option value="MASTER">Master</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="fl" htmlFor="role">
+                        Role
+                      </label>
+                      <select
+                        id="role"
+                        value={role}
+                        onChange={(event) => setRole(event.target.value)}
+                      >
+                        <option value="ALL">All roles</option>
+                        <option>TOP</option>
+                        <option>JUNGLE</option>
+                        <option>MIDDLE</option>
+                        <option>BOTTOM</option>
+                        <option>UTILITY</option>
+                      </select>
+                    </div>
+                  </div>
+                  <label className="fl" htmlFor="phase">
+                    Timing
+                  </label>
+                  <select
+                    id="phase"
+                    value={phase}
+                    onChange={(event) => setPhase(event.target.value)}
+                  >
+                    <option value="yunara-third-item">Yunara third item</option>
+                    <option value="bot-carry-third-item">Bot carry fallback</option>
+                    <option value="minute-window">Around minute 25</option>
+                  </select>
+                  <label className="fl" htmlFor="champ">
+                    Champion
+                  </label>
+                  <div className="apply-row">
+                    <input
+                      id="champ"
+                      type="text"
+                      placeholder="Any champion"
+                      value={targetChampion}
+                      onChange={(event) => setTargetChampion(event.target.value)}
+                      onKeyDown={(event) => event.key === "Enter" && void run()}
+                    />
+                    <button onClick={() => void run()}>Apply</button>
+                  </div>
+                </>
+              ) : (
+                <div className="two" style={{ marginTop: 4 }}>
+                  {(
+                    [
+                      ["health", "HP"],
+                      ["armor", "Armor"],
+                      ["magicResist", "MR"],
+                      ["bonusHealth", "Bonus HP"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <div key={key}>
+                      <label className="fl" htmlFor={`m-${key}`}>
+                        {label}
+                      </label>
+                      <input
+                        id={`m-${key}`}
+                        type="number"
+                        value={manual[key]}
+                        onChange={(event) =>
+                          setManual({ ...manual, [key]: Number(event.target.value) })
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <span className="fl">Metric</span>
+              <div className="toggle" role="group" aria-label="Comparison metric">
+                <button
+                  className={metric === "damage" ? "on" : ""}
+                  onClick={() => setMetric("damage")}
+                  aria-pressed={metric === "damage"}
+                >
+                  Damage
+                </button>
+                <button
+                  className={metric === "ttk" ? "on" : ""}
+                  onClick={() => setMetric("ttk")}
+                  aria-pressed={metric === "ttk"}
+                >
+                  TTK
+                </button>
+              </div>
+              <p className="dim" style={{ marginTop: 10 }}>
+                {metric === "ttk"
+                  ? "Lower first-crossing time wins; uncensored kills only."
+                  : "Mortal targets stop at death; both kills are an applied-damage tie."}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="card" aria-labelledby="trace-h" id="trace">
+          <h2 id="trace-h">Damage trace</h2>
+          <p className="sub">
+            One observed vector, shot by shot. The headline uses the whole cohort; this panel shows
+            the kill.
+          </p>
+          <label className="fl" htmlFor="target-sel">
+            Selected target
+          </label>
+          <select
+            id="target-sel"
+            value={selectedTargetId}
+            onChange={(event) => {
+              setSelectedTargetId(event.target.value);
+              void run(event.target.value);
+            }}
+          >
+            {(data?.dataset?.targets ?? []).map((target: Target) => (
+              <option value={target.id} key={target.id}>
+                {target.champion} · {target.role ?? "unknown role"} · {Math.round(target.health)} HP
+                / {Math.round(target.armor)} armor
+              </option>
+            ))}
+          </select>
+          {resultA && (
+            <p className="kill">
+              {resultA.killed ? `Killed at ${resultA.ttk}s` : "Not killed in window"} · overkill{" "}
+              {resultA.overkill}
+            </p>
+          )}
+          <div className="events">
+            {(resultA?.events ?? []).slice(0, 30).map((event: any, index: number) => (
+              <div className="event" key={`${event.time}-${index}`}>
+                <time>{event.time.toFixed(2)}s</time>
+                <strong>{event.source}</strong>
+                <span>
+                  {event.raw} → <strong>{event.final}</strong>
+                </span>
+                <small>{event.notes.join(" · ")}</small>
+              </div>
+            ))}
+            {!(resultA?.events ?? []).length && <p className="dim">Waiting for a run…</p>}
+          </div>
+          <button
+            className="ghost-btn"
+            onClick={() => setShowLog(!showLog)}
+            aria-expanded={showLog}
+          >
+            {showLog ? "Hide full damage log" : "Show full damage log"}
+          </button>
+          {showLog && (
+            <div className="fulllog">
+              {(resultB?.events ?? []).slice(0, 30).map((event: any, index: number) => (
+                <div className="event" key={`b-${event.time}-${index}`}>
+                  <time>{event.time.toFixed(2)}s</time>
+                  <strong>
+                    {buildB.name} · {event.source}
+                  </strong>
+                  <span>
+                    {event.raw} → <strong>{event.final}</strong>
+                  </span>
+                  <small>{event.notes.join(" · ")}</small>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="prov">
+            <span
+              className={data?.dataset?.provenance === "riot" ? "badge b-riot" : "badge b-demo"}
+            >
+              {data?.dataset?.provenance === "riot" ? "Riot snapshots" : "Fixture / demo"}
+            </span>
+            <span>{data?.dataset?.note ?? "Loading target provenance…"}</span>
+          </div>
+          {data?.dataset && (
+            <p className="dim">
+              {data.dataset.distinctMatchCount ?? 0} distinct matches ·{" "}
+              {data.dataset.snapshotCount ?? data.dataset.count ?? 0} snapshots ·{" "}
+              {data.dataset.uniqueChampions?.length ?? 0} champions
+            </p>
+          )}
+          {(data?.warnings ?? []).map((warning: string) => (
+            <p className="warn" key={warning}>
+              {warning}
+            </p>
+          ))}
+          {data?.assumptions && <p className="dim">{data.assumptions}</p>}
+        </section>
+
+        <section className="card" aria-labelledby="cohort-h">
+          <h2 id="cohort-h">Cohort detail</h2>
+          <p className="sub">Observed enemy stats and where the builds trade places.</p>
+          <div className="cohort-grid">
+            <div>
+              <h3>Target snapshot summary</h3>
+              <SummaryTable summary={data?.dataset?.summary} />
+            </div>
+            <div>
+              <h3>Breakpoint map · {duration}s damage delta</h3>
+              <BreakpointTable rows={data?.breakpoints ?? []} />
+            </div>
           </div>
         </section>
       </div>
+
       <footer>
         Rift Delta is an independent project and is not endorsed by Riot Games or anyone officially
         involved in producing or managing League of Legends. League of Legends and Riot Games are
@@ -719,99 +1103,221 @@ export default function Home() {
   );
 }
 
-function ResultCard({
-  result,
-  label,
-  title,
-  itemIds,
-  thirdItem,
-  onThirdItemChange,
-  winner,
-}: {
-  result: any;
-  label: string;
-  title: string;
-  itemIds: number[];
-  thirdItem: 3031 | 3036;
-  onThirdItemChange: (id: 3031 | 3036) => void;
-  winner: boolean;
-}) {
+function maxSource(a: any, b: any) {
+  const values = [
+    ...Object.values((a?.sources ?? {}) as Record<string, number>),
+    ...Object.values((b?.sources ?? {}) as Record<string, number>),
+  ].map(Number);
+  return Math.max(1, ...values);
+}
+
+function buildDisplayName(itemIds: number[], fallback: string): string {
+  const names = [
+    ...new Set(itemIds.filter((id) => id !== 3006).map((id) => itemNames[id] ?? ITEMS[id]?.name)),
+  ].filter(Boolean) as string[];
+  if (names.length === 0) return fallback;
+  if (names.length <= 2) return names.join(" + ");
+  return `${names[0]} + ${names[1]} + ${names.length - 2} more`;
+}
+
+function recommendedBuild(progression: any): number[] {
+  const selected = progression?.selection;
+  if (!selected) return [...INITIAL_REALISTIC_BUILD];
+  const supported = (selected.recommendedSupportedItemIds ?? []).filter((id: number) =>
+    SUPPORTED_BUILD_ITEMS.includes(id),
+  );
+  const boot = Number(selected.recommendedBootId);
+  const next: number[] = [...new Set<number>(supported)];
+  if (Number.isInteger(boot) && SUPPORTED_BUILD_ITEMS.includes(boot)) next.push(boot);
+  return next.length > 0 ? next.slice(0, 6) : [...INITIAL_REALISTIC_BUILD];
+}
+
+function buildRarity(progression: any, itemIds: number[]) {
+  const selected = progression?.selection;
+  if (!selected) return null;
+  const count = itemIds.filter((id) => id !== 3006).length;
+  const rarity = selected.rarityByCount?.find((row: any) => row.count === count) ?? {
+    count,
+    progressionPercentile: 0,
+    tailPercent: 0,
+    exactPercent: 0,
+  };
+  const coreIds = [...new Set(itemIds.filter((id) => id !== 3006))].sort(
+    (left, right) => left - right,
+  );
+  const core = selected.supportedCoreFrequencies?.find(
+    (row: any) => row.itemIds.join(",") === coreIds.join(","),
+  );
+  return {
+    count,
+    progressionPercentile: rarity.progressionPercentile,
+    tailPercent: rarity.tailPercent,
+    exactPercent: rarity.exactPercent,
+    corePercent: coreIds.length === 0 ? 100 : Number(core?.percent ?? 0),
+    sampleCount: selected.sampleCount,
+    lowSample: Boolean(selected.lowSample),
+  };
+}
+
+function BuildRarity({ rarity }: { rarity: any }) {
   return (
-    <article className={`result-card ${winner ? "winner" : ""}`}>
-      <div className="result-card-head">
-        <span className="eyebrow">{label}</span>
-        {winner && <span className="winner-badge">LEADS</span>}
-      </div>
-      <div className="result-title-row">
-        <h3>{title}</h3>
-        <select
-          aria-label={`${label} third item`}
-          className="item-select"
-          value={thirdItem}
-          onChange={(event) => onThirdItemChange(Number(event.target.value) as 3031 | 3036)}
-        >
-          <option value={3031}>IE</option>
-          <option value={3036}>LDR</option>
-        </select>
+    <div className="build-rarity" aria-label="Economic item progression rarity">
+      <strong>
+        {rarity.count} completed legendary{rarity.count === 1 ? "" : "s"}
+      </strong>
+      <span>
+        {rarity.lowSample ? "Low-sample " : ""}progression percentile {rarity.progressionPercentile}
+        th · tail ≥{rarity.count}: {rarity.tailPercent}%
+      </span>
+      <span>
+        Exact count: {rarity.exactPercent}% · selected core observed in {rarity.corePercent}% (n=
+        {rarity.sampleCount})
+      </span>
+      <small>Economic/item progression only; not player skill or win probability.</small>
+    </div>
+  );
+}
+
+function formatDelta(delta: number) {
+  return `${delta >= 0 ? "+" : "−"}${Math.abs(delta)}%`;
+}
+
+function aWinsLabel(comparison: any) {
+  if (!comparison) return "—";
+  return `${comparison.aWins} rows · ${Math.round(weightedShare(comparison, "a") * 100)}% mass`;
+}
+
+function bWinsLabel(comparison: any) {
+  if (!comparison) return "—";
+  return `${comparison.bWins} rows · ${Math.round(weightedShare(comparison, "b") * 100)}% mass`;
+}
+
+function BuildCard({
+  side,
+  name,
+  itemIds,
+  cost,
+  result,
+  onChange,
+  onAdd,
+  tag,
+  leads,
+  maxSource: max,
+  rarity,
+}: {
+  side: "a" | "b";
+  name: string;
+  itemIds: number[];
+  cost: number;
+  result: any;
+  onChange: (side: "a" | "b", index: number, value: number | null) => void;
+  onAdd: (side: "a" | "b") => void;
+  tag: string;
+  leads: boolean;
+  maxSource: number;
+  rarity: any;
+}) {
+  const heroItem = itemIds[itemIds.length - 1] ?? 6672;
+  return (
+    <article className={`build ${leads ? "win" : ""}`}>
+      <div className="build-head">
+        <Image
+          src={`${ICON}${itemIcons[heroItem] ?? "6672.png"}`}
+          alt=""
+          width={44}
+          height={44}
+          unoptimized
+          className="third-icon"
+        />
+        <div>
+          <strong>{name}</strong>
+          <small>{cost.toLocaleString()}g</small>
+        </div>
+        <span className={`tag ${leads ? "" : "dim"}`}>{tag}</span>
       </div>
       <div className="items">
-        {itemIds.map((id) => (
-          <span className="item-icon" key={id} title={itemNames[id]}>
-            <Image src={`${ICON}${itemIcons[id]}`} alt="" width={27} height={27} unoptimized />
-          </span>
+        {itemIds.map((id, index) => (
+          <label className="build-slot" key={`${side}-${index}`}>
+            <Image
+              src={`${ICON}${itemIcons[id] ?? "6672.png"}`}
+              alt=""
+              width={30}
+              height={30}
+              unoptimized
+            />
+            <select
+              aria-label={`${side === "a" ? "Build A" : "Build B"} item ${index + 1}`}
+              value={id}
+              onChange={(event) => onChange(side, index, Number(event.target.value))}
+            >
+              {SUPPORTED_BUILD_ITEMS.map((candidate) => (
+                <option value={candidate} key={candidate}>
+                  {itemNames[candidate] ?? ITEMS[candidate]?.name ?? candidate}
+                </option>
+              ))}
+            </select>
+            {itemIds.length > 1 && (
+              <button
+                type="button"
+                className="remove-slot"
+                aria-label={`Remove ${side === "a" ? "Build A" : "Build B"} item ${index + 1}`}
+                onClick={() => onChange(side, index, null)}
+              >
+                ×
+              </button>
+            )}
+          </label>
         ))}
+        <button
+          type="button"
+          className="add-slot"
+          onClick={() => onAdd(side)}
+          disabled={itemIds.length >= 6}
+        >
+          + item
+        </button>
       </div>
-      <div className="big-number">
-        {result ? result.totalDamage.toLocaleString() : "—"}
+      {rarity && <BuildRarity rarity={rarity} />}
+      <div className="bignum num">
+        {result ? Math.round(result.totalDamage).toLocaleString() : "—"}
         <small>total damage</small>
       </div>
-      <div className="cost-line">Listed build cost: {goldTotal(itemIds).toLocaleString()}g</div>
-      <div className="card-stats">
-        <span>
-          <b>{result ? result.dps.toLocaleString() : "—"}</b> DPS
+      <div className="stat-chips">
+        <span className="chip">
+          <strong className="num">{result ? Math.round(result.dps).toLocaleString() : "—"}</strong>{" "}
+          DPS
         </span>
-        <span>
-          <b>{result?.ttk !== null && result?.ttk !== undefined ? `${result.ttk}s` : "censored"}</b>{" "}
-          TTK
+        <span className="chip">
+          TTK{" "}
+          <strong className="num">
+            {result?.ttk !== null && result?.ttk !== undefined ? `${result.ttk}s` : "censored"}
+          </strong>
         </span>
-        <span>
-          <b>
+        <span className="chip">
+          <strong className="num">
             {result && result.totalDamage > 0
               ? `${Math.round((result.split.physical / result.totalDamage) * 100)}%`
               : "—"}
-          </b>{" "}
+          </strong>{" "}
           physical
         </span>
       </div>
-      {result && (
-        <div className="kill-line">
-          {result.killed ? `Killed at ${result.ttk}s` : "Not killed in window"} · overkill{" "}
-          {result.overkill}
-        </div>
-      )}
-      <div className="source-list">
+      <div className="sources">
         {result &&
           Object.entries(result.sources)
             .slice(0, 4)
             .map(([source, value]) => (
-              <div key={source}>
+              <div className="src" key={source}>
                 <span>{source}</span>
-                <b>{Number(value).toLocaleString()}</b>
+                <span className="bar" aria-hidden>
+                  <i style={{ width: `${(Number(value) / max) * 100}%` }} />
+                </span>
+                <strong className="num">{Number(value).toLocaleString()}</strong>
               </div>
             ))}
       </div>
     </article>
   );
-}
-function goldTotal(itemIds: number[]) {
-  const costs: Record<number, number> = {
-    6672: 3100,
-    3085: 2650,
-    3006: 1100,
-    3031: 3500,
-    3036: 3000,
-  };
-  return itemIds.reduce((total, id) => total + (costs[id] ?? 0), 0);
 }
 
 function weightedShare(comparison: any, side: "a" | "b") {
@@ -832,19 +1338,10 @@ function summarizeTargetValues(targets: Array<Record<string, unknown>>) {
   );
 }
 
-function Stat({ label, value, hint }: { label: string; value: string | number; hint: string }) {
-  return (
-    <div className="stat">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{hint}</small>
-    </div>
-  );
-}
 function SummaryTable({ summary }: { summary: any }) {
-  if (!summary) return <div className="empty">Waiting for snapshots…</div>;
+  if (!summary) return <p className="dim">Waiting for snapshots…</p>;
   return (
-    <div className="summary-table">
+    <div className="summary">
       {[
         ["Health", "health"],
         ["Bonus health", "bonusHealth"],
@@ -853,44 +1350,55 @@ function SummaryTable({ summary }: { summary: any }) {
         ["Level", "level"],
         ["Game minute", "minute"],
       ].map(([label, key]) => (
-        <div className="summary-row" key={key}>
+        <div className="srow" key={key}>
           <span>{label}</span>
-          <b>{summary[key].median}</b>
-          <small>
-            {summary[key].p25} — {summary[key].p75}
+          <strong className="num">{summary[key].median}</strong>
+          <small className="num">
+            {summary[key].p25} – {summary[key].p75}
           </small>
         </div>
       ))}
     </div>
   );
 }
+
 function BreakpointTable({ rows }: { rows: any[] }) {
   const armorValues = [...new Set(rows.map((row) => row.armor))];
   const healthValues = [...new Set(rows.map((row) => row.bonusHealth))];
-  if (!rows.length) return <div className="empty">Waiting for calculation…</div>;
+  if (!rows.length) return <p className="dim">Waiting for calculation…</p>;
   return (
-    <div className="breakpoint-table">
-      <div className="bp-row bp-head">
-        <span>ARMOR \ BONUS HP</span>
-        {healthValues.map((value) => (
-          <b key={value}>{value}</b>
-        ))}
-      </div>
-      {armorValues.map((armor) => (
-        <div className="bp-row" key={armor}>
-          <span>{armor}</span>
-          {healthValues.map((health) => {
-            const row = rows.find(
-              (candidate) => candidate.armor === armor && candidate.bonusHealth === health,
-            );
-            return (
-              <b className={row?.delta >= 0 ? "ie-cell" : "ldr-cell"} key={health}>
-                {row ? `${row.delta >= 0 ? "+" : "−"}${Math.abs(Math.round(row.delta))}` : "—"}
-              </b>
-            );
-          })}
-        </div>
-      ))}
+    <div className="bpscroll">
+      <table className="bp">
+        <thead>
+          <tr>
+            <th scope="col">Armor \ bonus HP</th>
+            {healthValues.map((value) => (
+              <th scope="col" key={value} className="num">
+                {value}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {armorValues.map((armor) => (
+            <tr key={armor}>
+              <th scope="row" className="num">
+                {armor}
+              </th>
+              {healthValues.map((health) => {
+                const row = rows.find(
+                  (candidate) => candidate.armor === armor && candidate.bonusHealth === health,
+                );
+                return (
+                  <td className={`num ${row && row.delta >= 0 ? "pos" : "neg"}`} key={health}>
+                    {row ? formatDelta(Math.round(row.delta)) : "—"}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

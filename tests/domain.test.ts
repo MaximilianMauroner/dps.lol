@@ -21,6 +21,12 @@ import {
   type StaticItemShape,
 } from "../src/ingestion/completed-items";
 import { buildMatchArchive, compressArchive } from "../src/storage/archive";
+import {
+  aggregateProgression,
+  classifyInventory,
+  dedupeLevelObservations,
+  progressionRarity,
+} from "../src/domain/progression";
 
 describe("combat math", () => {
   test("mitigates positive and negative resistance", () => {
@@ -92,6 +98,106 @@ describe("items and inventory", () => {
       participantId: 1,
     });
     expect(inventory).toEqual([1031]);
+  });
+
+  test("classifies completed legendaries separately from boots, components, and support wards", () => {
+    const catalog = new Map<number, StaticItemShape>([
+      [1001, { ...itemShape(1001, "Boots"), tags: ["Boots"], goldTotal: 300, fromIds: [] }],
+      [3006, { ...itemShape(3006, "Berserker's Greaves"), tags: ["Boots"], fromIds: [1001] }],
+      [3031, itemShape(3031, "Infinity Edge")],
+      [1038, { ...itemShape(1038, "B. F. Sword"), goldTotal: 1300, fromIds: [] }],
+      [2055, { ...itemShape(2055, "Control Ward"), tags: ["Consumable"] }],
+      [3865, { ...itemShape(3865, "World Atlas"), tags: ["Support"] }],
+    ]);
+    const result = classifyInventory([3006, 3031, 1038, 2055, 3865], catalog);
+    expect(result.completedLegendaryIds).toEqual([3031]);
+    expect(result.bootsIds).toEqual([3006]);
+    expect(result.bootTier).toBe("upgraded");
+    expect(result.componentOrOtherIds).toEqual([1038, 2055, 3865]);
+  });
+});
+
+function itemShape(id: number, name: string): StaticItemShape {
+  return {
+    id,
+    name,
+    tags: ["Damage"],
+    goldTotal: 3000,
+    purchasable: true,
+    fromIds: [1001],
+    intoIds: [],
+    maps: { "11": true },
+  };
+}
+
+describe("Yunara inventory progression", () => {
+  const catalog = new Map<number, StaticItemShape>([
+    [3006, { ...itemShape(3006, "Berserker's Greaves"), tags: ["Boots"], fromIds: [1001] }],
+    [3031, itemShape(3031, "Infinity Edge")],
+    [3036, itemShape(3036, "Lord Dominik's Regards")],
+    [3085, itemShape(3085, "Runaan's Hurricane")],
+  ]);
+
+  test("deduplicates repeated frames to one latest state per match/participant/level", () => {
+    const rows = dedupeLevelObservations([
+      { matchKey: "m1", participantKey: "1", level: 10, timestampMs: 100, itemIds: [3006] },
+      { matchKey: "m1", participantKey: "1", level: 10, timestampMs: 200, itemIds: [3006, 3031] },
+      { matchKey: "m1", participantKey: "1", level: 10, timestampMs: 150, itemIds: [3006] },
+      { matchKey: "m2", participantKey: "1", level: 10, timestampMs: 100, itemIds: [3006] },
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.matchKey === "m1")?.itemIds).toEqual([3006, 3031]);
+  });
+
+  test("uses mode, median tie-break, and exposes exact/tail/midrank rarity", () => {
+    const rows = [0, 0, 1, 1].map((count, index) => ({
+      matchKey: `m${index}`,
+      participantKey: "1",
+      level: 10,
+      timestampMs: index,
+      itemIds: [
+        3006,
+        ...Array.from({ length: count }, (_, itemIndex) => (itemIndex ? 3036 : 3031)),
+      ],
+    }));
+    const result = aggregateProgression(rows, catalog, 10, {
+      sampleThreshold: 2,
+      supportedItemIds: [3031, 3036],
+    });
+    expect(result.selection.modeCompletedLegendary).toBe(0);
+    const rarity = progressionRarity(result.selection, 1);
+    expect(rarity.progressionPercentile).toBe(75);
+    expect(rarity.tailPercent).toBe(50);
+    expect(rarity.exactPercent).toBe(50);
+  });
+
+  test("does not count boots/components and flags a three-item low-level state as unusual", () => {
+    const rows = [
+      {
+        matchKey: "m1",
+        participantKey: "1",
+        level: 10,
+        timestampMs: 1,
+        itemIds: [3006, 3031, 3036, 3085],
+      },
+      { matchKey: "m2", participantKey: "1", level: 10, timestampMs: 1, itemIds: [3006, 3031] },
+      { matchKey: "m3", participantKey: "1", level: 10, timestampMs: 1, itemIds: [3006] },
+    ];
+    const result = aggregateProgression(rows, catalog, 10, {
+      sampleThreshold: 20,
+      supportedItemIds: [3031, 3036, 3085],
+    });
+    expect(
+      result.levels.find((level) => level.level === 10)?.distribution.find((row) => row.count === 3)
+        ?.observations,
+    ).toBe(1);
+    expect(result.selection.lowSample).toBe(true);
+    expect(result.selection.recommendedObservedItemIds).toEqual([3031]);
+    expect(progressionRarity(result.selection, 3).tailPercent).toBeCloseTo(33.33);
+    const core = result.selection.supportedCoreFrequencies.find(
+      (row) => row.itemIds.join(",") === "3031,3036",
+    );
+    expect(core?.observations).toBe(1);
   });
 });
 

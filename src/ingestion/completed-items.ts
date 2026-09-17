@@ -12,10 +12,13 @@ export interface StaticItemShape {
 import type { RiotItemEvent } from "./types";
 
 const EXCLUDED_IDS = new Set([2055, 2138, 2139, 2140, 3340, 3363, 3364]);
+const EXCLUDED_TAGS = new Set(["Boots", "Consumable", "Trinket", "GoldPer", "Support", "Quest"]);
+const EXCLUDED_NAME_PATTERN =
+  /\b(?:ward|world atlas|runic compass|watchful wardstone|vigilant wardstone)\b/i;
 
 export function isCompletedLegendary(item: StaticItemShape): boolean {
   if (!item.purchasable || !item.maps["11"] || EXCLUDED_IDS.has(item.id)) return false;
-  if (item.tags.some((tag) => ["Boots", "Consumable", "Trinket", "GoldPer"].includes(tag)))
+  if (item.tags.some((tag) => EXCLUDED_TAGS.has(tag)) || EXCLUDED_NAME_PATTERN.test(item.name))
     return false;
   // A purchasable Summoner's Rift item with recipe components, no upgrade target, and substantial
   // total cost is the most stable Data Dragon-only definition. Explicit exclusions handle utility items.

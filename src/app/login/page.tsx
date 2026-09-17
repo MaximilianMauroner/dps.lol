@@ -31,9 +31,10 @@ export default function LoginPage() {
   return (
     <main className="login-shell">
       <form className="login-card" onSubmit={submit}>
-        <div className="eyebrow">PRIVATE TEST PROTOTYPE</div>
         <h1>Rift Delta</h1>
-        <p>Enter the prototype access password to inspect the patch-pinned simulator.</p>
+        <p>
+          Private test prototype. Enter the access password to inspect the patch-pinned simulator.
+        </p>
         <label>
           <span>ACCESS PASSWORD</span>
           <input
@@ -44,8 +45,8 @@ export default function LoginPage() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
-        {error && <div className="error-banner">{error}</div>}
-        <button className="run-button" type="submit" disabled={loading || !password}>
+        {error && <div className="error">{error}</div>}
+        <button className="run" type="submit" disabled={loading || !password}>
           {loading ? "CHECKING…" : "ENTER PROTOTYPE"}
         </button>
         <small>

@@ -107,13 +107,28 @@ patch/time range, rank-known coverage, deterministic truncation, and selection b
 - `src/storage/` — S3-compatible immutable source archive adapter and verification helpers.
 - `src/db/` + `migrations/` — isolated Postgres persistence.
 - `src/data/` — realistic target query plus explicit fixture fallback.
+- `src/domain/progression.ts` + `src/data/progression.ts` — deduped Yunara level/inventory
+  distributions, percentile/tail rarity, core frequencies, and the authenticated progression API.
 - `src/app/` — original dark desktop-first App Router UI, login, and gated API routes.
 - `src/workers/` — summary-only cohort simulation with selected-target traces.
 - `scripts/` — migration, Data Dragon sync, bounded ingestion, and archive reconciliation.
 
 The test suite covers mitigation and negative resistance, current crit/IE math, Giant Slayer bands,
 inventory sell/undo, mortal overkill/censoring/ties, legal AA timing, Q/R boundaries, source archive
-replay, missing static HP, anchor event/frame separation, minute tolerance, and summary/trace equality.
+replay, missing static HP, anchor event/frame separation, minute tolerance, summary/trace equality,
+completed-item classification, level deduplication, mode fallback, progression percentile/tail
+rarity, and exact core frequencies.
+
+## Level-aware attacker inventory
+
+The selected Yunara level loads a sanitized distribution from verified stored timeline snapshots via
+`/api/progression`. One latest frame per match/participant/level is counted; repeated frames do not
+dominate. The UI reports completed legendary count, separate boot tier/components, mean/median/mode,
+common cores, midrank progression percentile, `>=k` tail rarity, exact-count frequency, and exact
+core frequency. A small exact-level sample widens to nearby levels and labels that fallback. Both
+build cards start from the same observed default, expose every supported item slot, and preserve
+manual edits until the explicit realistic-default reset. This attacker distribution is separate from
+the enemy target cohort used by the Worker damage comparison.
 
 ## Current limitations and practice-tool validation
 
