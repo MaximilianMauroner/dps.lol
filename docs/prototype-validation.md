@@ -19,12 +19,14 @@ updated after each data/deployment checkpoint; it does not claim in-game or stat
 
 ## Access and deployment
 
-The prototype URL is recorded in the handoff, not in source secrets. Login is server-side and
-unauthenticated page/API requests must redirect or return `401`; the password is in ignored
-`.prototype-access` and can be copied with `tr -d '\n' < .prototype-access`.
+Final Railway deployment: `3f6d8cd9-b6bf-4f60-8fd8-33aa2cc6a605` (`SUCCESS`). The private HTTPS
+test URL is `https://web-production-25228.up.railway.app/`. Login is server-side and unauthenticated
+page/API requests must redirect or return `401`; the password is in ignored `.prototype-access` and
+can be copied with `tr -d '\n' < .prototype-access`.
 
-The web service has `NEXT_TELEMETRY_DISABLED=1`, a bounded idle DB pool, and no recurring ingestion.
-Postgres remains warm because sleep/wake/reconnect recovery was not safely verified. The Railway
+The web service has `NEXT_TELEMETRY_DISABLED=1`, a bounded idle DB pool, and no recurring ingestion;
+`sleepApplication: true` is applied to this new web deployment. Postgres remains warm with
+`sleepApplication: false` because sleep/wake/reconnect recovery was not safely verified. The Railway
 bucket remains private; raw archive downloads are not routed through the browser.
 
 ## Data manifest
@@ -97,6 +99,15 @@ Browser acceptance is performed on the HTTPS deployment with the T3 preview or l
    fixed.
 6. Reload after a cold/restarted web process; confirm the app uses Railway data rather than local
    files or a dev server.
+
+Evidence for this revision: the existing authenticated T3 session was checked once against the
+final deployment and rendered the default exact-Yunara phase (`33 distinct match(es) · 165
+snapshots`), the selected-target trace, and the warnings/provenance panels. The prior browser run
+also recorded one cohort request while changing builds/level/duration, zero `/api/simulate` calls,
+manual-target and bot-carry controls, and a restarted web process serving the same Railway counts.
+The archive replay check rebuilt 330 derived snapshots from one verified original source envelope
+without changing production rows. These are prototype checks; a full idle sleep/wake cycle was not
+run, and target samples do not prove in-game mechanic exactness.
 
 ## Known gaps
 
