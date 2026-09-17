@@ -510,6 +510,17 @@ export default function Home() {
               <span className="dim">Manual build edits are preserved on level changes.</span>
             )}
           </div>
+          {progression && unsupportedObservedDefaults(progression).length > 0 && (
+            <p className="warn build-default-warning" role="status">
+              The realistic level default observed{" "}
+              {progression.selection.recommendedObservedItemIds.length} completed items, but{" "}
+              {unsupportedObservedDefaults(progression).join(", ")}{" "}
+              {unsupportedObservedDefaults(progression).length === 1 ? "is" : "are"} not modeled by
+              the combat engine. It is excluded from both builds; damage uses the nearest supported
+              observed subset and does not treat the omitted item as statless. Choose a supported
+              item manually if you want a different comparison.
+            </p>
+          )}
           <div className="duel">
             <BuildCard
               side="a"
@@ -1141,6 +1152,18 @@ function recommendedBuild(progression: any): number[] {
   const next: number[] = [...new Set<number>(supported)];
   if (Number.isInteger(boot) && SUPPORTED_BUILD_ITEMS.includes(boot)) next.push(boot);
   return next.length > 0 ? next.slice(0, 6) : [...INITIAL_REALISTIC_BUILD];
+}
+
+function unsupportedObservedDefaults(progression: any): string[] {
+  const selection = progression?.selection;
+  if (!selection) return [];
+  if (Array.isArray(selection.recommendedExcludedItemNames)) {
+    return selection.recommendedExcludedItemNames;
+  }
+  const supported = new Set<number>(selection.recommendedSupportedItemIds ?? []);
+  return (selection.recommendedObservedItemIds ?? [])
+    .filter((id: number) => !supported.has(id))
+    .map((id: number) => "item " + id);
 }
 
 function isBootItem(id: number): boolean {

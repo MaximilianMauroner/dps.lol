@@ -134,6 +134,7 @@ describe("Yunara inventory progression", () => {
   const catalog = new Map<number, StaticItemShape>([
     [3006, { ...itemShape(3006, "Berserker's Greaves"), tags: ["Boots"], fromIds: [1001] }],
     [3031, itemShape(3031, "Infinity Edge")],
+    [3032, itemShape(3032, "Yun Tal Wildarrows")],
     [3036, itemShape(3036, "Lord Dominik's Regards")],
     [3085, itemShape(3085, "Runaan's Hurricane")],
   ]);
@@ -199,6 +200,34 @@ describe("Yunara inventory progression", () => {
       (row) => row.itemIds.join(",") === "3031,3036",
     );
     expect(core?.observations).toBe(1);
+  });
+
+  test("marks observed mode-core items excluded from the supported simulated default", () => {
+    const result = aggregateProgression(
+      [
+        {
+          matchKey: "m1",
+          participantKey: "1",
+          level: 13,
+          timestampMs: 1,
+          itemIds: [3031, 3032, 3085],
+        },
+        {
+          matchKey: "m2",
+          participantKey: "1",
+          level: 13,
+          timestampMs: 1,
+          itemIds: [3031, 3032, 3085],
+        },
+      ],
+      catalog,
+      13,
+      { sampleThreshold: 1, supportedItemIds: [3031, 3085] },
+    );
+    expect(result.selection.recommendedObservedItemIds).toEqual([3031, 3032, 3085]);
+    expect(result.selection.recommendedSupportedItemIds).toEqual([3031, 3085]);
+    expect(result.selection.recommendedExcludedItemIds).toEqual([3032]);
+    expect(result.selection.recommendedExcludedItemNames).toEqual(["Yun Tal Wildarrows"]);
   });
 });
 

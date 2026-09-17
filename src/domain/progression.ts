@@ -76,6 +76,9 @@ export interface ProgressionSelection extends LevelProgressionAggregate {
   lowSample: boolean;
   recommendedObservedItemIds: number[];
   recommendedSupportedItemIds: number[];
+  /** Observed completed items in the mode core that are not supported by the combat engine. */
+  recommendedExcludedItemIds: number[];
+  recommendedExcludedItemNames: string[];
   recommendedBootId: number | null;
 }
 
@@ -193,6 +196,16 @@ export function aggregateProgression(
   const recommendedSupportedItemIds = recommendedObservedItemIds.filter((id) =>
     supportedItemIds.includes(id),
   );
+  const recommendedExcludedItemIds = recommendedObservedItemIds.filter(
+    (id) => !recommendedSupportedItemIds.includes(id),
+  );
+  const recommendedExcludedItemNames = recommendedPattern
+    ? recommendedPattern.itemIds
+        .map((id, index) =>
+          recommendedExcludedItemIds.includes(id) ? recommendedPattern.itemNames[index] : null,
+        )
+        .filter((name): name is string => Boolean(name))
+    : [];
   return {
     dedupedObservationCount: deduped.length,
     sampleThreshold,
@@ -207,6 +220,8 @@ export function aggregateProgression(
       lowSample: selectedBase.sampleCount < sampleThreshold || exact.length < sampleThreshold,
       recommendedObservedItemIds,
       recommendedSupportedItemIds,
+      recommendedExcludedItemIds,
+      recommendedExcludedItemNames,
       recommendedBootId: selectedBase.commonBootId,
     },
   };
