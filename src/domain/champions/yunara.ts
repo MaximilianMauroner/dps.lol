@@ -66,6 +66,9 @@ export const yunara: ChampionPlugin = {
       );
     }
     if (hasRunaans) warnings.push("Runaan's bolts are excluded from single-target damage.");
+    if (input.build.itemIds.includes(3008)) {
+      warnings.push("Gluttonous Greaves omnivamp and takedown stacking are not modeled in damage.");
+    }
 
     const isDead = () => targetMode === "mortal" && state.targetHealth <= 1e-9;
 

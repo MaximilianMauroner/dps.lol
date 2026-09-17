@@ -12,6 +12,10 @@ export interface ItemMechanic {
 
 export const ITEMS: Record<number, ItemMechanic> = {
   3006: { id: 3006, name: "Berserker's Greaves", goldTotal: 1100, attackSpeed: 0.3, boots: true },
+  // Current 16.18.1 Gluttonous Greaves has no modeled damage stat. Its omnivamp/takedown
+  // stacking is intentionally outside this damage-only prototype, but the observed boot must
+  // remain selectable and costed rather than being silently dropped from the level default.
+  3008: { id: 3008, name: "Gluttonous Greaves", goldTotal: 1000, boots: true },
   3031: {
     id: 3031,
     name: "Infinity Edge",
@@ -23,7 +27,7 @@ export const ITEMS: Record<number, ItemMechanic> = {
   3036: {
     id: 3036,
     name: "Lord Dominik's Regards",
-    goldTotal: 3000,
+    goldTotal: 3300,
     attackDamage: 35,
     critChance: 0.25,
     armorPenPercent: 0.35,
@@ -35,7 +39,7 @@ export const ITEMS: Record<number, ItemMechanic> = {
     attackSpeed: 0.4,
     critChance: 0.25,
   },
-  6672: { id: 6672, name: "Kraken Slayer", goldTotal: 3100, attackDamage: 45, attackSpeed: 0.4 },
+  6672: { id: 6672, name: "Kraken Slayer", goldTotal: 3000, attackDamage: 45, attackSpeed: 0.4 },
 };
 
 export function itemStats(itemIds: number[]) {

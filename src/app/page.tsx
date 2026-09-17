@@ -15,6 +15,7 @@ const itemNames: Record<number, string> = {
   6672: "Kraken Slayer",
   3085: "Runaan's Hurricane",
   3006: "Berserker's Greaves",
+  3008: "Gluttonous Greaves",
   3031: "Infinity Edge",
   3036: "Lord Dominik's Regards",
 };
@@ -22,6 +23,7 @@ const itemIcons: Record<number, string> = {
   6672: "6672.png",
   3085: "3085.png",
   3006: "3006.png",
+  3008: "3008.png",
   3031: "3031.png",
   3036: "3036.png",
 };
@@ -403,10 +405,9 @@ export default function Home() {
   function setIeLdrComparison() {
     markBuildEdited();
     const baseline = progression ? recommendedBuild(progression) : INITIAL_REALISTIC_BUILD;
-    const completed = baseline.filter((id) => id !== 3006);
-    const boot = baseline.find((id) => id === 3006);
+    const completed = baseline.filter((id) => !isBootItem(id));
     const core = completed.length > 0 ? completed.slice(0, -1) : [];
-    const withBoot = boot ? [...core, boot] : core;
+    const withBoot = [...core, ...baseline.filter((id) => isBootItem(id))];
     setBuildAItems([...withBoot, 3031]);
     setBuildBItems([...withBoot, 3036]);
   }
@@ -686,6 +687,14 @@ export default function Home() {
                   ? "Observed verified Riot timeline snapshots"
                   : "Fixture / demo inventory progression"}
                 . {progression.note}
+              </p>
+              <p className="dim">
+                Mode observed completed core:{" "}
+                {progression.selection.recommendedObservedItemIds
+                  .map((id: number) => itemNames[id] ?? ITEMS[id]?.name ?? `item ${id}`)
+                  .join(" + ") || "none"}
+                . The simulated default uses only supported mechanics; observed unsupported items
+                stay visible in the pattern but are not fabricated into damage.
               </p>
             </>
           )}
@@ -1113,7 +1122,9 @@ function maxSource(a: any, b: any) {
 
 function buildDisplayName(itemIds: number[], fallback: string): string {
   const names = [
-    ...new Set(itemIds.filter((id) => id !== 3006).map((id) => itemNames[id] ?? ITEMS[id]?.name)),
+    ...new Set(
+      itemIds.filter((id) => !isBootItem(id)).map((id) => itemNames[id] ?? ITEMS[id]?.name),
+    ),
   ].filter(Boolean) as string[];
   if (names.length === 0) return fallback;
   if (names.length <= 2) return names.join(" + ");
@@ -1132,17 +1143,21 @@ function recommendedBuild(progression: any): number[] {
   return next.length > 0 ? next.slice(0, 6) : [...INITIAL_REALISTIC_BUILD];
 }
 
+function isBootItem(id: number): boolean {
+  return Boolean(ITEMS[id]?.boots);
+}
+
 function buildRarity(progression: any, itemIds: number[]) {
   const selected = progression?.selection;
   if (!selected) return null;
-  const count = itemIds.filter((id) => id !== 3006).length;
+  const count = itemIds.filter((id) => !isBootItem(id)).length;
   const rarity = selected.rarityByCount?.find((row: any) => row.count === count) ?? {
     count,
     progressionPercentile: 0,
     tailPercent: 0,
     exactPercent: 0,
   };
-  const coreIds = [...new Set(itemIds.filter((id) => id !== 3006))].sort(
+  const coreIds = [...new Set(itemIds.filter((id) => !isBootItem(id)))].sort(
     (left, right) => left - right,
   );
   const core = selected.supportedCoreFrequencies?.find(
