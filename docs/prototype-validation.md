@@ -33,21 +33,37 @@ Values below are measured from the deployed prototype after the bounded ingestio
 matches and target snapshots are intentionally reported separately; exact Yunara, bot-carry, and
 minute-window phases are not merged or relabelled.
 
-| Measure                                        |                   Value |
-| ---------------------------------------------- | ----------------------: |
-| Patch / Data Dragon                            |     `26.18` / `16.18.1` |
-| Ranked region / queue                          |               EUW / 420 |
-| New-match ceiling / request ceiling            |           1,000 / 5,000 |
-| New matches accepted                           | updated after final run |
-| Verified source archive objects                | updated after final run |
-| Exact Yunara anchor matches / target snapshots | updated after final run |
-| Bot-carry fallback matches / target snapshots  | updated after final run |
-| Minute-window matches / target snapshots       | updated after final run |
-| Legacy rows (pre-original-archive)             |   1 initial smoke match |
+| Measure                                        |                                  Value |
+| ---------------------------------------------- | -------------------------------------: |
+| Patch / Data Dragon                            |                    `26.18` / `16.18.1` |
+| Ranked region / queue                          |                              EUW / 420 |
+| New-match ceiling / request ceiling            |                          1,000 / 5,000 |
+| New matches accepted                           | 117 (116 archived; 1 legacy smoke row) |
+| Verified source archive objects                |                                    116 |
+| Exact Yunara anchor matches / target snapshots |                               33 / 165 |
+| Bot-carry fallback matches / target snapshots  |                               85 / 739 |
+| Minute-window matches / target snapshots       |                               82 / 409 |
+| Legacy rows (pre-original-archive)             |                  1 initial smoke match |
 
-Archive bytes are reported from verified original match-plus-timeline objects only. The old
-reconstructed ~24 KB sample is not used as a complete-source size estimate. A one-match byte count
-or the local engine-only timing is not a browser/Web Worker/end-to-end benchmark.
+Archive bytes from the 116 verified original match-plus-timeline objects are 8,221,551 compressed
+bytes and 90,685,185 uncompressed bytes (measured corpus total). The old reconstructed ~24 KB sample
+is not used as a complete-source size estimate. A one-match byte count or the local engine-only
+timing is not a browser/Web Worker/end-to-end benchmark.
+
+The recent-window run used Match-V5 `startTime=1788912000` (2026-09-09 00:00:00 UTC), an `endTime`
+just beyond collection time, `queue=420`, and detail validation for `16.18`. It selected 2,000
+previously unseen current-window IDs and persisted 89 before its private DB tunnel terminated; the
+run was then marked `stopped` and no replacement crawler was left running. Its final per-detail
+rejection counters were not written before that failure. Earlier recorded rejection evidence includes
+183 old-patch IDs in the pre-window exploratory batch (and 6 short games in the completed first
+batch). The database records 1,037 Riot requests across runs with request checkpoints; earlier smoke
+runs without a request cursor are conservatively covered by the configured 500-request reserve, and
+the global ceiling remains 5,000.
+
+The corpus is therefore an enriched exploratory sample, not an unbiased population: the current run
+prioritized PUUIDs of observed Yunara participants before high-elo seeds. Exact anchors meet the
+prototype coverage goal (33 distinct matches / 165 complete enemy vectors), while fallback rows are
+kept as separate phases.
 
 ## Checks
 
