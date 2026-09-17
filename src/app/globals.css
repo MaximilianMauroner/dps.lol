@@ -246,6 +246,16 @@ select,
   color: #e8eeed;
   width: 10px;
 }
+.rank-select {
+  width: 24px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #e8eeed;
+  font:
+    11px "DM Mono",
+    monospace;
+}
 .spell {
   display: grid;
   place-items: center;

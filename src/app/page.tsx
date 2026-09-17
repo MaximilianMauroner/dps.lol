@@ -34,6 +34,7 @@ export default function Home() {
   const [continueAutos, setContinueAutos] = useState(true);
   const [thirdA, setThirdA] = useState<3031 | 3036>(3031);
   const [thirdB, setThirdB] = useState<3031 | 3036>(3036);
+  const [ranks, setRanks] = useState({ q: 5, w: 3, e: 1, r: 2 });
   const [actions, setActions] = useState<ActionKind[]>(["R", "Q", "W", "AA", "AA"]);
   const [manual, setManual] = useState({
     health: 2200,
@@ -70,6 +71,7 @@ export default function Home() {
           region,
           rank,
           phase,
+          ranks,
           role,
           targetChampion,
           continueAutos,
@@ -169,22 +171,54 @@ export default function Home() {
           </div>
           <div className="ability-row">
             <span className="spell q">Q</span>
-            <b>5</b>
+            <select
+              className="rank-select"
+              value={ranks.q}
+              onChange={(event) => setRanks({ ...ranks, q: Number(event.target.value) })}
+            >
+              {[1, 2, 3, 4, 5].map((value) => (
+                <option key={value}>{value}</option>
+              ))}
+            </select>
             <span>Cultivation of Spirit</span>
           </div>
           <div className="ability-row">
             <span className="spell w">W</span>
-            <b>3</b>
+            <select
+              className="rank-select"
+              value={ranks.w}
+              onChange={(event) => setRanks({ ...ranks, w: Number(event.target.value) })}
+            >
+              {[1, 2, 3, 4, 5].map((value) => (
+                <option key={value}>{value}</option>
+              ))}
+            </select>
             <span>Arc of Judgment</span>
           </div>
           <div className="ability-row">
             <span className="spell e">E</span>
-            <b>1</b>
+            <select
+              className="rank-select"
+              value={ranks.e}
+              onChange={(event) => setRanks({ ...ranks, e: Number(event.target.value) })}
+            >
+              {[1, 2, 3, 4, 5].map((value) => (
+                <option key={value}>{value}</option>
+              ))}
+            </select>
             <span>Kanmei&apos;s Steps</span>
           </div>
           <div className="ability-row">
             <span className="spell r">R</span>
-            <b>2</b>
+            <select
+              className="rank-select"
+              value={ranks.r}
+              onChange={(event) => setRanks({ ...ranks, r: Number(event.target.value) })}
+            >
+              {[1, 2, 3].map((value) => (
+                <option key={value}>{value}</option>
+              ))}
+            </select>
             <span>Transcend One&apos;s Self</span>
           </div>
           <label className="field-label">SCRIPTED OPENER</label>

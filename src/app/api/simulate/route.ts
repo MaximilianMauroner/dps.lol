@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       patch: "26.18",
       dataVersion: "16.18.1",
-      assumptions: "Level 13 / Q5 W3 E1 R2, expected crits, Kraken + Runaan + boots included.",
+      assumptions: `Level ${base.level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Kraken + Runaan + boots included.`,
       dataset: { ...dataset, count: targets.length, summary },
       builds: { a: buildA, b: buildB },
       target: fallbackTarget,
