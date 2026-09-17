@@ -206,6 +206,18 @@ export default function Home() {
     };
   }, [level]); // manual build edits intentionally do not trigger a default overwrite
 
+  // Clamp a manually edited rank vector as soon as a level change makes it
+  // illegal. This runs before the progression request returns, so an invalid
+  // vector can never spend a render silently simulating at the lower level.
+  useEffect(() => {
+    if (!ranksEditedRef.current || isLegalRankShape(ranksRef.current, level)) return;
+    const corrected = clampSkillRanks(ranksRef.current, level);
+    setRanks(corrected);
+    setRankNotice(
+      `Your previous manual ranks were not legal at level ${level}; they were clamped to Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r}.`,
+    );
+  }, [level]);
+
   useEffect(() => {
     const worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
