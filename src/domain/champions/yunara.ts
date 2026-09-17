@@ -11,8 +11,8 @@ const BASE_CRIT_DAMAGE = 1.75;
 
 type State = { qUntil: number; rUntil: number; attacks: number; targetHealth: number };
 
-function qOnHit(rank: number, totalAd: number): number {
-  return [0, 10, 15, 20, 25, 30][rank]! + 0.2 * totalAd;
+function qMagicOnHit(rank: number, ap: number): number {
+  return [0, 5, 10, 15, 20, 25][rank]! + 0.2 * ap;
 }
 
 function qAttackSpeed(rank: number): number {
@@ -31,6 +31,7 @@ export const yunara: ChampionPlugin = {
     const hasLdr = input.build.itemIds.includes(3036);
     const hasKraken = input.build.itemIds.includes(6672);
     const hasRunaans = input.build.itemIds.includes(3085);
+    const abilityPower = 0;
     const targetAmp = hasLdr ? giantSlayerMultiplier(input.target.bonusHealth) : 1;
     const effectiveArmor = applyPercentArmorPenetration(input.target.armor, items.armorPenPercent);
     const state: State = { qUntil: -1, rUntil: -1, attacks: 0, targetHealth: input.target.health };
@@ -79,10 +80,21 @@ export const yunara: ChampionPlugin = {
       add(time, "Vow of the First Lands", "magic", critChance * totalAd * critDamage * 0.1, [
         "10% of critical strike pre-mitigation damage",
       ]);
+      add(
+        time,
+        "Cultivation of Spirit — passive",
+        "magic",
+        qMagicOnHit(input.ranks.q, abilityPower),
+        ["Passive on-hit; 5–25 + 20% AP"],
+      );
       if (time <= state.qUntil) {
-        add(time, "Cultivation of Spirit", "magic", qOnHit(input.ranks.q, totalAd), [
-          "Q on-hit; secondary spread excluded",
-        ]);
+        add(
+          time,
+          "Cultivation of Spirit — active",
+          "magic",
+          qMagicOnHit(input.ranks.q, abilityPower),
+          ["Active adds the same magic on-hit; secondary spread excluded"],
+        );
       }
       if (hasKraken && state.attacks % 3 === 0) {
         const missingFraction = Math.max(
@@ -126,8 +138,8 @@ export const yunara: ChampionPlugin = {
         } else {
           const base = [0, 55, 95, 135, 175, 215][input.ranks.w]!;
           const hit = base + 0.85 * (totalAd - BASE_AD - growthAtLevel(AD_GROWTH, input.level));
-          add(cursor, "Arc of Judgment", "physical", hit, ["Initial hit; 85% bonus AD"]);
-          add(cursor + 1, "Arc of Judgment — linger", "physical", hit * 0.6, [
+          add(cursor, "Arc of Judgment", "magic", hit, ["Initial hit; 85% bonus AD"]);
+          add(cursor + 1, "Arc of Judgment — linger", "magic", hit * 0.6, [
             "One representative 60% lingering tick",
           ]);
         }

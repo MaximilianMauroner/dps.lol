@@ -96,6 +96,21 @@ const base = {
 };
 
 describe("Yunara fixture and comparisons", () => {
+  test("averages crits and adds Infinity Edge's 30-point crit modifier", () => {
+    const result = simulateYunara({
+      level: 1,
+      ranks: { q: 1, w: 1, e: 1, r: 1 },
+      durationSeconds: 1,
+      actions: ["AA"],
+      continueAutos: false,
+      build: { name: "IE", itemIds: [3031] },
+      target: { ...target, armor: 0, magicResist: 0, health: 10000 },
+    });
+    const basic = result.events.find((event) => event.source === "Basic attack");
+    expect(basic?.raw).toBeCloseTo(164.125, 2); // 130 AD × (1 + .25 × (2.05 − 1))
+    expect(result.stats.critDamage).toBeCloseTo(2.05);
+  });
+
   test("produces an inspectable sequence with source breakdown", () => {
     const result = simulateYunara({
       ...base,

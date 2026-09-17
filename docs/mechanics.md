@@ -26,6 +26,6 @@ The global baseline used for patch 26.18 is 175% critical damage. Infinity Edge 
 
 ## Yunara MVP path
 
-The patch data gives Yunara 55 base AD, 3 AD/level, 0.65 base AS, and 2% AS/level. Q rank 1–5 supplies 20–60% AS and a 10–30 + 20% total-AD on-hit. W’s base damage is 55/95/135/175/215 plus 85% bonus AD; one representative 60% lingering tick is emitted. During R, W is upgraded to a 160/320/480 rank-1/2/3 magic hit plus 120% bonus AD. R also activates the Q state for the simulation window. E is a mobility spell and has no damage event.
+The patch data gives Yunara 55 base AD, 3 AD/level, 0.65 base AS, and 2% AS/level. Q rank 1–5 supplies 20–60% AS and 5/10/15/20/25 (+20% AP) passive magic on-hit; while active it adds the same amount again. W’s initial damage is magic, with a base of 55/95/135/175/215 plus 85% bonus AD; one representative 60% lingering magic tick is emitted. During R, W is upgraded to a 160/320/480 rank-1/2/3 magic hit plus 120% bonus AD. R also activates the Q state for the simulation window. E is a mobility spell and has no damage event.
 
 The engine keeps these mechanics in `src/domain/champions/yunara.ts` behind `ChampionPlugin`; future plugins can add more complete spell scheduling without changing mitigation, targets, or comparison aggregation.
