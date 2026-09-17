@@ -194,6 +194,7 @@ describe("Yunara inventory progression", () => {
     expect(result.selection.lowSample).toBe(true);
     expect(result.selection.recommendedObservedItemIds).toEqual([3031]);
     expect(progressionRarity(result.selection, 3).tailPercent).toBeCloseTo(33.33);
+    expect(result.selection.commonBootTier).toBe("upgraded");
     const core = result.selection.supportedCoreFrequencies.find(
       (row) => row.itemIds.join(",") === "3031,3036",
     );

@@ -275,10 +275,13 @@ function aggregateLevel(
     bootTiers.set(row.inventory.bootTier, (bootTiers.get(row.inventory.bootTier) ?? 0) + 1);
   }
   const commonBoot = boots[0];
-  const commonTier =
-    [...bootTiers.entries()].sort(
-      (left, right) => right[1] - left[1] || bootTierOrder(left[0]) - bootTierOrder(right[0]),
-    )[0]?.[0] ?? "none";
+  const commonTier = commonBoot
+    ? isUpgradedBoot(catalog.get(commonBoot.itemId)!)
+      ? "upgraded"
+      : "basic"
+    : ([...bootTiers.entries()].sort(
+        (left, right) => right[1] - left[1] || bootTierOrder(left[0]) - bootTierOrder(right[0]),
+      )[0]?.[0] ?? "none");
   return {
     level,
     sampleCount: observations.length,
@@ -308,11 +311,9 @@ function choosePool(
 ): { levels: number[]; rows: InventoryObservation[] } {
   let best: { levels: number[]; rows: InventoryObservation[] } | null = null;
   for (let radius = 0; radius <= maxRadius; radius += 1) {
-    const levels = [
-      ...new Set(
-        [requested - radius, requested + radius].filter((level) => level >= 1 && level <= 18),
-      ),
-    ].sort((left, right) => left - right);
+    const levels = Array.from({ length: radius * 2 + 1 }, (_, index) => requested - radius + index)
+      .filter((level) => level >= 1 && level <= 18)
+      .sort((left, right) => left - right);
     const rows = levels.flatMap((level) => byLevel.get(level) ?? []);
     if (rows.length > 0) best = { levels, rows };
     if (rows.length >= threshold) return { levels, rows };
