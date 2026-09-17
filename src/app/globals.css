@@ -772,6 +772,39 @@ select,
   color: #667880;
   font-size: 10px;
 }
+.breakdown-strip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 13px;
+  color: #62757d;
+  font:
+    9px "DM Mono",
+    monospace;
+}
+.breakdown-strip > span {
+  color: #6e8088;
+  margin-right: 3px;
+}
+.breakdown-strip b {
+  padding: 4px 6px;
+  border: 1px solid #2c3b44;
+  border-radius: 2px;
+  color: #a6b5b5;
+  font-weight: 400;
+}
+.breakdown-strip em {
+  color: var(--orange-2);
+  font-style: normal;
+  margin-left: 3px;
+}
+.breakdown-strip small {
+  color: #53666f;
+}
+.champion-breakdown {
+  margin-top: 8px;
+}
 .lower-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -74,6 +74,7 @@ export interface SampleComparison {
   p25RelativeDelta: number;
   p75RelativeDelta: number;
   byRole: Array<{ role: string; count: number; buildAWinRate: number }>;
+  byChampion: Array<{ champion: string; count: number; buildAWinRate: number }>;
   rows: Array<{
     target: Target;
     a: SimulationResult;

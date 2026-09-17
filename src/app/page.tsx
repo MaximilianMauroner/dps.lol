@@ -428,6 +428,26 @@ export default function Home() {
                 }
               />
             </div>
+            <div className="breakdown-strip">
+              <span>ROLE BREAKDOWN</span>
+              {(comparison?.byRole ?? []).map((group: any) => (
+                <b key={group.role}>
+                  {group.role} <em>{Math.round(group.buildAWinRate * 100)}% IE</em>
+                </b>
+              ))}
+              {(comparison?.byRole ?? []).length === 0 && <small>Needs 2+ samples per role</small>}
+            </div>
+            <div className="breakdown-strip champion-breakdown">
+              <span>CHAMPION BREAKDOWN</span>
+              {(comparison?.byChampion ?? []).map((group: any) => (
+                <b key={group.champion}>
+                  {group.champion} <em>{Math.round(group.buildAWinRate * 100)}% IE</em>
+                </b>
+              ))}
+              {(comparison?.byChampion ?? []).length === 0 && (
+                <small>Needs duplicate observations</small>
+              )}
+            </div>
           </div>
           <div className="lower-grid">
             <div className="target-card">

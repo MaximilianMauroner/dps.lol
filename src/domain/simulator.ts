@@ -24,6 +24,7 @@ export function compareAcrossSamples(
   });
   const deltas = rows.map((row) => row.relativeDelta);
   const roles = [...new Set(rows.map((row) => row.target.role ?? "UNKNOWN"))];
+  const champions = [...new Set(rows.map((row) => row.target.champion))];
   return {
     count: rows.length,
     buildAWinRate: rows.length
@@ -37,6 +38,17 @@ export function compareAcrossSamples(
         const group = rows.filter((row) => (row.target.role ?? "UNKNOWN") === role);
         return {
           role,
+          count: group.length,
+          buildAWinRate:
+            group.filter((row) => row.a.totalDamage > row.b.totalDamage).length / group.length,
+        };
+      })
+      .filter((group) => group.count >= 2),
+    byChampion: champions
+      .map((champion) => {
+        const group = rows.filter((row) => row.target.champion === champion);
+        return {
+          champion,
           count: group.length,
           buildAWinRate:
             group.filter((row) => row.a.totalDamage > row.b.totalDamage).length / group.length,
