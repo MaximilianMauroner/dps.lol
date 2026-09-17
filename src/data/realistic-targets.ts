@@ -6,6 +6,7 @@ interface TargetRow {
   snapshot_id: string;
   champion_name: string;
   role: string | null;
+  tier: string | null;
   health_max: string;
   armor: string;
   magic_resist: string;
@@ -54,7 +55,7 @@ export async function getRealisticTargets(filters?: {
   }
   for (const candidate of candidates) {
     const rows = await query<TargetRow>(
-      `SELECT DISTINCT s.snapshot_id, p.champion_name, p.role, s.health_max, s.armor,
+      `SELECT DISTINCT s.snapshot_id, p.champion_name, p.role, p.tier, s.health_max, s.armor,
               s.magic_resist, COALESCE(s.bonus_health_estimate, 0) AS bonus_health_estimate,
               s.level, s.minute
          FROM lol_dps.scenario_samples ss
@@ -74,6 +75,7 @@ export async function getRealisticTargets(filters?: {
           id: row.snapshot_id,
           champion: row.champion_name,
           role: row.role ?? undefined,
+          rank: row.tier ?? undefined,
           health: Number(row.health_max),
           armor: Number(row.armor),
           magicResist: Number(row.magic_resist),

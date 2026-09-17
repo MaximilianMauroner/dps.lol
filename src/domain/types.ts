@@ -17,6 +17,7 @@ export interface Target {
   id: string;
   champion: string;
   role?: string;
+  rank?: string;
   health: number;
   armor: number;
   magicResist: number;
