@@ -1557,7 +1557,7 @@ function buildDisplayName(itemIds: number[], fallback: string): string {
     ),
   ].filter(Boolean) as string[];
   if (names.length === 0) return fallback;
-  if (names.length <= 2) return names.join(" + ");
+  if (names.length <= 3) return names.join(" + ");
   return `${names[0]} + ${names[1]} + ${names.length - 2} more`;
 }
 
