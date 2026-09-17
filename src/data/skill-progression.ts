@@ -16,6 +16,7 @@ export interface SkillProgression {
 interface ArchiveRow {
   object_key: string;
   source_match_id: string;
+  yunara_participant_id: number;
 }
 
 interface SkillObservation {
@@ -59,7 +60,7 @@ export async function getYunaraSkillProgression(level: number): Promise<SkillPro
 async function loadObservations(): Promise<SkillObservation[]> {
   if (cached && cached.expiresAt > Date.now()) return cached.observations;
   const rows = await query<ArchiveRow>(
-    `SELECT DISTINCT ao.object_key, ao.source_match_id
+    `SELECT DISTINCT ao.object_key, ao.source_match_id, p.participant_id AS yunara_participant_id
        FROM lol_dps.archive_objects ao
        JOIN lol_dps.participants p ON p.match_id = ao.source_match_id
       WHERE ao.object_kind = 'match-source'
@@ -73,7 +74,7 @@ async function loadObservations(): Promise<SkillObservation[]> {
   for (const row of rows) {
     try {
       const source = await readArchivedSource(row.object_key);
-      observations.push(...extractSkillObservations(source.timeline));
+      observations.push(...extractSkillObservations(source.timeline, [row.yunara_participant_id]));
     } catch {
       // One corrupt/missing archive should not make the level UI unusable.
     }
@@ -82,7 +83,10 @@ async function loadObservations(): Promise<SkillObservation[]> {
   return observations;
 }
 
-export function extractSkillObservations(timeline: unknown): SkillObservation[] {
+export function extractSkillObservations(
+  timeline: unknown,
+  participantIds?: Iterable<string | number>,
+): SkillObservation[] {
   const value = timeline as {
     info?: {
       frames?: Array<{
@@ -95,10 +99,16 @@ export function extractSkillObservations(timeline: unknown): SkillObservation[] 
   const frames = [...(value.info?.frames ?? [])].sort(
     (left, right) => Number(left.timestamp ?? 0) - Number(right.timestamp ?? 0),
   );
-  const yunaraIds = new Set<string>();
+  const yunaraIds = new Set<string>(
+    participantIds === undefined ? [] : [...participantIds].map((id) => String(id)),
+  );
   for (const frame of frames) {
     for (const event of frame.events ?? []) {
-      if (event.type === "SKILL_LEVEL_UP" && event.participantId != null)
+      if (
+        event.type === "SKILL_LEVEL_UP" &&
+        event.participantId != null &&
+        (participantIds === undefined || yunaraIds.has(String(event.participantId)))
+      )
         yunaraIds.add(String(event.participantId));
     }
   }
@@ -106,7 +116,12 @@ export function extractSkillObservations(timeline: unknown): SkillObservation[] 
   for (const frame of frames) {
     const frameTimestamp = Number(frame.timestamp ?? 0);
     for (const event of frame.events ?? []) {
-      if (event.type !== "SKILL_LEVEL_UP" || event.participantId == null) continue;
+      if (
+        event.type !== "SKILL_LEVEL_UP" ||
+        event.participantId == null ||
+        !yunaraIds.has(String(event.participantId))
+      )
+        continue;
       const slot = Number(event.skillSlot);
       if (![1, 2, 3, 4].includes(slot)) continue;
       const participantId = String(event.participantId);

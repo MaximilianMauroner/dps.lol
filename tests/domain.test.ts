@@ -270,19 +270,23 @@ describe("level-driven cohort and skill helpers", () => {
         frames: [
           {
             timestamp: 60_000,
-            participantFrames: { "1": { level: 1 } },
-            events: [{ type: "SKILL_LEVEL_UP", participantId: 1, skillSlot: 1 }],
+            participantFrames: { "1": { level: 1 }, "2": { level: 1 } },
+            events: [
+              { type: "SKILL_LEVEL_UP", participantId: 1, skillSlot: 1 },
+              { type: "SKILL_LEVEL_UP", participantId: 2, skillSlot: 2 },
+            ],
           },
           {
             timestamp: 120_000,
-            participantFrames: { "1": { level: 2 } },
+            participantFrames: { "1": { level: 2 }, "2": { level: 2 } },
             events: [{ type: "SKILL_LEVEL_UP", participantId: 1, skillSlot: 2 }],
           },
         ],
       },
     };
-    const observations = extractSkillObservations(timeline);
+    const observations = extractSkillObservations(timeline, [1]);
     expect(observations.find((row) => row.level === 2)?.ranks).toEqual({ q: 1, w: 1, e: 0, r: 0 });
+    expect(observations.find((row) => row.level === 1)?.ranks).toEqual({ q: 1, w: 0, e: 0, r: 0 });
   });
 });
 

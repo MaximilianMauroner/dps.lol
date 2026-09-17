@@ -514,11 +514,19 @@ export default function Home() {
   const resultA = data?.results?.a;
   const resultB = data?.results?.b;
   const comparison = data?.results?.comparison;
+  const buildsAreIdentical = sameInventory(buildA.itemIds, buildB.itemIds);
   const headlineOutcome = comparison ? weightedHeadlineWinner(comparison) : "tie";
-  const winnerName =
-    headlineOutcome === "a" ? buildA.name : headlineOutcome === "b" ? buildB.name : null;
+  const winnerName = buildsAreIdentical
+    ? null
+    : headlineOutcome === "a"
+      ? buildA.name
+      : headlineOutcome === "b"
+        ? buildB.name
+        : null;
   const scope = targetMode === "manual" ? "custom target" : `real level-${level} enemy cohort`;
-  const verdictTitle = winnerName ? (
+  const verdictTitle = buildsAreIdentical ? (
+    <>Builds are identical — choose an item to compare</>
+  ) : winnerName ? (
     <>
       <span className="winner">{winnerName}</span> leads the {scope}
     </>
@@ -527,16 +535,18 @@ export default function Home() {
   );
   const delta = comparison?.medianRelativeDelta ?? 0;
   const signed = `${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}%`;
-  const verdictSub = comparison
-    ? comparisonSentence(comparison, {
-        buildA: buildA.name,
-        buildB: buildB.name,
-        duration,
-        level,
-        metric,
-        distinctMatchCount: data?.dataset?.distinctMatchCount ?? comparison.distinctMatchCount,
-      })
-    : "Loading the level-matched target cohort…";
+  const verdictSub = buildsAreIdentical
+    ? `Both builds use the same ${buildA.itemIds.filter((id) => !isBootItem(id)).length}-item inventory, so every target is a tie. Use “Compare IE vs LDR” or edit Build B; no recommendation is implied.`
+    : comparison
+      ? comparisonSentence(comparison, {
+          buildA: buildA.name,
+          buildB: buildB.name,
+          duration,
+          level,
+          metric,
+          distinctMatchCount: data?.dataset?.distinctMatchCount ?? comparison.distinctMatchCount,
+        })
+      : "Loading the level-matched target cohort…";
 
   return (
     <main className="page">
@@ -604,6 +614,12 @@ export default function Home() {
             <button className="ghost-btn" onClick={setIeLdrComparison}>
               Compare IE vs LDR
             </button>
+            {buildsAreIdentical && (
+              <span className="dim">
+                Start from the observed default, then change one slot to make the question
+                comparative.
+              </span>
+            )}
             {buildsEdited && (
               <span className="dim">Manual build edits are preserved on level changes.</span>
             )}
@@ -628,8 +644,8 @@ export default function Home() {
               result={resultA}
               onChange={updateBuild}
               onAdd={addBuildItem}
-              tag={headlineOutcome === "a" ? "WINNER" : "2ND"}
-              leads={headlineOutcome === "a"}
+              tag={buildsAreIdentical ? "SAME BUILD" : headlineOutcome === "a" ? "WINNER" : "2ND"}
+              leads={!buildsAreIdentical && headlineOutcome === "a"}
               maxSource={maxSource(resultA, resultB)}
               rarity={buildRarity(progression, buildA.itemIds)}
               warnings={itemWarnings(buildA.itemIds)}
@@ -645,8 +661,8 @@ export default function Home() {
               result={resultB}
               onChange={updateBuild}
               onAdd={addBuildItem}
-              tag={headlineOutcome === "b" ? "WINNER" : "2ND"}
-              leads={headlineOutcome === "b"}
+              tag={buildsAreIdentical ? "SAME BUILD" : headlineOutcome === "b" ? "WINNER" : "2ND"}
+              leads={!buildsAreIdentical && headlineOutcome === "b"}
               maxSource={maxSource(resultA, resultB)}
               rarity={buildRarity(progression, buildB.itemIds)}
               warnings={itemWarnings(buildB.itemIds)}
@@ -988,7 +1004,10 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              <p className="dim">E can be sequenced for timing, but remains mobility-only and contributes no damage in this MVP.</p>
+              <p className="dim">
+                E can be sequenced for timing, but remains mobility-only and contributes no damage
+                in this MVP.
+              </p>
               {!actions.every((action) => actionAvailable(action, level)) && (
                 <p className="warn">
                   This opener contains an ability unavailable at level {level}; choose a preset or
@@ -1298,6 +1317,13 @@ export default function Home() {
 function actionAvailable(action: ActionKind, level: number): boolean {
   if (action === "R") return level >= 6;
   return level >= 1;
+}
+
+function sameInventory(left: number[], right: number[]): boolean {
+  if (left.length !== right.length) return false;
+  const a = [...left].sort((x, y) => x - y);
+  const b = [...right].sort((x, y) => x - y);
+  return a.every((value, index) => value === b[index]);
 }
 
 function defaultActionsForLevel(level: number): ActionKind[] {
