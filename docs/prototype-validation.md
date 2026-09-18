@@ -23,7 +23,8 @@ updated after each data/deployment checkpoint; it does not claim in-game or stat
 
 ## Access and deployment
 
-Final Railway deployment: update after the current compact-query deployment (`SUCCESS`). The private HTTPS
+Final Railway deployment: `de6afd37-dfa7-4df7-83bd-f1bc64f0412e` (`SUCCESS`, source revision
+`9b4a59f`). The private HTTPS
 test URL is `https://web-production-25228.up.railway.app/`. Login is server-side and unauthenticated
 page/API requests must redirect or return `401`; the password is in ignored `.prototype-access` and
 can be copied with `tr -d '\n' < .prototype-access`.
@@ -39,18 +40,18 @@ Values below are measured from the deployed prototype after the bounded ingestio
 matches and target snapshots are intentionally reported separately; exact Yunara, bot-carry, and
 minute-window phases are not merged or relabelled.
 
-| Measure                                        |                                  Value |
-| ---------------------------------------------- | -------------------------------------: |
-| Patch / Data Dragon                            |                    `26.18` / `16.18.1` |
-| Ranked region / queue                          |                              EUW / 420 |
-| New-match ceiling / request ceiling            |                          1,000 / 5,000 |
-| Accepted current-patch matches / legacy row    |                        1,139 / 1 |
-| Verified source archives / bucket objects      |                    1,139 / 1,141 |
-| Exact Yunara matches / deduped level observations |                 324 / 3,878 |
-| Same-frame enemy vectors (compact hot rows)    |                             19,390 |
-| Bot-carry fallback matches / target vectors    |                         839 / 6,955 |
-| Minute-window matches / target vectors         |                         774 / 3,870 |
-| Legacy rows (pre-original-archive)             |                  1 initial smoke match |
+| Measure                                           |                 Value |
+| ------------------------------------------------- | --------------------: |
+| Patch / Data Dragon                               |   `26.18` / `16.18.1` |
+| Ranked region / queue                             |             EUW / 420 |
+| New-match ceiling / request ceiling               |         1,000 / 5,000 |
+| Accepted current-patch matches / legacy row       |             1,139 / 1 |
+| Verified source archives / bucket objects         |         1,139 / 1,141 |
+| Exact Yunara matches / deduped level observations |           324 / 3,878 |
+| Same-frame enemy vectors (compact hot rows)       |                19,390 |
+| Bot-carry fallback matches / target vectors       |           839 / 6,955 |
+| Minute-window matches / target vectors            |           774 / 3,870 |
+| Legacy rows (pre-original-archive)                | 1 initial smoke match |
 
 Archive bytes from the 1,139 verified original match-plus-timeline objects are 82,610,303 compressed
 bytes (82.61 MB); the two pinned static archives add 130,993 bytes. Postgres measured 50,501,311
@@ -65,20 +66,12 @@ the settled current-patch aggregates above intentionally exclude the prior 117-m
 rows so they cannot overweight the new corpus. The one pre-archive smoke row remains labelled
 legacy and is never treated as a complete original source archive.
 
-The recent-window run used Match-V5 `startTime=1788912000` (2026-09-09 00:00:00 UTC), an `endTime`
-just beyond collection time, `queue=420`, and detail validation for `16.18`. It selected 2,000
-previously unseen current-window IDs and persisted 89 before its private DB tunnel terminated; the
-run was then marked `stopped` and no replacement crawler was left running. Its final per-detail
-rejection counters were not written before that failure. Earlier recorded rejection evidence includes
-183 old-patch IDs in the pre-window exploratory batch (and 6 short games in the completed first
-batch). The database records 1,037 Riot requests across runs with request checkpoints; earlier smoke
-runs without a request cursor are conservatively covered by the configured 500-request reserve, and
-the global ceiling remains 5,000.
-
-The corpus is therefore an enriched exploratory sample, not an unbiased population: the current run
-prioritized PUUIDs of observed Yunara participants before high-elo seeds. Exact anchors meet the
-prototype coverage goal (33 distinct matches / 165 complete enemy vectors), while fallback rows are
-kept as separate phases.
+The bounded current-window collection used Match-V5 `startTime=1788912000` (2026-09-09 00:00:00
+UTC), `queue=420`, and exact `16.18` detail validation. It stopped at the global ceilings with no
+worker/tunnel left running. The 1,139-match corpus is an enriched exploratory sample: Yunara-heavy
+PUUID expansions were prioritized before general high-elo seeds, so it is not an unbiased population.
+Exact Yunara, bot-carry, and minute-window phases remain separate and are never presented as a
+single representative population.
 
 ## Checks
 
@@ -118,16 +111,18 @@ Browser acceptance is performed on the HTTPS deployment with the T3 preview or l
    files or a dev server.
 
 Evidence for this revision: authenticated headless Chromium/CDP checks against the HTTPS deployment
-rendered the explicit identical-default explanation, the exact-Yunara level-13 phase (`33 distinct
-match(es) · 165 snapshots`), selected-target trace, warnings/provenance panels, and timeline-derived
-skill provenance. A level switch incremented `/api/cohort` and `/api/progression`; Build B item edits,
-combo presets, and Yun Tal stack edits changed results while the cohort request count stayed fixed.
-The checks also exercised manual target mode and unauthenticated page/API gating. The prior browser
-run recorded a restarted web process serving the same Railway counts and the archive replay check
-rebuilt 330 derived snapshots from one verified original source envelope without changing production rows.
-The archive replay check rebuilt 330 derived snapshots from one verified original source envelope
-without changing production rows. These are prototype checks; a full idle sleep/wake cycle was not
-run, and target samples do not prove in-game mechanic exactness.
+returned `401` for unauthenticated progression/cohort requests, then rendered the current compact
+corpus at levels 10/13/16 (`266/207/88` distinct matches and `1,330/1,035/440` available vectors).
+The browser showed timeline-derived skill ranks Q5/W4/E1/R1, Q5/W5/E2/R2, and Q5/W5/E4/R3; level-13
+defaults used the full three-item Infinity Edge + Yun Tal Wildarrows + Runaan's Hurricane core.
+Forcing three legendaries at level 10 showed `2 of 266` observed states at ≥3 (0.75%); changing a
+build slot, combo preset, and Yun Tal stack input changed the result with zero new cohort requests.
+Typing a target champion caused zero requests until Apply (one request), level changes fetched new
+progression/cohort data, and manual target mode plus the selected-target trace rendered successfully.
+The initial identical-build result explicitly says to change an item; it is not treated as a build
+recommendation. The archive replay check rebuilt 330 derived snapshots from one verified original
+source envelope without changing production rows. These are prototype checks; a full idle sleep/wake
+cycle was not run, and target samples do not prove in-game mechanic exactness.
 
 ## Known gaps
 
