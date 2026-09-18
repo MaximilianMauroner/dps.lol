@@ -48,7 +48,32 @@ export async function getYunaraLevelTargets(
   const rank = filters.rank && filters.rank !== "ALL" ? filters.rank : null;
   const region = filters.region ?? "EUW1";
   const counts = await query<CountRow>(
-    `WITH yunara_levels AS (
+    `WITH compact_yunara AS (
+       SELECT lo.level_observation_id, lo.match_id, lo.participant_id,
+              lo.timestamp_ms, lo.level, p.team_id
+         FROM lol_dps.level_observations lo
+         JOIN lol_dps.participants p
+           ON p.match_id = lo.match_id AND p.participant_id = lo.participant_id
+         JOIN lol_dps.matches m ON m.match_id = lo.match_id
+        WHERE m.patch = $1
+          AND m.platform_region = $2
+          AND m.queue_id = 420
+          AND m.archive_status = 'verified'
+          AND p.champion_id = 804
+     ), compact_counts AS (
+       SELECT y.level, COUNT(*)::bigint AS snapshot_count,
+              COUNT(DISTINCT y.match_id)::bigint AS match_count
+         FROM compact_yunara y
+         JOIN lol_dps.level_targets lt ON lt.level_observation_id = y.level_observation_id
+         JOIN lol_dps.participants ep
+           ON ep.match_id = y.match_id AND ep.participant_id = lt.target_participant_id
+        WHERE ep.team_id <> y.team_id
+          AND ($3::text IS NULL OR ep.role = $3)
+          AND ($4::text IS NULL OR lower(ep.champion_name) = lower($4))
+          AND ($5::text IS NULL OR ep.tier = $5)
+          AND lt.bonus_health_estimate IS NOT NULL
+        GROUP BY y.level
+     ), legacy_yunara AS (
        SELECT DISTINCT ON (s.match_id, s.participant_id, s.level)
               s.match_id, s.participant_id, s.timestamp_ms, s.level, p.team_id
          FROM lol_dps.timeline_snapshots s
@@ -58,25 +83,37 @@ export async function getYunaraLevelTargets(
         WHERE m.patch = $1
           AND m.platform_region = $2
           AND m.queue_id = 420
-          AND m.archive_status = 'verified'
           AND p.champion_id = 804
+          AND NOT EXISTS (
+            SELECT 1
+              FROM lol_dps.level_observations lo
+              JOIN lol_dps.participants compact_p
+                ON compact_p.match_id = lo.match_id
+               AND compact_p.participant_id = lo.participant_id
+              JOIN lol_dps.matches compact_m ON compact_m.match_id = lo.match_id
+             WHERE compact_m.patch = $1 AND compact_p.champion_id = 804
+          )
         ORDER BY s.match_id, s.participant_id, s.level, s.timestamp_ms DESC
+     ), legacy_counts AS (
+       SELECT y.level, COUNT(*)::bigint AS snapshot_count,
+              COUNT(DISTINCT y.match_id)::bigint AS match_count
+         FROM legacy_yunara y
+         JOIN lol_dps.timeline_snapshots ts
+           ON ts.match_id = y.match_id AND ts.timestamp_ms = y.timestamp_ms
+         JOIN lol_dps.participants ep
+           ON ep.match_id = ts.match_id AND ep.participant_id = ts.participant_id
+        WHERE ep.team_id <> y.team_id
+          AND ($3::text IS NULL OR ep.role = $3)
+          AND ($4::text IS NULL OR lower(ep.champion_name) = lower($4))
+          AND ($5::text IS NULL OR ep.tier = $5)
+          AND ts.bonus_health_estimate IS NOT NULL
+        GROUP BY y.level
      )
-     SELECT y.level,
-            COUNT(*)::text AS snapshot_count,
-            COUNT(DISTINCT y.match_id)::text AS match_count
-       FROM yunara_levels y
-       JOIN lol_dps.timeline_snapshots ts
-         ON ts.match_id = y.match_id AND ts.timestamp_ms = y.timestamp_ms
-       JOIN lol_dps.participants ep
-         ON ep.match_id = ts.match_id AND ep.participant_id = ts.participant_id
-      WHERE ep.team_id <> y.team_id
-        AND ($3::text IS NULL OR ep.role = $3)
-        AND ($4::text IS NULL OR lower(ep.champion_name) = lower($4))
-        AND ($5::text IS NULL OR ep.tier = $5)
-        AND ts.bonus_health_estimate IS NOT NULL
-      GROUP BY y.level
-      ORDER BY y.level`,
+     SELECT level, SUM(snapshot_count)::text AS snapshot_count,
+            SUM(match_count)::text AS match_count
+       FROM (SELECT * FROM compact_counts UNION ALL SELECT * FROM legacy_counts) all_counts
+      GROUP BY level
+      ORDER BY level`,
     [PATCH, region, role, champion, rank],
   );
   const countByLevel = new Map(
@@ -90,7 +127,49 @@ export async function getYunaraLevelTargets(
 
   const limit = Math.max(1, Math.min(1000, Math.round(filters.limit ?? 500)));
   const rows = await query<LevelTargetRow>(
-    `WITH yunara_levels AS (
+    `WITH compact_yunara AS (
+       SELECT lo.level_observation_id, lo.match_id, lo.participant_id,
+              lo.timestamp_ms, lo.level, p.team_id
+         FROM lol_dps.level_observations lo
+         JOIN lol_dps.participants p
+           ON p.match_id = lo.match_id AND p.participant_id = lo.participant_id
+         JOIN lol_dps.matches m ON m.match_id = lo.match_id
+        WHERE m.patch = $1
+          AND m.platform_region = $2
+          AND m.queue_id = 420
+          AND m.archive_status = 'verified'
+          AND p.champion_id = 804
+          AND lo.level = ANY($3::integer[])
+     ), compact_candidates AS (
+       SELECT md5(y.match_id || ':' || y.timestamp_ms::text || ':' || lt.target_participant_id::text) AS sample_id,
+              y.match_id AS anchor_match_id,
+              ep.champion_name AS target_champion,
+              ep.role AS target_role,
+              ep.tier AS target_tier,
+              lt.target_participant_id,
+              lt.health_max,
+              lt.armor,
+              lt.magic_resist,
+              lt.bonus_health_estimate,
+              lt.bonus_health_status,
+              lt.target_level,
+              lt.minute,
+              lt.item_ids,
+              y.level AS anchor_level,
+              y.timestamp_ms AS anchor_timestamp_ms,
+              m.game_start,
+              COUNT(*) OVER (PARTITION BY y.match_id) AS match_target_rows
+         FROM compact_yunara y
+         JOIN lol_dps.level_targets lt ON lt.level_observation_id = y.level_observation_id
+         JOIN lol_dps.participants ep
+           ON ep.match_id = y.match_id AND ep.participant_id = lt.target_participant_id
+         JOIN lol_dps.matches m ON m.match_id = y.match_id
+        WHERE ep.team_id <> y.team_id
+          AND ($4::text IS NULL OR ep.role = $4)
+          AND ($5::text IS NULL OR lower(ep.champion_name) = lower($5))
+          AND ($6::text IS NULL OR ep.tier = $6)
+          AND lt.bonus_health_estimate IS NOT NULL
+     ), legacy_yunara AS (
        SELECT DISTINCT ON (s.match_id, s.participant_id, s.level)
               s.match_id, s.participant_id, s.timestamp_ms, s.level, p.team_id
          FROM lol_dps.timeline_snapshots s
@@ -100,11 +179,19 @@ export async function getYunaraLevelTargets(
         WHERE m.patch = $1
           AND m.platform_region = $2
           AND m.queue_id = 420
-          AND m.archive_status = 'verified'
           AND p.champion_id = 804
           AND s.level = ANY($3::integer[])
+          AND NOT EXISTS (
+            SELECT 1
+              FROM lol_dps.level_observations lo
+              JOIN lol_dps.participants compact_p
+                ON compact_p.match_id = lo.match_id
+               AND compact_p.participant_id = lo.participant_id
+              JOIN lol_dps.matches compact_m ON compact_m.match_id = lo.match_id
+             WHERE compact_m.patch = $1 AND compact_p.champion_id = 804
+          )
         ORDER BY s.match_id, s.participant_id, s.level, s.timestamp_ms DESC
-     ), candidates AS (
+     ), legacy_grouped AS (
        SELECT md5(y.match_id || ':' || y.timestamp_ms::text || ':' || ts.participant_id::text) AS sample_id,
               y.match_id AS anchor_match_id,
               ep.champion_name AS target_champion,
@@ -115,15 +202,14 @@ export async function getYunaraLevelTargets(
               ts.armor,
               ts.magic_resist,
               ts.bonus_health_estimate,
-              ts.bonus_health_status,
+              CASE WHEN ts.bonus_health_estimate IS NULL THEN 'unknown' ELSE 'derived' END AS bonus_health_status,
               ts.level AS target_level,
               ts.minute,
               COALESCE(array_agg(DISTINCT si.item_id) FILTER (WHERE si.item_id IS NOT NULL), '{}') AS item_ids,
               y.level AS anchor_level,
               y.timestamp_ms AS anchor_timestamp_ms,
-              m.game_start,
-              COUNT(*) OVER (PARTITION BY y.match_id) AS match_target_rows
-         FROM yunara_levels y
+              m.game_start
+         FROM legacy_yunara y
          JOIN lol_dps.timeline_snapshots ts
            ON ts.match_id = y.match_id AND ts.timestamp_ms = y.timestamp_ms
          JOIN lol_dps.participants ep
@@ -137,7 +223,14 @@ export async function getYunaraLevelTargets(
           AND ts.bonus_health_estimate IS NOT NULL
         GROUP BY y.match_id, y.timestamp_ms, ts.participant_id, ep.champion_name, ep.role, ep.tier,
                  ts.health_max, ts.armor, ts.magic_resist, ts.bonus_health_estimate,
-                 ts.bonus_health_status, ts.level, ts.minute, y.level, m.game_start
+                 ts.level, ts.minute, y.level, m.game_start
+     ), legacy_candidates AS (
+       SELECT legacy_grouped.*, COUNT(*) OVER (PARTITION BY anchor_match_id) AS match_target_rows
+         FROM legacy_grouped
+     ), candidates AS (
+       SELECT * FROM compact_candidates
+       UNION ALL
+       SELECT * FROM legacy_candidates
      ), ranked AS (
        SELECT candidates.*, ROW_NUMBER() OVER (
          PARTITION BY anchor_match_id

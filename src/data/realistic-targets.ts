@@ -86,12 +86,35 @@ export async function getRealisticTargets(filters?: TargetFilters): Promise<Targ
           AND ($6::text IS NULL OR p.tier = $6)
           AND s.bonus_health_estimate IS NOT NULL`;
     const countRows = await query<{ snapshot_count: string; match_count: string }>(
-      `SELECT COUNT(*)::text AS snapshot_count, COUNT(DISTINCT ss.anchor_match_id)::text AS match_count
-         FROM lol_dps.scenario_samples ss
-         JOIN lol_dps.timeline_snapshots s ON s.snapshot_id = ss.target_snapshot_id
-         JOIN lol_dps.participants p
-           ON p.match_id = s.match_id AND p.participant_id = s.participant_id
-        WHERE ${where}`,
+      `WITH compact AS (
+         SELECT hs.anchor_match_id
+           FROM lol_dps.hot_scenario_samples hs
+           JOIN lol_dps.participants p
+             ON p.match_id = hs.anchor_match_id AND p.participant_id = hs.target_participant_id
+          WHERE hs.patch = $1 AND hs.platform_region = $2 AND hs.phase = $3
+            AND ($4::text IS NULL OR p.role = $4)
+            AND ($5::text IS NULL OR lower(p.champion_name) = lower($5))
+            AND ($6::text IS NULL OR p.tier = $6)
+            AND hs.target_bonus_health_estimate IS NOT NULL
+       ), legacy AS (
+         SELECT ss.anchor_match_id
+           FROM lol_dps.scenario_samples ss
+           JOIN lol_dps.timeline_snapshots s ON s.snapshot_id = ss.target_snapshot_id
+           JOIN lol_dps.participants p
+             ON p.match_id = s.match_id AND p.participant_id = s.participant_id
+          WHERE ${where}
+            AND NOT EXISTS (
+              SELECT 1 FROM lol_dps.hot_scenario_samples hs
+               WHERE hs.patch = $1 AND hs.platform_region = $2 AND hs.phase = ss.phase
+            )
+       ), combined AS (
+         SELECT anchor_match_id FROM compact
+         UNION ALL
+         SELECT anchor_match_id FROM legacy
+       )
+       SELECT COUNT(*)::text AS snapshot_count,
+              COUNT(DISTINCT anchor_match_id)::text AS match_count
+         FROM combined`,
       values,
     );
     const available: CandidateCounts = {
@@ -101,8 +124,28 @@ export async function getRealisticTargets(filters?: TargetFilters): Promise<Targ
     if (available.snapshots === 0) continue;
 
     const rows = await query<TargetRow>(
-      `WITH candidates AS (
-         SELECT ss.scenario_sample_id, ss.anchor_match_id, ss.anchor_event_timestamp_ms,
+      `WITH compact_grouped AS (
+         SELECT hs.hot_scenario_sample_id::text AS scenario_sample_id,
+                hs.anchor_match_id, hs.anchor_event_timestamp_ms,
+                hs.anchor_frame_distance_ms, p.champion_name, p.role, p.tier,
+                hs.target_health_max AS health_max, hs.target_armor AS armor,
+                hs.target_magic_resist AS magic_resist,
+                hs.target_bonus_health_estimate AS bonus_health_estimate,
+                hs.target_bonus_health_status AS bonus_health_status,
+                hs.target_level AS level, hs.target_minute AS minute, m.game_start,
+                hs.target_item_ids AS item_ids,
+                COUNT(*) OVER (PARTITION BY hs.anchor_match_id) AS match_sample_count
+           FROM lol_dps.hot_scenario_samples hs
+           JOIN lol_dps.participants p
+             ON p.match_id = hs.anchor_match_id AND p.participant_id = hs.target_participant_id
+           JOIN lol_dps.matches m ON m.match_id = hs.anchor_match_id
+          WHERE hs.patch = $1 AND hs.platform_region = $2 AND hs.phase = $3
+            AND ($4::text IS NULL OR p.role = $4)
+            AND ($5::text IS NULL OR lower(p.champion_name) = lower($5))
+            AND ($6::text IS NULL OR p.tier = $6)
+            AND hs.target_bonus_health_estimate IS NOT NULL
+       ), legacy_grouped AS (
+         SELECT ss.scenario_sample_id::text, ss.anchor_match_id, ss.anchor_event_timestamp_ms,
                 ss.anchor_frame_distance_ms, p.champion_name, p.role, p.tier,
                 s.health_max, s.armor, s.magic_resist, s.bonus_health_estimate,
                 s.bonus_health_status, s.level, s.minute, m.game_start,
@@ -115,10 +158,18 @@ export async function getRealisticTargets(filters?: TargetFilters): Promise<Targ
            JOIN lol_dps.matches m ON m.match_id = s.match_id
            LEFT JOIN lol_dps.snapshot_items si ON si.snapshot_id = s.snapshot_id
           WHERE ${where}
+            AND NOT EXISTS (
+              SELECT 1 FROM lol_dps.hot_scenario_samples hs
+               WHERE hs.patch = $1 AND hs.platform_region = $2 AND hs.phase = ss.phase
+            )
           GROUP BY ss.scenario_sample_id, ss.anchor_match_id, ss.anchor_event_timestamp_ms,
                    ss.anchor_frame_distance_ms, p.champion_name, p.role, p.tier,
                    s.health_max, s.armor, s.magic_resist, s.bonus_health_estimate,
                    s.bonus_health_status, s.level, s.minute, m.game_start
+       ), candidates AS (
+         SELECT * FROM compact_grouped
+         UNION ALL
+         SELECT * FROM legacy_grouped
        ), ranked AS (
          SELECT candidates.*, ROW_NUMBER() OVER (
            PARTITION BY anchor_match_id

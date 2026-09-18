@@ -109,7 +109,20 @@ async function loadSource(): Promise<{
       [PATCH],
     ),
     query<ObservationRow>(
-      `WITH observed AS (
+      `WITH compact AS (
+         SELECT lo.match_id AS match_key,
+                lo.participant_id::text AS participant_key,
+                lo.level,
+                lo.timestamp_ms,
+                lo.item_ids
+           FROM lol_dps.level_observations lo
+           JOIN lol_dps.participants p
+             ON p.match_id = lo.match_id AND p.participant_id = lo.participant_id
+           JOIN lol_dps.matches m ON m.match_id = lo.match_id
+          WHERE m.patch = $1
+            AND m.archive_status = 'verified'
+            AND p.champion_id = 804
+       ), legacy AS (
          SELECT s.match_id AS match_key,
                 s.participant_id::text AS participant_key,
                 s.level,
@@ -124,9 +137,22 @@ async function loadSource(): Promise<{
            JOIN lol_dps.matches m ON m.match_id = s.match_id
            LEFT JOIN lol_dps.snapshot_items si ON si.snapshot_id = s.snapshot_id
           WHERE m.patch = $1
-            AND m.archive_status = 'verified'
             AND p.champion_id = 804
+            AND NOT EXISTS (
+              SELECT 1
+                FROM lol_dps.level_observations lo
+                JOIN lol_dps.participants compact_p
+                  ON compact_p.match_id = lo.match_id
+                 AND compact_p.participant_id = lo.participant_id
+                JOIN lol_dps.matches compact_m ON compact_m.match_id = lo.match_id
+               WHERE compact_m.patch = $1
+                 AND compact_p.champion_id = 804
+            )
           GROUP BY s.match_id, s.participant_id, s.level, s.timestamp_ms
+       ), observed AS (
+         SELECT * FROM compact
+         UNION ALL
+         SELECT * FROM legacy
        ), deduped AS (
          SELECT observed.*,
                 ROW_NUMBER() OVER (

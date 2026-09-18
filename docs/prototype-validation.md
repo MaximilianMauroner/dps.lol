@@ -23,7 +23,7 @@ updated after each data/deployment checkpoint; it does not claim in-game or stat
 
 ## Access and deployment
 
-Final Railway deployment: `f4d0320d-7115-4973-b2f0-7dcc0aa93369` (`SUCCESS`). The private HTTPS
+Final Railway deployment: update after the current compact-query deployment (`SUCCESS`). The private HTTPS
 test URL is `https://web-production-25228.up.railway.app/`. Login is server-side and unauthenticated
 page/API requests must redirect or return `401`; the password is in ignored `.prototype-access` and
 can be copied with `tr -d '\n' < .prototype-access`.
@@ -44,17 +44,26 @@ minute-window phases are not merged or relabelled.
 | Patch / Data Dragon                            |                    `26.18` / `16.18.1` |
 | Ranked region / queue                          |                              EUW / 420 |
 | New-match ceiling / request ceiling            |                          1,000 / 5,000 |
-| New matches accepted                           | 117 (116 archived; 1 legacy smoke row) |
-| Verified source archive objects                |                                    116 |
-| Exact Yunara anchor matches / target snapshots |                               33 / 165 |
-| Bot-carry fallback matches / target snapshots  |                               85 / 739 |
-| Minute-window matches / target snapshots       |                               82 / 409 |
+| Accepted current-patch matches / legacy row    |                        1,139 / 1 |
+| Verified source archives / bucket objects      |                    1,139 / 1,141 |
+| Exact Yunara matches / deduped level observations |                 324 / 3,878 |
+| Same-frame enemy vectors (compact hot rows)    |                             19,390 |
+| Bot-carry fallback matches / target vectors    |                         839 / 6,955 |
+| Minute-window matches / target vectors         |                         774 / 3,870 |
 | Legacy rows (pre-original-archive)             |                  1 initial smoke match |
 
-Archive bytes from the 116 verified original match-plus-timeline objects are 8,221,551 compressed
-bytes and 90,685,185 uncompressed bytes (measured corpus total). The old reconstructed ~24 KB sample
-is not used as a complete-source size estimate. A one-match byte count or the local engine-only
-timing is not a browser/Web Worker/end-to-end benchmark.
+Archive bytes from the 1,139 verified original match-plus-timeline objects are 82,610,303 compressed
+bytes (82.61 MB); the two pinned static archives add 130,993 bytes. Postgres measured 50,501,311
+bytes (50.50 MB). The old reconstructed ~24 KB sample is not used as a complete-source size
+estimate. A one-match byte count or the local engine-only timing is not a browser/Web Worker/end-to-end
+benchmark.
+
+Compact projection reads are the production path: `level_observations`/`level_targets` drive the
+level-aware progression and same-frame cohorts, while `hot_scenario_samples` drives phase cohorts.
+The SQL adapters retain an explicit dense-table fallback for a corpus with no compact projection;
+the settled current-patch aggregates above intentionally exclude the prior 117-match dense-only
+rows so they cannot overweight the new corpus. The one pre-archive smoke row remains labelled
+legacy and is never treated as a complete original source archive.
 
 The recent-window run used Match-V5 `startTime=1788912000` (2026-09-09 00:00:00 UTC), an `endTime`
 just beyond collection time, `queue=420`, and detail validation for `16.18`. It selected 2,000
@@ -91,7 +100,7 @@ envelope replay, and summary/trace equality.
 
 The focused suite also covers level-anchor dedupe/weights, legal skill breakpoints, Yunara-only
 archived skill-event filtering, and the explicit identical-build result state. Current run:
-**31 tests / 109 assertions**, with format, lint, typecheck, and production build passing.
+**42 tests / 144 assertions**, with format, lint, typecheck, and production build passing.
 
 Browser acceptance is performed on the HTTPS deployment with the T3 preview or local Playwright:
 
