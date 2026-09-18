@@ -102,6 +102,72 @@ export function weightedShare(
   return decisive > 0 ? comparison.weightedOutcomes[side] / decisive : 0;
 }
 
+/** Build A takes at least this share of a group before the group reads as settled. */
+export const SETTLED_SHARE = 0.75;
+/** Below this many samples a group is marked thin and should not decide a build. */
+export const THIN_SAMPLES = 6;
+
+export type SliceTier = "flips" | "close" | "settled" | "undecided";
+
+export interface SliceRow {
+  key: string;
+  label: string;
+  /** Weighted share of the group's decided samples taken by build A. */
+  share: number;
+  count: number;
+  decided: number;
+  tier: SliceTier;
+}
+
+export function sliceTier(share: number, decided: number): SliceTier {
+  if (decided === 0) return "undecided";
+  if (share < 0.5) return "flips";
+  return share < SETTLED_SHARE ? "close" : "settled";
+}
+
+export function sliceRow(
+  key: string,
+  label: string,
+  group: { count: number; decided: number; buildAWinRate: number },
+): SliceRow {
+  return {
+    key,
+    label,
+    share: group.buildAWinRate,
+    count: group.count,
+    decided: group.decided,
+    tier: sliceTier(group.buildAWinRate, group.decided),
+  };
+}
+
+export interface SliceGroups {
+  /** Groups that contradict the headline, worst first. */
+  contested: SliceRow[];
+  settled: SliceRow[];
+  undecided: SliceRow[];
+  /** Sample range across the settled groups, for the one-line summary. */
+  settledRange: { min: number; max: number } | null;
+}
+
+/**
+ * Split one axis of the cohort into the groups that argue with the headline and
+ * the groups that agree. The agreeing side is a count and a sample range, not a
+ * row per name: repeating "wins every sample" forty times hides the exceptions.
+ */
+export function groupSlices(rows: SliceRow[]): SliceGroups {
+  const contested = rows
+    .filter((row) => row.tier === "flips" || row.tier === "close")
+    .sort((left, right) => left.share - right.share);
+  const settled = rows.filter((row) => row.tier === "settled");
+  const counts = settled.map((row) => row.count);
+  return {
+    contested,
+    settled,
+    undecided: rows.filter((row) => row.tier === "undecided"),
+    settledRange: counts.length ? { min: Math.min(...counts), max: Math.max(...counts) } : null,
+  };
+}
+
 export interface BreakpointCell {
   bonusHealth: number;
   delta: number;

@@ -68,7 +68,7 @@ button:disabled {
 .num,
 .tile,
 .pill,
-.chip,
+.slice,
 .kpis,
 table,
 .share-labels {
@@ -743,26 +743,143 @@ table.trace .total-row td {
   font-weight: 600;
 }
 
-/* ---------- drafts ---------- */
+/* ---------- enemy slices ---------- */
 
-.draft-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) 168px;
-  gap: 12px;
-  align-items: center;
-  padding: 9px 0;
+.slice-lead {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin: 10px 0 2px;
+}
+
+.slice-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0 4px;
   border-top: 1px solid var(--border);
-  font-size: 13px;
+  padding-top: 12px;
 }
 
-.draft-row:first-of-type {
-  border-top: 0;
+.slice-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--t2);
 }
 
-.draft-row small {
-  display: block;
-  color: var(--t3);
+.slice-head span {
   font-size: 11px;
+  color: var(--t3);
+}
+
+.slice {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr) 52px 32px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  color: var(--t2);
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 6px;
+}
+
+button.slice {
+  cursor: pointer;
+}
+
+button.slice:hover {
+  background: var(--inset);
+}
+
+.slice-name {
+  color: var(--t1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slice-track {
+  position: relative;
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.slice-track i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 99px;
+  background: var(--acc);
+}
+
+.slice-track.b i {
+  left: auto;
+  right: 0;
+  background: var(--ice);
+}
+
+.slice-track.close i {
+  background: var(--gold);
+}
+
+.slice-share {
+  text-align: right;
+  font-weight: 600;
+  color: var(--t2);
+}
+
+.slice-share.a {
+  color: var(--acc);
+}
+
+.slice-share.b {
+  color: var(--ice);
+}
+
+.slice-share.close {
+  color: var(--gold);
+}
+
+.slice-share.flat {
+  color: var(--t3);
+}
+
+.slice-n {
+  text-align: right;
+  font-size: 11px;
+  color: var(--t3);
+}
+
+.slice-tier {
+  margin: 10px 0 2px;
+  padding-left: 6px;
+  font-size: 11px;
+  color: var(--t3);
+}
+
+.slice-tally {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--t3);
+}
+
+.slice-tally b {
+  color: var(--t2);
+  font-weight: 600;
+}
+
+.slice-fold {
+  margin-top: 6px;
 }
 
 .track {
@@ -786,46 +903,6 @@ table.trace .total-row td {
 
 .track i.neg {
   background: var(--ice);
-}
-
-.draft-delta {
-  text-align: right;
-  font-weight: 700;
-  color: var(--t2);
-}
-
-.draft-delta.a {
-  color: var(--acc);
-}
-
-.draft-delta.b {
-  color: var(--ice);
-}
-
-.chips-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-  font-size: 12px;
-}
-
-.chips-label {
-  color: var(--t3);
-  font-weight: 600;
-}
-
-.chip {
-  font-size: 12px;
-  color: var(--t3);
-  background: var(--inset);
-  border-radius: 8px;
-  padding: 4px 9px;
-}
-
-.chip strong {
-  color: var(--t1);
 }
 
 .bar-row {
@@ -1325,11 +1402,11 @@ footer {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .draft-row {
-    grid-template-columns: minmax(0, 1fr) 140px;
+  .slice {
+    grid-template-columns: minmax(0, 1fr) 52px 32px;
   }
 
-  .draft-row .track {
+  .slice .slice-track {
     display: none;
   }
 }

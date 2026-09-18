@@ -43,6 +43,10 @@ export interface DraftRow {
   detail: string;
   delta: number | null;
   outcome: "a" | "b" | "tie";
+  /** Weighted share of that group's decided samples taken by build A. */
+  share: number;
+  count: number;
+  decided: number;
 }
 
 export interface ComparisonLabels {

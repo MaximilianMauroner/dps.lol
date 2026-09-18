@@ -41,7 +41,7 @@ export async function getYunaraLevelTargets(
   filters: TargetFilters & { level: number },
 ): Promise<TargetDataset> {
   const requestedLevel = clampLevel(filters.level);
-  if (!hasDatabase()) return fixtureLevelDataset(requestedLevel);
+  if (!hasDatabase()) return fixtureLevelDataset(requestedLevel, filters);
 
   const role = filters.role && filters.role !== "ALL" ? filters.role : null;
   const champion = filters.champion?.trim() || null;
@@ -341,12 +341,20 @@ function chooseLevelPool(
   return best;
 }
 
-function fixtureLevelDataset(level: number): TargetDataset {
-  const targets = fixtureTargets.map((target, index) => ({
+function fixtureLevelDataset(level: number, filters: TargetFilters): TargetDataset {
+  // The demo path honours the same role and champion filters as the SQL path, so
+  // picking an enemy in the lab narrows the cohort with or without a database.
+  const role = filters.role && filters.role !== "ALL" ? filters.role : null;
+  const champion = filters.champion?.trim().toLowerCase() || null;
+  const matching = fixtureTargets.filter(
+    (target) =>
+      (!role || target.role === role) && (!champion || target.champion.toLowerCase() === champion),
+  );
+  const targets = matching.map((target, index) => ({
     ...target,
     id: `fixture-level-${level}-${index}`,
     minute: level * 1.5,
-    sampleWeight: 1 / fixtureTargets.length,
+    sampleWeight: 1 / Math.max(1, matching.length),
   }));
   return {
     targets,

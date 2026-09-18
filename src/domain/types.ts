@@ -114,8 +114,9 @@ export interface SampleComparison {
   censored: number;
   aNotKilled: number;
   bNotKilled: number;
-  byRole: Array<{ role: string; count: number; buildAWinRate: number }>;
-  byChampion: Array<{ champion: string; count: number; buildAWinRate: number }>;
+  /** `decided` counts the rows that were not a tie or censored; a group with none has no winner. */
+  byRole: Array<{ role: string; count: number; decided: number; buildAWinRate: number }>;
+  byChampion: Array<{ champion: string; count: number; decided: number; buildAWinRate: number }>;
   rows: Array<{
     target: Target;
     a: SimulationResult;

@@ -8,6 +8,7 @@ import {
   itemLabel,
   summarizeWindow,
   uniqueStrings,
+  weightedShare,
   type WindowSummary,
 } from "@/domain/compare-view";
 import { duplicateItemIds, ITEMS, itemWarnings } from "@/domain/items";
@@ -32,7 +33,7 @@ import {
   OpenerCard,
   TargetCard,
 } from "@/components/lab/controls";
-import { DraftSlices } from "@/components/lab/drafts";
+import { EnemySlices } from "@/components/lab/slices";
 import { HeadToHead } from "@/components/lab/head-to-head";
 import { EvidenceFold, LimitsFold, TraceFold } from "@/components/lab/panels";
 import type { CohortPayload, DraftRow, LabDataset, LabResult } from "@/components/lab/types";
@@ -444,10 +445,19 @@ export default function Home() {
   }
 
   function commitTargetChampion() {
-    const next = targetChampionDraft.trim().slice(0, 48);
+    applyChampionFilter(targetChampionDraft.trim().slice(0, 48));
+  }
+
+  function applyChampionFilter(next: string) {
+    setTargetChampionDraft(next);
     setTargetChampion(next);
     cohortRef.current = null;
     void run({ targetChampion: next });
+  }
+
+  /** A champion row in the slice panel re-runs the whole lab on that champion's samples. */
+  function filterToChampion(champion: string) {
+    applyChampionFilter(targetChampion === champion ? "" : champion);
   }
 
   function suggestAlternative(itemId: number) {
@@ -634,12 +644,14 @@ export default function Home() {
               onResetDefault={resetToDefault}
             />
             {!identical && (
-              <DraftSlices
+              <EnemySlices
                 rows={drafts}
                 labels={labels}
                 comparison={comparison}
                 dataset={dataset}
                 loading={loading}
+                onChampion={filterToChampion}
+                onRole={setRole}
               />
             )}
           </div>
@@ -908,19 +920,11 @@ async function collectDraftRows(context: SweepContext & { enabled: boolean }): P
   const topBy = (pick: (target: Target) => number) =>
     [...context.targets].sort((left, right) => pick(right) - pick(left)).slice(0, take);
   const groups = [
-    { key: "hp", label: "HP-heavy draft", list: topBy((target) => target.bonusHealth) },
-    { key: "armor", label: "Armor-heavy draft", list: topBy((target) => target.armor) },
-    { key: "mr", label: "MR-heavy draft", list: topBy((target) => target.magicResist) },
+    { key: "hp", label: "Most bonus HP", list: topBy((target) => target.bonusHealth) },
+    { key: "armor", label: "Most armor", list: topBy((target) => target.armor) },
+    { key: "mr", label: "Most magic resist", list: topBy((target) => target.magicResist) },
   ];
-  const rows: DraftRow[] = [
-    {
-      key: "avg",
-      label: "Average draft",
-      detail: `${context.targets.length} snapshots`,
-      delta: context.main.medianRelativeDelta,
-      outcome: weightedHeadlineWinner(context.main),
-    },
-  ];
+  const rows: DraftRow[] = [draftRow("avg", "Whole cohort", context.main)];
   for (const group of groups) {
     const response = await context.runWorker({
       id: context.nextId(),
@@ -931,13 +935,20 @@ async function collectDraftRows(context: SweepContext & { enabled: boolean }): P
       metric: context.metric,
       includeBreakpoints: false,
     });
-    rows.push({
-      key: group.key,
-      label: group.label,
-      detail: `${group.list.length} snapshots`,
-      delta: response.comparison.medianRelativeDelta,
-      outcome: weightedHeadlineWinner(response.comparison),
-    });
+    rows.push(draftRow(group.key, group.label, response.comparison));
   }
   return rows;
+}
+
+function draftRow(key: string, label: string, comparison: SampleComparison): DraftRow {
+  return {
+    key,
+    label,
+    detail: `${comparison.count} snapshots`,
+    delta: comparison.medianRelativeDelta,
+    outcome: weightedHeadlineWinner(comparison),
+    share: weightedShare(comparison, "a"),
+    count: comparison.count,
+    decided: comparison.aWins + comparison.bWins,
+  };
 }

@@ -78,6 +78,7 @@ export function compareAcrossSamples(
         return {
           role,
           count: group.length,
+          decided: decidedCount(group),
           buildAWinRate: weightedWinRate(group.filter((row) => row.outcome !== "censored")),
         };
       })
@@ -88,6 +89,7 @@ export function compareAcrossSamples(
         return {
           champion,
           count: group.length,
+          decided: decidedCount(group),
           buildAWinRate: weightedWinRate(group.filter((row) => row.outcome !== "censored")),
         };
       })
@@ -157,6 +159,11 @@ function outcomeStats(rows: Array<{ outcome: "a" | "b" | "tie" | "censored" }>) 
     ties: rows.filter((row) => row.outcome === "tie").length,
     censored: rows.filter((row) => row.outcome === "censored").length,
   };
+}
+
+/** Rows that chose a side. A group with none has a win rate of zero for want of a decision. */
+function decidedCount(rows: Array<{ outcome: "a" | "b" | "tie" | "censored" }>): number {
+  return rows.filter((row) => row.outcome === "a" || row.outcome === "b").length;
 }
 
 function weightedWinRate(

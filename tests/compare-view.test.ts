@@ -3,6 +3,9 @@ import {
   breakpointGrid,
   buildDiff,
   comparisonLabels,
+  groupSlices,
+  sliceRow,
+  sliceTier,
   slotEditorModel,
   summarizeWindow,
   traceCycles,
@@ -177,5 +180,35 @@ describe("traceCycles", () => {
     expect(cycles[1]!.total).toBeCloseTo(185, 0);
     expect(cycles[2]!.running).toBeCloseTo(663.7, 1);
     expect(applied).toBeCloseTo(663.7, 1);
+  });
+});
+
+describe("slice grouping", () => {
+  test("a group with no decided samples is undecided, not a loss for build A", () => {
+    expect(sliceTier(0, 0)).toBe("undecided");
+    expect(sliceTier(0, 4)).toBe("flips");
+  });
+
+  test("build A below three quarters of a group reads as close, not settled", () => {
+    expect(sliceTier(0.74, 9)).toBe("close");
+    expect(sliceTier(0.75, 9)).toBe("settled");
+  });
+
+  test("contested groups sort worst first and settled groups collapse to a range", () => {
+    const groups = groupSlices([
+      sliceRow("Zoe", "Zoe", { count: 5, decided: 5, buildAWinRate: 1 }),
+      sliceRow("Thresh", "Thresh", { count: 14, decided: 14, buildAWinRate: 0.71 }),
+      sliceRow("Volibear", "Volibear", { count: 6, decided: 6, buildAWinRate: 0 }),
+      sliceRow("Jhin", "Jhin", { count: 11, decided: 11, buildAWinRate: 1 }),
+      sliceRow("Braum", "Braum", { count: 3, decided: 0, buildAWinRate: 0 }),
+    ]);
+    expect(groups.contested.map((row) => row.key)).toEqual(["Volibear", "Thresh"]);
+    expect(groups.settled.map((row) => row.key)).toEqual(["Zoe", "Jhin"]);
+    expect(groups.settledRange).toEqual({ min: 5, max: 11 });
+    expect(groups.undecided.map((row) => row.key)).toEqual(["Braum"]);
+  });
+
+  test("no settled group leaves no range to print", () => {
+    expect(groupSlices([]).settledRange).toBeNull();
   });
 });

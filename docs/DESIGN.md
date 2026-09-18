@@ -55,6 +55,14 @@ Two columns at up to 1400px: a sticky 296px setup rail and the result board.
 - Head to head is one diff table (A, B, Δ) with the items under test as selects
   above it and the shared core in a fold. Editing a shared item edits both
   builds; builds that differ by more than one item stay fully editable.
+- "Which enemies change the answer" is one ordered list, not a bar chart beside
+  two chip fields. The whole cohort leads as the reference row, then the tanky
+  thirds, the enemy roles and the enemy champions. Each row carries a share bar,
+  build A's share of that group's decided samples, and the sample count; the
+  winner is carried by colour (teal A, ice B, gold for A under 75%), never by
+  repeating the item name. Groups that agree collapse into one sentence with
+  their sample range and a fold. Role and champion rows are buttons that re-run
+  the whole lab on that group, and a second click clears the filter.
 - All simulator inputs auto-recompute from the cached cohort (280ms debounce);
   champion text commits via Apply/Enter.
 
@@ -66,7 +74,11 @@ One authored motion: the cohort win-bar eases
 - First load seeds the observed level core against Infinity Edge and Lord
   Dominik's Regards, so the first screen is a real answer.
 - Identical builds replace the verdict with one notice, a reset action and up to
-  three alternative items; draft slices are hidden rather than printed as zeros.
+  three alternative items; the enemy slices are hidden rather than printed as
+  zeros.
+- A group in which every sample ties reads "tie" with an empty track, never 0%.
+  A group under 6 samples carries a star and the note that it is too thin to
+  decide a build.
 - A damage window in which both builds kill every target reads "Both kill · use
   TTK instead" with a Switch to TTK action, not a tie. A TTK window with no
   kills reads "No kills yet".
@@ -82,7 +94,8 @@ One authored motion: the cohort win-bar eases
   Round 1: baseline → A/B/C/D rejected → E in the user-pinned dpm.lol register →
   teal accent → implemented. Round 2 (hierarchy and readability): F/G/H → user
   combined H + G into I and J → I chosen → I1 (band tuned) chosen → first-load
-  and folded-panel states designed → built.
+  and folded-panel states designed → built. Round 3 (the role and champion
+  lists): K/L/M → user chose K → K1 rewrote every string in it → built.
 - Detector findings on the build: Inter warning (dispensed by the pin) and one
   width-transition warning (kept as the single authored motion).
 - Mock numbers in `rd1/*.html` are illustrative and were taken from real runs;
