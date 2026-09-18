@@ -19,7 +19,7 @@ export interface Build {
  * The first slice only defines the domain contract; scoring and cohort
  * evaluation remain separate from candidate generation.
  */
-export type OptimizerObjective = "sustained-dps" | "burst-damage" | "ttk";
+export type OptimizerObjective = "sustained-dps" | "fixed-window-damage" | "burst-damage" | "ttk";
 export type OptimizerMetric = "dps" | "damage" | "ttk";
 
 /** The allowed boot policies for a generated full build. */
@@ -80,6 +80,48 @@ export interface BuildValidation {
   reasons: BuildValidationReason[];
   totalGold: number;
   bootCount: number;
+}
+
+export interface OptimizerEvaluationContext {
+  base: Omit<SimulationInput, "build" | "target">;
+  targets: readonly Target[];
+  objective: OptimizerObjective;
+  candidateOptions?: OptimizerGenerationOptions;
+}
+
+export interface OptimizerTargetEvaluation {
+  target: Target;
+  result: SimulationResult;
+  weight: number;
+}
+
+export interface OptimizerBuildEvaluation {
+  candidate: OptimizerCandidate;
+  objective: OptimizerObjective;
+  /** The objective's primary value; null means no TTK sample killed. */
+  score: number | null;
+  weightedDamage: number;
+  weightedDps: number;
+  totalWeight: number;
+  killCoverage: number;
+  censoredCoverage: number;
+  killedCount: number;
+  censoredCount: number;
+  meanTtk: number | null;
+  warnings: string[];
+  rows: OptimizerTargetEvaluation[];
+}
+
+export interface OptimizerRankedBuild extends Omit<OptimizerBuildEvaluation, "rows"> {
+  rank: number;
+}
+
+export interface OptimizerSearchResult {
+  objective: OptimizerObjective;
+  contextHash: string;
+  candidateCount: number;
+  evaluatedCount: number;
+  rankings: OptimizerRankedBuild[];
 }
 
 export interface Target {
