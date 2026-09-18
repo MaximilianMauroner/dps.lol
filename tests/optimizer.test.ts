@@ -1,0 +1,179 @@
+import { describe, expect, test } from "bun:test";
+import { ITEMS } from "../src/domain/items";
+import {
+  canonicalBuildIdentity,
+  canonicalBuildKey,
+  canonicalizeBuild,
+  generateCandidateBuilds,
+  generateLegalBuilds,
+  isLegalBuild,
+  optimizerEligibleItemIds,
+  resolveOptimizerEligibility,
+  sameBuildIdentity,
+  validateBuild,
+} from "../src/domain/optimizer";
+
+describe("optimizer build identity", () => {
+  test("is order-insensitive without mutating the source build", () => {
+    const build = { name: "UI order", itemIds: [3085, 3006, 3031] };
+    expect(canonicalBuildKey(build)).toBe("3006,3031,3085");
+    expect(canonicalBuildIdentity([3031, 3085, 3006])).toBe("3006,3031,3085");
+    expect(sameBuildIdentity(build, { name: "Different label", itemIds: [3006, 3031, 3085] })).toBe(
+      true,
+    );
+    expect(build.itemIds).toEqual([3085, 3006, 3031]);
+    expect(canonicalizeBuild(build)).toEqual({
+      name: "UI order",
+      itemIds: [3006, 3031, 3085],
+    });
+  });
+
+  test("does not collapse duplicate IDs into a legal identity", () => {
+    expect(canonicalBuildKey([3031, 3031, 3085])).toBe("3031,3031,3085");
+    expect(sameBuildIdentity([3031, 3031], [3031])).toBe(false);
+  });
+});
+
+describe("optimizer eligibility", () => {
+  test("uses the curated mechanics catalog and reports unknown or repeated input", () => {
+    const result = resolveOptimizerEligibility([3031, 3032, 3031, 999999]);
+    expect(result.eligibleItemIds).toEqual([3031, 3032]);
+    expect(result.duplicateItemIds).toEqual([3031]);
+    expect(result.unsupportedItemIds).toEqual([999999]);
+    expect(optimizerEligibleItemIds()).toEqual(
+      Object.keys(ITEMS)
+        .map(Number)
+        .sort((left, right) => left - right),
+    );
+  });
+});
+
+describe("legal exhaustive candidate generation", () => {
+  const pool = [3006, 3008, 3031, 3032, 3036];
+
+  test("generates every three-slot one-boot combination once", () => {
+    const candidates = generateLegalBuilds({
+      eligibleItemIds: pool,
+      constraints: { slotCount: 3, bootRule: "required" },
+    });
+    const identities = candidates.map((candidate) => canonicalBuildKey(candidate));
+
+    expect(candidates).toHaveLength(6); // 2 boots × C(3 non-boots, 2)
+    expect(new Set(identities).size).toBe(6);
+    expect(
+      candidates.every(
+        (candidate) => candidate.itemIds.includes(3006) || candidate.itemIds.includes(3008),
+      ),
+    ).toBe(true);
+    expect(
+      candidates.every(
+        (candidate) =>
+          validateBuild(candidate, {
+            eligibleItemIds: pool,
+            constraints: { slotCount: 3, bootRule: "required" },
+          }).legal,
+      ),
+    ).toBe(true);
+  });
+
+  test("applies required, excluded, duplicate, and budget constraints", () => {
+    const candidates = generateCandidateBuilds({
+      eligibleItemIds: [3006, 3031, 3032, 3036, 3085, 6672],
+      constraints: {
+        slotCount: 4,
+        bootRule: "required",
+        requiredItemIds: [3031, 3032],
+        excludedItemIds: [3036],
+        maxGold: 12_000,
+      },
+    });
+
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.every((candidate) => candidate.itemIds.includes(3031))).toBe(true);
+    expect(candidates.every((candidate) => candidate.itemIds.includes(3032))).toBe(true);
+    expect(candidates.every((candidate) => !candidate.itemIds.includes(3036))).toBe(true);
+    expect(candidates.every((candidate) => candidate.goldTotal <= 12_000)).toBe(true);
+    expect(candidates.map((candidate) => candidate.identity)).toEqual(
+      [...candidates].map((candidate) => canonicalBuildKey(candidate)),
+    );
+    expect(
+      isLegalBuild([3006, 3031, 3031, 3032], {
+        eligibleItemIds: [3006, 3031, 3032],
+        constraints: { slotCount: 4, bootRule: "required" },
+      }),
+    ).toBe(false);
+  });
+
+  test("supports optional and forbidden boots without weakening uniqueness", () => {
+    const optional = generateLegalBuilds({
+      eligibleItemIds: pool,
+      constraints: { slotCount: 2, bootRule: "optional" },
+    });
+    const forbidden = generateLegalBuilds({
+      eligibleItemIds: pool,
+      constraints: { slotCount: 2, bootRule: "forbidden" },
+    });
+
+    expect(optional).toHaveLength(9); // C(5, 2), excluding the illegal two-boots pair.
+    expect(forbidden).toHaveLength(3); // C(3 non-boots, 2).
+    expect(forbidden.every((candidate) => !candidate.itemIds.some((id) => ITEMS[id]?.boots))).toBe(
+      true,
+    );
+  });
+
+  test("default full-build enumeration is exhaustive over the curated pool", () => {
+    const candidates = generateLegalBuilds();
+    const nonBootCount = optimizerEligibleItemIds().filter((id) => !ITEMS[id]?.boots).length;
+    const expected = 2 * combinationCount(nonBootCount, 5);
+
+    expect(candidates).toHaveLength(expected);
+    expect(new Set(candidates.map((candidate) => canonicalBuildKey(candidate))).size).toBe(
+      expected,
+    );
+    expect(candidates.every((candidate) => candidate.itemIds.length === 6)).toBe(true);
+    expect(
+      candidates.every(
+        (candidate) => candidate.itemIds.filter((id) => ITEMS[id]?.boots).length === 1,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("optimizer synergy regressions", () => {
+  test("keeps synergistic Yun Tal, crit, penetration, and on-hit choices in the search", () => {
+    const candidates = generateLegalBuilds({
+      eligibleItemIds: [3006, 3031, 3032, 3036, 3085, 6672],
+      constraints: { slotCount: 6, bootRule: "required" },
+    });
+    const identity = "3006,3031,3032,3036,3085,6672";
+
+    expect(candidates.some((candidate) => canonicalBuildKey(candidate) === identity)).toBe(true);
+    expect(
+      candidates.some(
+        (candidate) =>
+          candidate.itemIds.includes(3031) &&
+          candidate.itemIds.includes(3032) &&
+          candidate.itemIds.includes(3085),
+      ),
+    ).toBe(true);
+  });
+
+  test("retains a synergy partner even when it contributes no standalone crit stat", () => {
+    const candidates = generateLegalBuilds({
+      eligibleItemIds: [3006, 3031, 3032, 3085],
+      constraints: { slotCount: 4, bootRule: "required" },
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.itemIds).toEqual([3006, 3031, 3032, 3085]);
+  });
+});
+
+function combinationCount(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  let result = 1;
+  for (let index = 1; index <= k; index += 1) {
+    result = (result * (n - k + index)) / index;
+  }
+  return result;
+}
