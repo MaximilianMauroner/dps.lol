@@ -13,6 +13,133 @@ export interface Build {
   itemIds: number[];
 }
 
+/**
+ * Objectives the optimizer can rank once it is connected to the simulator.
+ *
+ * The first slice only defines the domain contract; scoring and cohort
+ * evaluation remain separate from candidate generation.
+ */
+export type OptimizerObjective = "sustained-dps" | "fixed-window-damage" | "burst-damage" | "ttk";
+export type OptimizerMetric = "dps" | "damage" | "ttk";
+
+/** The allowed boot policies for a generated full build. */
+export type OptimizerBootRule = "required" | "optional" | "forbidden";
+
+export type OptimizerCoverageStatus = "trusted" | "excluded-partial";
+
+export interface OptimizerCoverageItem {
+  id: number;
+  name: string;
+  status: OptimizerCoverageStatus;
+  reason: string;
+}
+
+export interface OptimizerConstraints {
+  /** Exact number of completed items in each generated build. */
+  slotCount: number;
+  /** Defaults to the optimizer's realistic six-slot policy. */
+  bootRule?: OptimizerBootRule;
+  /** Compatibility shorthand for callers that only need a boolean rule. */
+  requireBoots?: boolean;
+  /** Legal completed builds contain at most one boot item. */
+  maxBoots?: number;
+  /** Optional total completed-item budget. */
+  maxGold?: number;
+  /** Optional lower bound for staged/equal-budget searches. */
+  minGold?: number;
+  /** Items that must be present in every candidate. */
+  requiredItemIds?: readonly number[];
+  /** Items that must not be present in any candidate. */
+  excludedItemIds?: readonly number[];
+}
+
+export interface OptimizerGenerationOptions {
+  /** Explicit curated item pool. Omitted means the domain catalog allowlist. */
+  eligibleItemIds?: readonly number[];
+  constraints?: Partial<OptimizerConstraints>;
+  /**
+   * Experimental escape hatch for tests/research using catalog items whose
+   * material mechanics are not in trusted coverage. Production searches leave
+   * this false so partial items cannot enter by accident.
+   */
+  allowPartialItems?: boolean;
+}
+
+export interface OptimizerCandidate extends Build {
+  /** Stable identity derived only from the canonical item IDs. */
+  identity: string;
+  goldTotal: number;
+}
+
+export interface OptimizerEligibility {
+  eligibleItemIds: number[];
+  unsupportedItemIds: number[];
+  excludedPartialItemIds: number[];
+  duplicateItemIds: number[];
+}
+
+export type BuildValidationReason =
+  | "wrong-slot-count"
+  | "unsupported-item"
+  | "ineligible-item"
+  | "duplicate-item"
+  | "boots-required"
+  | "boots-forbidden"
+  | "too-many-boots"
+  | "required-item-missing"
+  | "excluded-item"
+  | "above-max-gold"
+  | "below-min-gold";
+
+export interface BuildValidation {
+  legal: boolean;
+  reasons: BuildValidationReason[];
+  totalGold: number;
+  bootCount: number;
+}
+
+export interface OptimizerEvaluationContext {
+  base: Omit<SimulationInput, "build" | "target">;
+  targets: readonly Target[];
+  objective: OptimizerObjective;
+  candidateOptions?: OptimizerGenerationOptions;
+}
+
+export interface OptimizerTargetEvaluation {
+  target: Target;
+  result: SimulationResult;
+  weight: number;
+}
+
+export interface OptimizerBuildEvaluation {
+  candidate: OptimizerCandidate;
+  objective: OptimizerObjective;
+  /** The objective's primary value; null means no TTK sample killed. */
+  score: number | null;
+  weightedDamage: number;
+  weightedDps: number;
+  totalWeight: number;
+  killCoverage: number;
+  censoredCoverage: number;
+  killedCount: number;
+  censoredCount: number;
+  meanTtk: number | null;
+  warnings: string[];
+  rows: OptimizerTargetEvaluation[];
+}
+
+export interface OptimizerRankedBuild extends Omit<OptimizerBuildEvaluation, "rows"> {
+  rank: number;
+}
+
+export interface OptimizerSearchResult {
+  objective: OptimizerObjective;
+  contextHash: string;
+  candidateCount: number;
+  evaluatedCount: number;
+  rankings: OptimizerRankedBuild[];
+}
+
 export interface Target {
   id: string;
   champion: string;

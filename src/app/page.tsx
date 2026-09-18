@@ -11,7 +11,9 @@ import {
   weightedShare,
   type WindowSummary,
 } from "@/domain/compare-view";
+import { cohortRequestKey, MAX_LEVEL_COHORT_TARGETS } from "@/domain/cohort-cache";
 import { duplicateItemIds, ITEMS, itemWarnings } from "@/domain/items";
+import { OPTIMIZER_ELIGIBLE_ITEM_IDS, optimizerContinuationForObjective } from "@/domain/optimizer";
 import { progressionRarity } from "@/domain/progression";
 import {
   clampSkillRanks,
@@ -20,11 +22,25 @@ import {
   tryAdjustSkillRank,
 } from "@/domain/skills";
 import { weightedHeadlineWinner } from "@/domain/simulator";
-import type { AbilityRanks, ActionKind, SampleComparison, Target } from "@/domain/types";
+import type {
+  AbilityRanks,
+  ActionKind,
+  OptimizerCandidate,
+  OptimizerEvaluationContext,
+  OptimizerObjective,
+  OptimizerSearchResult,
+  SampleComparison,
+  Target,
+} from "@/domain/types";
 import type {
   WorkerSimulationRequest,
   WorkerSimulationResponse,
 } from "@/workers/simulation.worker";
+import type {
+  OptimizerWorkerCommand,
+  OptimizerWorkerProgress,
+  OptimizerWorkerResponse,
+} from "@/workers/optimizer-protocol";
 import { BreakpointHeat } from "@/components/lab/breakpoints";
 import {
   actionAvailable,
@@ -35,6 +51,7 @@ import {
 } from "@/components/lab/controls";
 import { EnemySlices } from "@/components/lab/slices";
 import { HeadToHead } from "@/components/lab/head-to-head";
+import { OptimizerPanel } from "@/components/lab/optimizer";
 import { EvidenceFold, LimitsFold, TraceFold } from "@/components/lab/panels";
 import type { CohortPayload, DraftRow, LabDataset, LabResult } from "@/components/lab/types";
 import { IdenticalBuildsBand, VerdictBand } from "@/components/lab/verdict";
@@ -87,8 +104,21 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showComparedTrace, setShowComparedTrace] = useState(false);
+  const [optimizerObjective, setOptimizerObjective] = useState<OptimizerObjective>("sustained-dps");
+  const [optimizerSlotCount, setOptimizerSlotCount] = useState(4);
+  const [optimizerTopN, setOptimizerTopN] = useState(10);
+  const [optimizerRunning, setOptimizerRunning] = useState(false);
+  const [optimizerProgress, setOptimizerProgress] = useState<OptimizerWorkerProgress | null>(null);
+  const [optimizerResult, setOptimizerResult] = useState<OptimizerSearchResult | null>(null);
+  const [optimizerError, setOptimizerError] = useState("");
+  const [optimizerCohortCount, setOptimizerCohortCount] = useState<number | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
+  const optimizerWorkerRef = useRef<Worker | null>(null);
+  const optimizerSearchRef = useRef<{ searchToken: string; contextHash?: string } | null>(null);
+  const optimizerTokenRef = useRef(0);
+  const optimizerSlotEditedRef = useRef(false);
+  const optimizerInputKeyRef = useRef<string | null>(null);
   const requestIdRef = useRef(0);
   const cohortRef = useRef<{ key: string; payload: CohortPayload } | null>(null);
   const progressionCacheRef = useRef(new Map<number, ProgressionApiResponse>());
@@ -111,6 +141,25 @@ export default function Home() {
     [diff, itemsA, itemsB],
   );
 
+  const optimizerInputKey = JSON.stringify({
+    level,
+    ranks,
+    duration,
+    actions,
+    continueAutos,
+    yunTalStacks,
+    targetMode,
+    region,
+    rank,
+    phase,
+    role,
+    targetChampion,
+    manual,
+    optimizerObjective,
+    optimizerSlotCount,
+    optimizerTopN,
+  });
+
   useEffect(() => {
     const worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
@@ -119,6 +168,69 @@ export default function Home() {
     return () => {
       worker.terminate();
       workerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const worker = new Worker(new URL("../workers/optimizer.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    optimizerWorkerRef.current = worker;
+
+    const onMessage = (event: MessageEvent<OptimizerWorkerResponse>) => {
+      const message = event.data;
+      const current = optimizerSearchRef.current;
+      if (!current || !acceptsOptimizerUiResponse(message, current)) return;
+
+      if (message.type === "optimizer/progress") {
+        current.contextHash ??= message.contextHash;
+        setOptimizerProgress(message);
+        return;
+      }
+      if (message.type === "optimizer/result") {
+        setOptimizerResult(message.result);
+        setOptimizerProgress(null);
+        setOptimizerRunning(false);
+        setOptimizerError("");
+        optimizerSearchRef.current = null;
+        return;
+      }
+      if (message.type === "optimizer/cancelled") {
+        setOptimizerRunning(false);
+        setOptimizerProgress(null);
+        setOptimizerError("Search cancelled.");
+        optimizerSearchRef.current = null;
+        return;
+      }
+      setOptimizerRunning(false);
+      setOptimizerProgress(null);
+      setOptimizerError(message.message);
+      optimizerSearchRef.current = null;
+    };
+
+    const onError = () => {
+      if (!optimizerSearchRef.current) return;
+      setOptimizerRunning(false);
+      setOptimizerProgress(null);
+      setOptimizerError("Optimizer worker failed.");
+      optimizerSearchRef.current = null;
+    };
+
+    worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    return () => {
+      const current = optimizerSearchRef.current;
+      if (current) {
+        worker.postMessage({
+          type: "optimizer/cancel",
+          searchToken: current.searchToken,
+        } satisfies OptimizerWorkerCommand);
+      }
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      worker.terminate();
+      optimizerWorkerRef.current = null;
+      optimizerSearchRef.current = null;
     };
   }, []);
 
@@ -160,6 +272,11 @@ export default function Home() {
     };
   }, [level]);
 
+  useEffect(() => {
+    if (optimizerSlotEditedRef.current) return;
+    setOptimizerSlotCount(defaultOptimizerSlotCount(progression, level));
+  }, [level, progression]);
+
   // Clamp a manually edited rank vector as soon as a level change makes it
   // illegal, before the progression request returns, so an invalid vector can
   // never spend a render silently simulating at the lower level.
@@ -193,10 +310,33 @@ export default function Home() {
     });
   }, []);
 
+  const cancelOptimizer = useCallback((message = "Search cancelled.") => {
+    const current = optimizerSearchRef.current;
+    if (current) {
+      optimizerWorkerRef.current?.postMessage({
+        type: "optimizer/cancel",
+        searchToken: current.searchToken,
+      } satisfies OptimizerWorkerCommand);
+    }
+    optimizerSearchRef.current = null;
+    setOptimizerRunning(false);
+    setOptimizerProgress(null);
+    setOptimizerError(message);
+  }, []);
+
+  useEffect(() => {
+    const previous = optimizerInputKeyRef.current;
+    optimizerInputKeyRef.current = optimizerInputKey;
+    if (previous === null || previous === optimizerInputKey) return;
+    cancelOptimizer("");
+    setOptimizerResult(null);
+    setOptimizerCohortCount(null);
+  }, [cancelOptimizer, optimizerInputKey]);
+
   const loadCohort = useCallback(
     async (overrides: { targetChampion?: string } = {}): Promise<CohortPayload> => {
       const committedChampion = overrides.targetChampion ?? targetChampion;
-      const key = JSON.stringify({
+      const key = cohortRequestKey({
         targetMode,
         region,
         rank,
@@ -221,7 +361,7 @@ export default function Home() {
             role,
             champion: committedChampion,
             level,
-            limit: 1000,
+            limit: MAX_LEVEL_COHORT_TARGETS,
           }),
         });
         const body = (await response.json()) as CohortPayload & { error?: string };
@@ -237,6 +377,88 @@ export default function Home() {
     },
     [level, manual, phase, rank, region, role, selectedTargetId, targetChampion, targetMode],
   );
+
+  const runOptimizer = useCallback(async () => {
+    if (optimizerSearchRef.current) return;
+    if (!isLegalRankShape(ranks, level)) {
+      const corrected = clampSkillRanks(ranks, level);
+      setRanks(corrected);
+      setRankNotice(
+        `Ranks were invalid at level ${level}; the optimizer is paused until the legal ranks Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r} are applied.`,
+      );
+      return;
+    }
+    const worker = optimizerWorkerRef.current;
+    if (!worker) {
+      setOptimizerError("Optimizer worker is unavailable.");
+      return;
+    }
+
+    const searchToken = `optimizer-${++optimizerTokenRef.current}`;
+    optimizerSearchRef.current = { searchToken };
+    setOptimizerRunning(true);
+    setOptimizerProgress(null);
+    setOptimizerResult(null);
+    setOptimizerError("");
+
+    try {
+      const cohort = await loadCohort();
+      if (optimizerSearchRef.current?.searchToken !== searchToken) return;
+      if (!cohort.dataset.targets.length) {
+        throw new Error("No target snapshots matched these filters.");
+      }
+      setOptimizerCohortCount(cohort.dataset.targets.length);
+
+      const context: OptimizerEvaluationContext = {
+        base: {
+          level,
+          ranks,
+          durationSeconds: duration,
+          actions,
+          continueAutos,
+          yunTalStacks,
+          targetMode: "mortal",
+        },
+        targets: cohort.dataset.targets,
+        objective: optimizerObjective,
+        candidateOptions: {
+          eligibleItemIds: OPTIMIZER_ELIGIBLE_ITEM_IDS,
+          constraints: {
+            slotCount: optimizerSlotCount,
+            bootRule: "required",
+            maxBoots: 1,
+          },
+        },
+      };
+      worker.postMessage({
+        type: "optimizer/optimize",
+        searchToken,
+        context,
+        topN: optimizerTopN,
+        // Trusted level cohorts have only 5–10 candidates; small chunks make
+        // progress and cancellation observable while the worker stays off the
+        // main thread.
+        chunkSize: 2,
+      } satisfies OptimizerWorkerCommand);
+    } catch (caught) {
+      if (optimizerSearchRef.current?.searchToken !== searchToken) return;
+      optimizerSearchRef.current = null;
+      setOptimizerRunning(false);
+      setOptimizerProgress(null);
+      setOptimizerError(caught instanceof Error ? caught.message : "Optimizer search failed.");
+    }
+  }, [
+    actions,
+    continueAutos,
+    duration,
+    level,
+    loadCohort,
+    optimizerObjective,
+    optimizerSlotCount,
+    optimizerTopN,
+    ranks,
+    yunTalStacks,
+  ]);
 
   const run = useCallback(
     async (overrides: { selectedTargetId?: string; targetChampion?: string } = {}) => {
@@ -385,6 +607,20 @@ export default function Home() {
   function markBuildsEdited() {
     buildsEditedRef.current = true;
     setBuildsEdited(true);
+  }
+
+  function updateOptimizerSlotCount(next: number) {
+    optimizerSlotEditedRef.current = true;
+    setOptimizerSlotCount(next);
+  }
+
+  function useOptimizerBuild(candidate: OptimizerCandidate, side: "a" | "b") {
+    markBuildsEdited();
+    const itemIds = [...candidate.itemIds];
+    if (side === "a") setBuildAItems(itemIds);
+    else setBuildBItems(itemIds);
+    setContinueAutos(optimizerContinuationForObjective(optimizerObjective, continueAutos));
+    setMetric(optimizerObjective === "ttk" ? "ttk" : "damage");
   }
 
   function updateSide(side: "a" | "b", index: number, value: number | null) {
@@ -578,6 +814,23 @@ export default function Home() {
             </div>
           )}
 
+          <OptimizerPanel
+            objective={optimizerObjective}
+            slotCount={optimizerSlotCount}
+            topN={optimizerTopN}
+            running={optimizerRunning}
+            progress={optimizerProgress}
+            result={optimizerResult}
+            cohortCount={optimizerCohortCount}
+            error={optimizerError}
+            onObjective={setOptimizerObjective}
+            onSlotCount={updateOptimizerSlotCount}
+            onTopN={setOptimizerTopN}
+            onRun={() => void runOptimizer()}
+            onCancel={cancelOptimizer}
+            onUseBuild={useOptimizerBuild}
+          />
+
           {identical ? (
             <IdenticalBuildsBand
               itemName={itemsA.map(itemLabel).join(" + ") || "no items"}
@@ -691,6 +944,24 @@ export default function Home() {
       </footer>
     </div>
   );
+}
+
+function defaultOptimizerSlotCount(
+  progression: ProgressionApiResponse | null,
+  level: number,
+): number {
+  const observed = progression?.selection.modeCompletedLegendary;
+  const completedLegendary = Number.isInteger(observed) ? observed! : Math.max(2, level - 10);
+  return Math.max(3, Math.min(6, completedLegendary + 1));
+}
+
+function acceptsOptimizerUiResponse(
+  message: OptimizerWorkerResponse,
+  current: { searchToken: string; contextHash?: string },
+): boolean {
+  if (message.searchToken !== current.searchToken) return false;
+  if (!current.contextHash || message.type === "optimizer/error") return true;
+  return "contextHash" in message && message.contextHash === current.contextHash;
 }
 
 async function loadProgressionLevel(

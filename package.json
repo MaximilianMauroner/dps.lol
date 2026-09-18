@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "benchmark:optimizer": "bun scripts/benchmark-optimizer.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:migrate": "bun scripts/migrate.ts",

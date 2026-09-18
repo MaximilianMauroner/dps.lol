@@ -273,6 +273,144 @@ table,
   color: var(--t2);
 }
 
+/* ---------- optimizer ---------- */
+
+.optimizer-panel {
+  border-color: rgba(52, 211, 189, 0.28);
+}
+
+.optimizer-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.optimizer-controls .fl {
+  margin-top: 0;
+}
+
+.optimizer-actions {
+  margin-top: 12px;
+}
+
+.optimizer-progress {
+  margin-top: 14px;
+}
+
+.optimizer-coverage {
+  line-height: 1.55;
+}
+
+.optimizer-coverage strong,
+.optimizer-exclusions strong {
+  color: var(--t2);
+}
+
+.optimizer-exclusions {
+  margin-top: 8px;
+  color: var(--gold);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.optimizer-exclusions ul {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding-left: 17px;
+}
+
+.optimizer-progress-head,
+.optimizer-result-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--t3);
+  font-size: 12px;
+}
+
+.optimizer-progress-head span:last-child,
+.optimizer-result-head span {
+  font-variant-numeric: tabular-nums;
+}
+
+.optimizer-progress progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin-top: 7px;
+  accent-color: var(--acc);
+}
+
+.optimizer-results {
+  margin-top: 14px;
+}
+
+.optimizer-result-head strong {
+  color: var(--t1);
+  font-size: 13px;
+}
+
+.optimizer-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.optimizer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--header);
+}
+
+.optimizer-row-main {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 9px;
+}
+
+.optimizer-row-main > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.optimizer-row-main strong,
+.optimizer-row-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optimizer-row-main strong {
+  color: var(--t1);
+  font-size: 12px;
+}
+
+.optimizer-row-main span {
+  color: var(--t3);
+  font-size: 11px;
+}
+
+.optimizer-rank {
+  color: var(--acc);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.optimizer-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 5px;
+}
+
 /* ---------- verdict band ---------- */
 
 .band {
