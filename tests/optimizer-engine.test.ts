@@ -60,6 +60,30 @@ describe("optimizer evaluation semantics", () => {
     expect(evaluation.score).toBe(evaluation.weightedDamage);
   });
 
+  test("optimizer summary execution is metric-identical to the full simulator trace", () => {
+    const evaluationContext = context("fixed-window-damage", { continueAutos: false });
+    const candidate = generateCandidateBuilds(evaluationContext.candidateOptions)[0]!;
+    const full = simulateYunara({
+      ...optimizerSimulationInput(evaluationContext, candidate, targets[0]!),
+      includeEvents: true,
+      includeWarnings: true,
+    });
+    const summary = simulateYunara(
+      optimizerSimulationInput(evaluationContext, candidate, targets[0]!),
+    );
+
+    expect(summary.events).toEqual([]);
+    expect(summary.warnings).toEqual([]);
+    expect(summary.totalDamage).toBe(full.totalDamage);
+    expect(summary.dps).toBe(full.dps);
+    expect(summary.ttk).toBe(full.ttk);
+    expect(summary.split).toEqual(full.split);
+    expect(summary.sources).toEqual(full.sources);
+    expect(summary.killed).toBe(full.killed);
+    expect(summary.censored).toBe(full.censored);
+    expect(summary.overkill).toBe(full.overkill);
+  });
+
   test("sustained and burst objectives make continuation semantics explicit", () => {
     const sustained = context("sustained-dps", { continueAutos: false });
     const burst = context("burst-damage", { continueAutos: true });

@@ -10,6 +10,17 @@ export function applyPercentArmorPenetration(armor: number, percent: number): nu
   return armor * (1 - Math.max(0, Math.min(1, percent)));
 }
 
+/** Percent penetration sources stack multiplicatively in League. */
+export function applyPercentPenetrationSources(
+  resistance: number,
+  percentages: readonly number[],
+): number {
+  return percentages.reduce(
+    (remaining, percent) => applyPercentArmorPenetration(remaining, percent),
+    resistance,
+  );
+}
+
 // Riot champion growth curve, used for stats stored as "per level".
 export function growthAtLevel(perLevel: number, level: number): number {
   const levels = Math.max(0, Math.min(17, level - 1));

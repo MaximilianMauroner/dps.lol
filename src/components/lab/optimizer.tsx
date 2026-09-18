@@ -33,7 +33,8 @@ const OBJECTIVES: Array<{ value: OptimizerObjective; label: string; detail: stri
 ];
 
 const TRUSTED_ITEMS = OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted");
-const EXCLUDED_ITEMS = OPTIMIZER_COVERAGE.filter((item) => item.status === "excluded-partial");
+const EXCLUDED_ITEMS = OPTIMIZER_COVERAGE.filter((item) => item.status === "excluded-unsupported");
+const NO_DAMAGE_ITEMS = OPTIMIZER_COVERAGE.filter((item) => item.scope === "modeled-no-effect");
 
 export function OptimizerPanel({
   objective,
@@ -72,27 +73,37 @@ export function OptimizerPanel({
     <section className="card optimizer-panel" aria-labelledby="optimizer-title">
       <div className="rail-head">
         <h2 id="optimizer-title">Find the best modeled build</h2>
-        <span className="pill">exhaustive · trusted</span>
+        <span className="pill">exhaustive · modeled coverage</span>
       </div>
       <p className="sub">
-        Search every legal one-boot combination in the {TRUSTED_ITEMS.length}-item trusted
+        Search every legal one-boot combination in the {TRUSTED_ITEMS.length}-item modeled
         single-target catalog. Results are best for the selected objective, cohort, and constraints
-        within modeled coverage—not globally optimal. Pairwise comparison below remains available
-        for inspecting any result.
+        within this modeled coverage—not globally optimal. Pairwise comparison below remains
+        available for inspecting any result.
       </p>
       <p className="note optimizer-coverage">
-        <strong>Trusted coverage ({TRUSTED_ITEMS.length}):</strong>{" "}
+        <strong>Eligible modeled items ({TRUSTED_ITEMS.length}):</strong>{" "}
         {TRUSTED_ITEMS.map((item) => `${item.name} (${item.id})`).join(" · ")}
       </p>
+      {NO_DAMAGE_ITEMS.length > 0 && (
+        <p className="note">
+          <strong>Modeled with no direct damage effect in this scope:</strong>{" "}
+          {NO_DAMAGE_ITEMS.map((item) => `${item.name} (${item.id})`).join(" · ")}.
+        </p>
+      )}
       <div className="optimizer-exclusions">
-        <strong>Excluded from trusted search ({EXCLUDED_ITEMS.length} partial):</strong>
-        <ul>
-          {EXCLUDED_ITEMS.map((item) => (
-            <li key={item.id}>
-              {item.name} ({item.id}) — {item.reason}
-            </li>
-          ))}
-        </ul>
+        <strong>Excluded unsupported items ({EXCLUDED_ITEMS.length}):</strong>
+        {EXCLUDED_ITEMS.length === 0 ? (
+          <span> none; every catalog item is eligible for this declared scope.</span>
+        ) : (
+          <ul>
+            {EXCLUDED_ITEMS.map((item) => (
+              <li key={item.id}>
+                {item.name} ({item.id}) — {item.reason}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="optimizer-controls">
         <div>
@@ -191,7 +202,7 @@ export function OptimizerPanel({
           </div>
           <p className="note">
             This ranking is scoped to the selected objective, cohort, one-boot slot constraint, and
-            trusted item coverage. TTK excludes censored targets from its mean and reports kill
+            modeled item coverage. TTK excludes censored targets from its mean and reports kill
             coverage separately.
           </p>
         </div>
