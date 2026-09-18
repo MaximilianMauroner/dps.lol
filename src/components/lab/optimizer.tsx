@@ -1,6 +1,7 @@
 "use client";
 
 import { itemLabel } from "@/domain/compare-view";
+import { OPTIMIZER_COVERAGE } from "@/domain/optimizer";
 import type {
   OptimizerObjective,
   OptimizerRankedBuild,
@@ -31,6 +32,9 @@ const OBJECTIVES: Array<{ value: OptimizerObjective; label: string; detail: stri
   },
 ];
 
+const TRUSTED_ITEMS = OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted");
+const EXCLUDED_ITEMS = OPTIMIZER_COVERAGE.filter((item) => item.status === "excluded-partial");
+
 export function OptimizerPanel({
   objective,
   slotCount,
@@ -38,6 +42,7 @@ export function OptimizerPanel({
   running,
   progress,
   result,
+  cohortCount,
   error,
   onObjective,
   onSlotCount,
@@ -52,6 +57,7 @@ export function OptimizerPanel({
   running: boolean;
   progress: OptimizerWorkerProgress | null;
   result: OptimizerSearchResult | null;
+  cohortCount: number | null;
   error: string;
   onObjective: (objective: OptimizerObjective) => void;
   onSlotCount: (slotCount: number) => void;
@@ -65,13 +71,29 @@ export function OptimizerPanel({
   return (
     <section className="card optimizer-panel" aria-labelledby="optimizer-title">
       <div className="rail-head">
-        <h2 id="optimizer-title">Find an optimal build</h2>
-        <span className="pill">exhaustive</span>
+        <h2 id="optimizer-title">Find the best modeled build</h2>
+        <span className="pill">exhaustive · trusted</span>
       </div>
       <p className="sub">
-        Search every legal one-boot combination in the curated simulator catalog. Pairwise
-        comparison below remains available for inspecting any result.
+        Search every legal one-boot combination in the {TRUSTED_ITEMS.length}-item trusted
+        single-target catalog. Results are best for the selected objective, cohort, and constraints
+        within modeled coverage—not globally optimal. Pairwise comparison below remains available
+        for inspecting any result.
       </p>
+      <p className="note optimizer-coverage">
+        <strong>Trusted coverage ({TRUSTED_ITEMS.length}):</strong>{" "}
+        {TRUSTED_ITEMS.map((item) => `${item.name} (${item.id})`).join(" · ")}
+      </p>
+      <div className="optimizer-exclusions">
+        <strong>Excluded from trusted search ({EXCLUDED_ITEMS.length} partial):</strong>
+        <ul>
+          {EXCLUDED_ITEMS.map((item) => (
+            <li key={item.id}>
+              {item.name} ({item.id}) — {item.reason}
+            </li>
+          ))}
+        </ul>
+      </div>
       <div className="optimizer-controls">
         <div>
           <label className="fl" htmlFor="optimizer-objective">
@@ -156,8 +178,11 @@ export function OptimizerPanel({
       {result && !running && (
         <div className="optimizer-results" aria-live="polite">
           <div className="optimizer-result-head">
-            <strong>{result.candidateCount.toLocaleString()} legal builds searched</strong>
-            <span>{result.evaluatedCount.toLocaleString()} evaluated</span>
+            <strong>{result.candidateCount.toLocaleString()} legal modeled builds searched</strong>
+            <span>
+              {result.evaluatedCount.toLocaleString()} evaluated
+              {cohortCount === null ? "" : ` · ${cohortCount.toLocaleString()} targets`}
+            </span>
           </div>
           <div className="optimizer-list">
             {result.rankings.map((row) => (
@@ -165,8 +190,9 @@ export function OptimizerPanel({
             ))}
           </div>
           <p className="note">
-            TTK excludes censored targets from its mean and reports kill coverage separately. Items
-            with partially modeled passives retain their simulator warnings.
+            This ranking is scoped to the selected objective, cohort, one-boot slot constraint, and
+            trusted item coverage. TTK excludes censored targets from its mean and reports kill
+            coverage separately.
           </p>
         </div>
       )}

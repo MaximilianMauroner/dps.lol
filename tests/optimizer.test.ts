@@ -7,6 +7,10 @@ import {
   generateCandidateBuilds,
   generateLegalBuilds,
   isLegalBuild,
+  OPTIMIZER_COVERAGE,
+  OPTIMIZER_ELIGIBLE_ITEM_IDS,
+  OPTIMIZER_EXCLUDED_ITEM_IDS,
+  optimizerContinuationForObjective,
   optimizerEligibleItemIds,
   resolveOptimizerEligibility,
   sameBuildIdentity,
@@ -40,11 +44,29 @@ describe("optimizer eligibility", () => {
     expect(result.eligibleItemIds).toEqual([3031, 3032]);
     expect(result.duplicateItemIds).toEqual([3031]);
     expect(result.unsupportedItemIds).toEqual([999999]);
-    expect(optimizerEligibleItemIds()).toEqual(
-      Object.keys(ITEMS)
-        .map(Number)
-        .sort((left, right) => left - right),
+    expect(result.excludedPartialItemIds).toEqual([]);
+    expect(optimizerEligibleItemIds()).toEqual(OPTIMIZER_ELIGIBLE_ITEM_IDS);
+    expect(OPTIMIZER_COVERAGE).toHaveLength(Object.keys(ITEMS).length);
+    expect(OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted")).toHaveLength(6);
+    expect(OPTIMIZER_COVERAGE.filter((item) => item.status === "excluded-partial")).toHaveLength(
+      11,
     );
+    expect(
+      OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted").map((item) => item.id),
+    ).toEqual([3006, 3031, 3032, 3036, 3085, 6672]);
+    expect(OPTIMIZER_EXCLUDED_ITEM_IDS).toEqual([
+      2512, 2523, 3008, 3026, 3033, 3046, 3072, 3095, 3139, 3153, 3302,
+    ]);
+    expect(resolveOptimizerEligibility([3008, 999999]).excludedPartialItemIds).toEqual([3008]);
+  });
+});
+
+describe("optimizer objective handoff", () => {
+  test("uses the same continuation semantics in Compare as in optimization", () => {
+    expect(optimizerContinuationForObjective("sustained-dps", false)).toBe(true);
+    expect(optimizerContinuationForObjective("burst-damage", true)).toBe(false);
+    expect(optimizerContinuationForObjective("fixed-window-damage", false)).toBe(false);
+    expect(optimizerContinuationForObjective("ttk", true)).toBe(true);
   });
 });
 
@@ -54,6 +76,7 @@ describe("legal exhaustive candidate generation", () => {
   test("generates every three-slot one-boot combination once", () => {
     const candidates = generateLegalBuilds({
       eligibleItemIds: pool,
+      allowPartialItems: true,
       constraints: { slotCount: 3, bootRule: "required" },
     });
     const identities = candidates.map((candidate) => canonicalBuildKey(candidate));
@@ -70,6 +93,7 @@ describe("legal exhaustive candidate generation", () => {
         (candidate) =>
           validateBuild(candidate, {
             eligibleItemIds: pool,
+            allowPartialItems: true,
             constraints: { slotCount: 3, bootRule: "required" },
           }).legal,
       ),
@@ -107,10 +131,12 @@ describe("legal exhaustive candidate generation", () => {
   test("supports optional and forbidden boots without weakening uniqueness", () => {
     const optional = generateLegalBuilds({
       eligibleItemIds: pool,
+      allowPartialItems: true,
       constraints: { slotCount: 2, bootRule: "optional" },
     });
     const forbidden = generateLegalBuilds({
       eligibleItemIds: pool,
+      allowPartialItems: true,
       constraints: { slotCount: 2, bootRule: "forbidden" },
     });
 
@@ -124,7 +150,8 @@ describe("legal exhaustive candidate generation", () => {
   test("default full-build enumeration is exhaustive over the curated pool", () => {
     const candidates = generateLegalBuilds();
     const nonBootCount = optimizerEligibleItemIds().filter((id) => !ITEMS[id]?.boots).length;
-    const expected = 2 * combinationCount(nonBootCount, 5);
+    const bootCount = optimizerEligibleItemIds().filter((id) => ITEMS[id]?.boots).length;
+    const expected = bootCount * combinationCount(nonBootCount, 5);
 
     expect(candidates).toHaveLength(expected);
     expect(new Set(candidates.map((candidate) => canonicalBuildKey(candidate))).size).toBe(
@@ -132,9 +159,34 @@ describe("legal exhaustive candidate generation", () => {
     );
     expect(candidates.every((candidate) => candidate.itemIds.length === 6)).toBe(true);
     expect(
+      candidates.every((candidate) =>
+        candidate.itemIds.every((id) =>
+          OPTIMIZER_ELIGIBLE_ITEM_IDS.some((eligibleId) => eligibleId === id),
+        ),
+      ),
+    ).toBe(true);
+    expect(
       candidates.every(
         (candidate) => candidate.itemIds.filter((id) => ITEMS[id]?.boots).length === 1,
       ),
+    ).toBe(true);
+  });
+
+  test("does not admit excluded partial catalog items without an explicit opt-in", () => {
+    const requested = [3006, 3008, 3031, 3032];
+    expect(optimizerEligibleItemIds(ITEMS, requested)).toEqual([3006, 3031, 3032]);
+    expect(
+      generateLegalBuilds({
+        eligibleItemIds: requested,
+        constraints: { slotCount: 2, bootRule: "required" },
+      }).every((build) => !build.itemIds.includes(3008)),
+    ).toBe(true);
+    expect(
+      generateLegalBuilds({
+        eligibleItemIds: requested,
+        allowPartialItems: true,
+        constraints: { slotCount: 2, bootRule: "required" },
+      }).some((build) => build.itemIds.includes(3008)),
     ).toBe(true);
   });
 });

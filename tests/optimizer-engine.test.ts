@@ -10,7 +10,7 @@ import {
   optimizerSimulationInput,
   rankOptimizerBuilds,
 } from "../src/domain/optimizer-engine";
-import { simulateYunara } from "../src/domain/simulator";
+import { compareAcrossSamples, simulateYunara } from "../src/domain/simulator";
 import type { OptimizerBuildEvaluation, OptimizerEvaluationContext } from "../src/domain/types";
 
 const base = {
@@ -108,6 +108,94 @@ describe("optimizer evaluation semantics", () => {
       }),
     ).toThrow("mortal target mode");
   });
+
+  test("does not use post-death damage to break equal TTK coverage and time", () => {
+    const make = (identity: string, goldTotal: number, weightedDamage: number) =>
+      ({
+        candidate: { name: identity, itemIds: [3006], identity, goldTotal },
+        objective: "ttk" as const,
+        score: 1,
+        weightedDamage,
+        weightedDps: weightedDamage,
+        totalWeight: 1,
+        killCoverage: 1,
+        censoredCoverage: 0,
+        killedCount: 1,
+        censoredCount: 0,
+        meanTtk: 1,
+        warnings: [],
+        rows: [],
+      }) as OptimizerBuildEvaluation;
+
+    const cheaper = make("cheaper", 1_000, 10);
+    const moreDamage = make("more-damage", 2_000, 10_000);
+    expect(compareOptimizerEvaluations(cheaper, moreDamage)).toBeLessThan(0);
+
+    const moreCoverage = {
+      ...cheaper,
+      candidate: { ...cheaper.candidate, identity: "more-coverage" },
+      killCoverage: 0.75,
+      meanTtk: 10,
+      score: 10,
+      weightedDamage: 1,
+    };
+    const fasterButCensored = {
+      ...cheaper,
+      candidate: { ...cheaper.candidate, identity: "faster-but-censored" },
+      killCoverage: 0.5,
+      meanTtk: 1,
+      score: 1,
+      weightedDamage: 100_000,
+    };
+    expect(compareOptimizerEvaluations(moreCoverage, fasterButCensored)).toBeLessThan(0);
+  });
+
+  test("hands the exact ranked item set to compare with matching simulator metrics", () => {
+    const evaluationContext = context("fixed-window-damage", { continueAutos: false });
+    const result = rankOptimizerBuilds(evaluationContext, { topN: 1 });
+    const selected = result.rankings[0]!.candidate;
+    const optimizerEvaluation = evaluateOptimizerBuild(evaluationContext, selected);
+    const handoff = { name: selected.name, itemIds: [...selected.itemIds] };
+    const comparison = compareAcrossSamples(
+      evaluationContext.base,
+      handoff,
+      { name: "comparison", itemIds: [3006] },
+      targets,
+      { includeEvents: false, metric: "damage" },
+    );
+
+    expect(handoff.itemIds).toEqual(selected.itemIds);
+    expect(comparison.rows.map((row) => row.a.totalDamage)).toEqual(
+      optimizerEvaluation.rows.map((row) => row.result.totalDamage),
+    );
+    expect(optimizerEvaluation.score).toBe(
+      optimizerEvaluation.rows.reduce((sum, row) => sum + row.result.totalDamage * row.weight, 0) /
+        optimizerEvaluation.totalWeight,
+    );
+    expect(comparison.rows).toHaveLength(targets.length);
+  });
+
+  test("objective-specific handoff keeps Compare on the optimizer scenario", () => {
+    for (const objective of ["sustained-dps", "burst-damage"] as const) {
+      const evaluationContext = context(objective, { continueAutos: objective === "burst-damage" });
+      const selected = generateCandidateBuilds(evaluationContext.candidateOptions)[0]!;
+      const optimizerEvaluation = evaluateOptimizerBuild(evaluationContext, selected);
+      const comparison = compareAcrossSamples(
+        optimizerBaseForObjective(evaluationContext),
+        selected,
+        { name: "comparison", itemIds: [3006] },
+        targets,
+        { includeEvents: false, metric: "damage" },
+      );
+
+      expect(comparison.rows.map((row) => row.a.totalDamage)).toEqual(
+        optimizerEvaluation.rows.map((row) => row.result.totalDamage),
+      );
+      expect(comparison.rows.map((row) => row.a.dps)).toEqual(
+        optimizerEvaluation.rows.map((row) => row.result.dps),
+      );
+    }
+  });
 });
 
 describe("optimizer ranking", () => {
@@ -141,6 +229,24 @@ describe("optimizer ranking", () => {
     ).toBeLessThan(0);
   });
 
+  test("normalizes candidate identity and gold from canonical item IDs", () => {
+    const evaluationContext: OptimizerEvaluationContext = {
+      base: { ...base, actions: [], continueAutos: false },
+      targets: [targets[0]!],
+      objective: "fixed-window-damage",
+    };
+    const candidates = [
+      { name: "z label", itemIds: [3031, 3006], identity: "not-canonical", goldTotal: 1 },
+      { name: "a label", itemIds: [3006, 3031], identity: "also-wrong", goldTotal: 999_999 },
+    ];
+    const result = rankOptimizerBuilds(evaluationContext, { candidates, topN: 2 });
+
+    expect(result.candidateCount).toBe(1);
+    expect(result.rankings[0]!.candidate.identity).toBe("3006,3031");
+    expect(result.rankings[0]!.candidate.goldTotal).toBe(4600);
+    expect(result.rankings[0]!.candidate.name).toBe("a label");
+  });
+
   test("changes the context hash for every result-affecting input but ignores search token", () => {
     const evaluationContext = context("sustained-dps");
     const candidates = generateCandidateBuilds(evaluationContext.candidateOptions);
@@ -155,5 +261,26 @@ describe("optimizer ranking", () => {
     );
     expect(same).toBe(optimizerContextHash(evaluationContext, options));
     expect(changed).not.toBe(same);
+
+    const changedInputs = [
+      { ...evaluationContext, objective: "burst-damage" as const },
+      { ...evaluationContext, base: { ...evaluationContext.base, actions: ["AA"] as const } },
+      { ...evaluationContext, base: { ...evaluationContext.base, continueAutos: false } },
+      { ...evaluationContext, base: { ...evaluationContext.base, yunTalStacks: 50 } },
+      {
+        ...evaluationContext,
+        base: { ...evaluationContext.base, ranks: { ...evaluationContext.base.ranks, q: 4 } },
+      },
+      {
+        ...evaluationContext,
+        candidateOptions: {
+          ...evaluationContext.candidateOptions,
+          constraints: { slotCount: 5, bootRule: "required" as const },
+        },
+      },
+    ];
+    expect(changedInputs.every((input) => optimizerContextHash(input, options) !== same)).toBe(
+      true,
+    );
   });
 });

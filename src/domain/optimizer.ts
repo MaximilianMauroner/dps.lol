@@ -5,9 +5,11 @@ import type {
   BuildValidationReason,
   OptimizerBootRule,
   OptimizerCandidate,
+  OptimizerCoverageItem,
   OptimizerConstraints,
   OptimizerEligibility,
   OptimizerGenerationOptions,
+  OptimizerObjective,
 } from "./types";
 
 export type {
@@ -15,6 +17,7 @@ export type {
   BuildValidationReason,
   OptimizerBootRule,
   OptimizerCandidate,
+  OptimizerCoverageItem,
   OptimizerConstraints,
   OptimizerEligibility,
   OptimizerGenerationOptions,
@@ -23,13 +26,67 @@ export type {
 } from "./types";
 
 /**
- * The curated catalog is deliberately finite. The optimizer must not turn
- * every Data Dragon item into a candidate while its mechanics are absent from
- * the simulator.
+ * Trusted coverage is deliberately narrower than the compare editor's item
+ * catalog. These items have all material contributions to the modeled
+ * single-target Yunara damage objective represented by the simulator. Runaan's
+ * bolts are multi-target and therefore outside this objective; its primary
+ * attack stats are modeled and remain trusted for this scope.
  */
-export const OPTIMIZER_ELIGIBLE_ITEM_IDS = Object.keys(ITEMS)
+export const OPTIMIZER_TRUSTED_ITEM_IDS = [3006, 3031, 3032, 3036, 3085, 6672] as const;
+
+export const OPTIMIZER_ELIGIBLE_ITEM_IDS = [...OPTIMIZER_TRUSTED_ITEM_IDS].sort(
+  (left, right) => left - right,
+);
+const OPTIMIZER_TRUSTED_ITEM_SET = new Set<number>(OPTIMIZER_TRUSTED_ITEM_IDS);
+
+const OPTIMIZER_EXCLUSION_REASONS: Record<number, string> = {
+  2512: "Fiendhunter's post-ultimate guaranteed-crit and true-damage passive is not modeled.",
+  2523: "Hexoptics Magnification's range-based attack damage amp is not modeled.",
+  3008: "Gluttonous Greaves omnivamp and takedown stacking are not modeled.",
+  3026: "Guardian Angel's Rebirth effect is not modeled.",
+  3033: "Mortal Reminder's Grievous Wounds effect is not modeled.",
+  3046: "Phantom Dancer's Spectral Waltz movement effect is not modeled.",
+  3072: "Bloodthirster's lifesteal and Ichorshield are not modeled.",
+  3095: "Stormrazor's Energized Bolt proc is not modeled.",
+  3139: "Mercurial Scimitar's active and lifesteal are not modeled.",
+  3153: "Blade of the Ruined King's current-health on-hit is not modeled.",
+  3302: "Terminus on-hit damage and alternating penetration stacks are not modeled.",
+};
+
+export const OPTIMIZER_COVERAGE: OptimizerCoverageItem[] = Object.keys(ITEMS)
   .map(Number)
-  .sort((left, right) => left - right);
+  .sort((left, right) => left - right)
+  .map((id) => {
+    const trusted = OPTIMIZER_TRUSTED_ITEM_SET.has(id);
+    return {
+      id,
+      name: ITEMS[id]!.name,
+      status: trusted ? ("trusted" as const) : ("excluded-partial" as const),
+      reason: trusted
+        ? id === 3085
+          ? "Primary attack stats are modeled; multi-target bolts are outside the single-target objective."
+          : "All material contributions in the modeled single-target objective are represented."
+        : (OPTIMIZER_EXCLUSION_REASONS[id] ?? "A material combat mechanic is not modeled."),
+    };
+  });
+
+export const OPTIMIZER_EXCLUDED_ITEM_IDS = OPTIMIZER_COVERAGE.filter(
+  (item) => item.status === "excluded-partial",
+).map((item) => item.id);
+
+export function optimizerCoverageItems(): OptimizerCoverageItem[] {
+  return OPTIMIZER_COVERAGE.map((item) => ({ ...item }));
+}
+
+/** Resolves the continuation setting that the objective sends to the simulator. */
+export function optimizerContinuationForObjective(
+  objective: OptimizerObjective,
+  requestedContinueAutos: boolean,
+): boolean {
+  if (objective === "sustained-dps") return true;
+  if (objective === "burst-damage") return false;
+  return requestedContinueAutos;
+}
 
 /**
  * Realistic full-build defaults. Callers can opt into no-boots or partial
@@ -49,22 +106,32 @@ interface ResolvedOptions {
   catalog: CatalogLike;
   eligibleItemIds: number[];
   constraints: OptimizerConstraints;
+  allowPartialItems: boolean;
 }
 
 interface ValidationOptions {
   eligibleItemIds?: readonly number[];
   constraints?: Partial<OptimizerConstraints>;
   catalog?: CatalogLike;
+  allowPartialItems?: boolean;
 }
 
 /** Returns the sorted, de-duplicated IDs accepted by the optimizer catalog. */
 export function optimizerEligibleItemIds(
   catalog: CatalogLike = ITEMS,
   requestedItemIds?: readonly number[],
+  options: { allowPartialItems?: boolean } = {},
 ): number[] {
-  const source = requestedItemIds ?? Object.keys(catalog).map(Number);
+  const source =
+    requestedItemIds ??
+    (catalog === ITEMS ? OPTIMIZER_ELIGIBLE_ITEM_IDS : Object.keys(catalog).map(Number));
   return [...new Set(source)]
-    .filter((itemId) => Number.isInteger(itemId) && catalog[itemId] !== undefined)
+    .filter(
+      (itemId) =>
+        Number.isInteger(itemId) &&
+        catalog[itemId] !== undefined &&
+        (options.allowPartialItems === true || OPTIMIZER_TRUSTED_ITEM_SET.has(itemId)),
+    )
     .sort((left, right) => left - right);
 }
 
@@ -78,14 +145,20 @@ export const getOptimizerEligibleItemIds = optimizerEligibleItemIds;
 export function resolveOptimizerEligibility(
   requestedItemIds: readonly number[] = OPTIMIZER_ELIGIBLE_ITEM_IDS,
   catalog: CatalogLike = ITEMS,
+  options: { allowPartialItems?: boolean } = {},
 ): OptimizerEligibility {
   const seen = new Set<number>();
   const duplicateItemIds = new Set<number>();
   const unsupportedItemIds = new Set<number>();
+  const excludedPartialItemIds = new Set<number>();
 
   for (const itemId of requestedItemIds) {
     if (!Number.isInteger(itemId) || catalog[itemId] === undefined) {
       unsupportedItemIds.add(itemId);
+      continue;
+    }
+    if (options.allowPartialItems !== true && !OPTIMIZER_TRUSTED_ITEM_SET.has(itemId)) {
+      excludedPartialItemIds.add(itemId);
       continue;
     }
     if (seen.has(itemId)) duplicateItemIds.add(itemId);
@@ -95,12 +168,21 @@ export function resolveOptimizerEligibility(
   return {
     eligibleItemIds: [...seen].sort((left, right) => left - right),
     unsupportedItemIds: [...unsupportedItemIds].sort(compareNumbers),
+    excludedPartialItemIds: [...excludedPartialItemIds].sort(compareNumbers),
     duplicateItemIds: [...duplicateItemIds].sort(compareNumbers),
   };
 }
 
-export function isOptimizerEligibleItem(itemId: number, catalog: CatalogLike = ITEMS): boolean {
-  return Number.isInteger(itemId) && catalog[itemId] !== undefined;
+export function isOptimizerEligibleItem(
+  itemId: number,
+  catalog: CatalogLike = ITEMS,
+  options: { allowPartialItems?: boolean } = {},
+): boolean {
+  return (
+    Number.isInteger(itemId) &&
+    catalog[itemId] !== undefined &&
+    (options.allowPartialItems === true || OPTIMIZER_TRUSTED_ITEM_SET.has(itemId))
+  );
 }
 
 /**
@@ -232,6 +314,7 @@ export function generateLegalBuilds(
         isLegalBuild(itemIds, {
           catalog,
           eligibleItemIds,
+          allowPartialItems: options.allowPartialItems,
           constraints,
         })
       ) {
@@ -285,12 +368,17 @@ function resolveGenerationOptions(
   const requestedItemIds = objectOptions
     ? objectOptions.eligibleItemIds
     : (optionsOrEligibleItemIds as readonly number[]);
-  const eligibility = resolveOptimizerEligibility(requestedItemIds ?? OPTIMIZER_ELIGIBLE_ITEM_IDS);
+  const eligibility = resolveOptimizerEligibility(
+    requestedItemIds ?? OPTIMIZER_ELIGIBLE_ITEM_IDS,
+    ITEMS,
+    { allowPartialItems: objectOptions?.allowPartialItems },
+  );
   const suppliedConstraints = objectOptions?.constraints ?? constraintsArgument;
   return {
     catalog,
     eligibleItemIds: eligibility.eligibleItemIds,
     constraints: normalizeConstraints(suppliedConstraints),
+    allowPartialItems: objectOptions?.allowPartialItems === true,
   };
 }
 
@@ -301,20 +389,24 @@ function resolveValidationOptions(
   const looksLikeOptions =
     "constraints" in optionsOrConstraints ||
     "eligibleItemIds" in optionsOrConstraints ||
-    "catalog" in optionsOrConstraints;
+    "catalog" in optionsOrConstraints ||
+    "allowPartialItems" in optionsOrConstraints;
   const options = looksLikeOptions ? (optionsOrConstraints as ValidationOptions) : undefined;
   const constraints =
     options?.constraints ?? (optionsOrConstraints as Partial<OptimizerConstraints>);
   const catalog = options?.catalog ?? ITEMS;
-  const requestedItemIds = options?.eligibleItemIds ?? eligibleItemIds;
-  const eligibility = resolveOptimizerEligibility(
-    requestedItemIds ?? Object.keys(catalog).map(Number),
-    catalog,
-  );
+  const requestedItemIds =
+    options?.eligibleItemIds ??
+    eligibleItemIds ??
+    (catalog === ITEMS ? OPTIMIZER_ELIGIBLE_ITEM_IDS : Object.keys(catalog).map(Number));
+  const eligibility = resolveOptimizerEligibility(requestedItemIds, catalog, {
+    allowPartialItems: options?.allowPartialItems,
+  });
   return {
     catalog,
     eligibleItemIds: eligibility.eligibleItemIds,
     constraints: normalizeConstraints(constraints),
+    allowPartialItems: options?.allowPartialItems === true,
   };
 }
 

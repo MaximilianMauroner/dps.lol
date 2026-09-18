@@ -11,7 +11,9 @@ import {
   weightedShare,
   type WindowSummary,
 } from "@/domain/compare-view";
+import { cohortRequestKey, MAX_LEVEL_COHORT_TARGETS } from "@/domain/cohort-cache";
 import { duplicateItemIds, ITEMS, itemWarnings } from "@/domain/items";
+import { OPTIMIZER_ELIGIBLE_ITEM_IDS, optimizerContinuationForObjective } from "@/domain/optimizer";
 import { progressionRarity } from "@/domain/progression";
 import {
   clampSkillRanks,
@@ -109,6 +111,7 @@ export default function Home() {
   const [optimizerProgress, setOptimizerProgress] = useState<OptimizerWorkerProgress | null>(null);
   const [optimizerResult, setOptimizerResult] = useState<OptimizerSearchResult | null>(null);
   const [optimizerError, setOptimizerError] = useState("");
+  const [optimizerCohortCount, setOptimizerCohortCount] = useState<number | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   const optimizerWorkerRef = useRef<Worker | null>(null);
@@ -327,12 +330,13 @@ export default function Home() {
     if (previous === null || previous === optimizerInputKey) return;
     cancelOptimizer("");
     setOptimizerResult(null);
+    setOptimizerCohortCount(null);
   }, [cancelOptimizer, optimizerInputKey]);
 
   const loadCohort = useCallback(
     async (overrides: { targetChampion?: string } = {}): Promise<CohortPayload> => {
       const committedChampion = overrides.targetChampion ?? targetChampion;
-      const key = JSON.stringify({
+      const key = cohortRequestKey({
         targetMode,
         region,
         rank,
@@ -357,7 +361,7 @@ export default function Home() {
             role,
             champion: committedChampion,
             level,
-            limit: 1000,
+            limit: MAX_LEVEL_COHORT_TARGETS,
           }),
         });
         const body = (await response.json()) as CohortPayload & { error?: string };
@@ -403,6 +407,7 @@ export default function Home() {
       if (!cohort.dataset.targets.length) {
         throw new Error("No target snapshots matched these filters.");
       }
+      setOptimizerCohortCount(cohort.dataset.targets.length);
 
       const context: OptimizerEvaluationContext = {
         base: {
@@ -417,6 +422,7 @@ export default function Home() {
         targets: cohort.dataset.targets,
         objective: optimizerObjective,
         candidateOptions: {
+          eligibleItemIds: OPTIMIZER_ELIGIBLE_ITEM_IDS,
           constraints: {
             slotCount: optimizerSlotCount,
             bootRule: "required",
@@ -429,6 +435,10 @@ export default function Home() {
         searchToken,
         context,
         topN: optimizerTopN,
+        // Trusted level cohorts have only 5–10 candidates; small chunks make
+        // progress and cancellation observable while the worker stays off the
+        // main thread.
+        chunkSize: 2,
       } satisfies OptimizerWorkerCommand);
     } catch (caught) {
       if (optimizerSearchRef.current?.searchToken !== searchToken) return;
@@ -609,6 +619,8 @@ export default function Home() {
     const itemIds = [...candidate.itemIds];
     if (side === "a") setBuildAItems(itemIds);
     else setBuildBItems(itemIds);
+    setContinueAutos(optimizerContinuationForObjective(optimizerObjective, continueAutos));
+    setMetric(optimizerObjective === "ttk" ? "ttk" : "damage");
   }
 
   function updateSide(side: "a" | "b", index: number, value: number | null) {
@@ -809,6 +821,7 @@ export default function Home() {
             running={optimizerRunning}
             progress={optimizerProgress}
             result={optimizerResult}
+            cohortCount={optimizerCohortCount}
             error={optimizerError}
             onObjective={setOptimizerObjective}
             onSlotCount={updateOptimizerSlotCount}

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { MAX_LEVEL_COHORT_TARGETS } from "@/domain/cohort-cache";
 import { getRealisticTargets, type TargetFilters } from "@/data/realistic-targets";
 import { getYunaraLevelTargets } from "@/data/level-targets";
 import { round, weightedQuantile } from "@/domain/math";
@@ -19,13 +20,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Cohort request is too large." }, { status: 413 });
     }
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const phase = boundedChoice(body.phase, PHASES, "yunara-third-item");
     const filters: TargetFilters = {
       region: boundedChoice(body.region, REGIONS, "EUW1"),
-      phase: boundedChoice(body.phase, PHASES, "yunara-third-item"),
+      phase,
       rank: boundedChoice(body.rank, RANKS, "ALL"),
       role: boundedChoice(body.role, ROLES, "ALL"),
       champion: typeof body.champion === "string" ? body.champion.trim().slice(0, 48) : "",
-      limit: boundedInt(body.limit, 1, 1000, 500),
+      limit: boundedInt(
+        body.limit,
+        1,
+        phase === "yunara-level" ? MAX_LEVEL_COHORT_TARGETS : 1000,
+        500,
+      ),
     };
     const level = boundedInt(body.level, 1, 18, 13);
     const dataset =

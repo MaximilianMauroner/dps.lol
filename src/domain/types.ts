@@ -25,6 +25,15 @@ export type OptimizerMetric = "dps" | "damage" | "ttk";
 /** The allowed boot policies for a generated full build. */
 export type OptimizerBootRule = "required" | "optional" | "forbidden";
 
+export type OptimizerCoverageStatus = "trusted" | "excluded-partial";
+
+export interface OptimizerCoverageItem {
+  id: number;
+  name: string;
+  status: OptimizerCoverageStatus;
+  reason: string;
+}
+
 export interface OptimizerConstraints {
   /** Exact number of completed items in each generated build. */
   slotCount: number;
@@ -48,6 +57,12 @@ export interface OptimizerGenerationOptions {
   /** Explicit curated item pool. Omitted means the domain catalog allowlist. */
   eligibleItemIds?: readonly number[];
   constraints?: Partial<OptimizerConstraints>;
+  /**
+   * Experimental escape hatch for tests/research using catalog items whose
+   * material mechanics are not in trusted coverage. Production searches leave
+   * this false so partial items cannot enter by accident.
+   */
+  allowPartialItems?: boolean;
 }
 
 export interface OptimizerCandidate extends Build {
@@ -59,6 +74,7 @@ export interface OptimizerCandidate extends Build {
 export interface OptimizerEligibility {
   eligibleItemIds: number[];
   unsupportedItemIds: number[];
+  excludedPartialItemIds: number[];
   duplicateItemIds: number[];
 }
 

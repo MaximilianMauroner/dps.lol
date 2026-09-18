@@ -1,6 +1,11 @@
 import { buildGoldTotal } from "./items";
 import { round } from "./math";
-import { canonicalBuildKey, canonicalizeItemIds, generateCandidateBuilds } from "./optimizer";
+import {
+  canonicalBuildKey,
+  canonicalizeItemIds,
+  generateCandidateBuilds,
+  optimizerContinuationForObjective,
+} from "./optimizer";
 import { simulateYunara } from "./simulator";
 import type {
   Build,
@@ -15,7 +20,7 @@ import type {
   Target,
 } from "./types";
 
-export const OPTIMIZER_ENGINE_VERSION = "yunara-optimizer-v1";
+export const OPTIMIZER_ENGINE_VERSION = "yunara-optimizer-v2-trusted-coverage";
 export const DEFAULT_OPTIMIZER_TOP_N = 10;
 export const OPTIMIZER_TIE_EPSILON = 1e-9;
 
@@ -34,10 +39,22 @@ export function optimizerBaseForObjective(
   context: Pick<OptimizerEvaluationContext, "base" | "objective">,
 ): OptimizerEvaluationContext["base"] {
   if (context.objective === "sustained-dps") {
-    return { ...context.base, continueAutos: true };
+    return {
+      ...context.base,
+      continueAutos: optimizerContinuationForObjective(
+        context.objective,
+        context.base.continueAutos,
+      ),
+    };
   }
   if (context.objective === "burst-damage") {
-    return { ...context.base, continueAutos: false };
+    return {
+      ...context.base,
+      continueAutos: optimizerContinuationForObjective(
+        context.objective,
+        context.base.continueAutos,
+      ),
+    };
   }
   if (context.objective === "ttk" && context.base.targetMode === "uncapped") {
     throw new Error(
@@ -125,13 +142,17 @@ export function compareOptimizerEvaluations(
     return right.score! - left.score!;
   }
 
-  // These secondary keys make ties stable without changing the primary
-  // objective: more kills, then more applied damage, then cheaper builds.
-  if (!approximatelyZero(right.killCoverage - left.killCoverage)) {
-    return right.killCoverage - left.killCoverage;
-  }
-  if (!approximatelyZero(right.weightedDamage - left.weightedDamage)) {
-    return right.weightedDamage - left.weightedDamage;
+  // TTK has no damage-based tie-break: once coverage and uncensored mean TTK
+  // are equal, post-death/applied damage must not decide the ranking. Damage
+  // objectives retain weighted kill coverage and applied damage as stable
+  // secondary keys.
+  if (left.objective !== "ttk") {
+    if (!approximatelyZero(right.killCoverage - left.killCoverage)) {
+      return right.killCoverage - left.killCoverage;
+    }
+    if (!approximatelyZero(right.weightedDamage - left.weightedDamage)) {
+      return right.weightedDamage - left.weightedDamage;
+    }
   }
   if (left.candidate.goldTotal !== right.candidate.goldTotal) {
     return left.candidate.goldTotal - right.candidate.goldTotal;
@@ -212,8 +233,8 @@ function normalizeCandidate(build: Build | OptimizerCandidate): OptimizerCandida
   return {
     name: build.name,
     itemIds,
-    identity: "identity" in build ? build.identity : canonicalBuildKey(itemIds),
-    goldTotal: "goldTotal" in build ? build.goldTotal : buildGoldTotal(itemIds),
+    identity: canonicalBuildKey(itemIds),
+    goldTotal: buildGoldTotal(itemIds),
   };
 }
 
@@ -241,7 +262,10 @@ function normalizeCandidates(
   const unique = new Map<string, OptimizerCandidate>();
   for (const candidate of candidates) {
     const normalized = normalizeCandidate(candidate);
-    unique.set(normalized.identity, normalized);
+    const existing = unique.get(normalized.identity);
+    if (!existing || normalized.name.localeCompare(existing.name) < 0) {
+      unique.set(normalized.identity, normalized);
+    }
   }
   return [...unique.values()].sort((left, right) => left.identity.localeCompare(right.identity));
 }

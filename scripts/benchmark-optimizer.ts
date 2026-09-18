@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fixtureTargets } from "../src/data/fixtures";
 import { defaultSkillRanks } from "../src/domain/skills";
 import { generateCandidateBuilds } from "../src/domain/optimizer";
@@ -5,10 +7,10 @@ import { rankOptimizerBuilds } from "../src/domain/optimizer-engine";
 import type { OptimizerEvaluationContext } from "../src/domain/types";
 
 /**
- * Deterministic engine-only benchmark. These are fixture targets, not a claim
- * about the size or distribution of the live Riot cohort. The slot counts
- * mirror the current level workflow's observed completed items plus one boot:
- * two at L10, three at L13, and four at L16.
+ * Deterministic engine-only benchmark. Pass --targets-dir or
+ * OPTIMIZER_BENCHMARK_TARGETS_DIR with targets-{10,13,16}.json files to
+ * benchmark a sanitized real cohort fetched through the existing cohort path.
+ * Without it, the fixture fallback is explicit in the output.
  */
 const contexts = [
   { level: 10, slotCount: 3 },
@@ -16,9 +18,15 @@ const contexts = [
   { level: 16, slotCount: 5 },
 ] as const;
 
-const targets = fixtureTargets.map((target) => ({ ...target }));
+const targetsDirectory =
+  process.argv.find((argument) => argument.startsWith("--targets-dir="))?.split("=", 2)[1] ??
+  process.env.OPTIMIZER_BENCHMARK_TARGETS_DIR;
+const source = targetsDirectory ? "provided-cohort" : "fixture";
 
 for (const { level, slotCount } of contexts) {
+  const targets = targetsDirectory
+    ? JSON.parse(readFileSync(join(targetsDirectory, `targets-${level}.json`), "utf8"))
+    : fixtureTargets.map((target) => ({ ...target }));
   const candidateOptions = {
     constraints: { slotCount, bootRule: "required" as const },
   };
@@ -46,7 +54,9 @@ for (const { level, slotCount } of contexts) {
       slotCount,
       targetCount: targets.length,
       candidateCount: result.candidateCount,
+      buildTargetSimulations: result.candidateCount * targets.length,
       evaluatedCount: result.evaluatedCount,
+      source,
       elapsedMs: Number(elapsedMs.toFixed(1)),
       top: result.rankings.map((row) => ({
         rank: row.rank,

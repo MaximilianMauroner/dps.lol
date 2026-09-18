@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { hasDatabase, query } from "@/db/client";
 import { fixtureTargets } from "./fixtures";
+import { MAX_LEVEL_COHORT_TARGETS } from "@/domain/cohort-cache";
 import type { Target } from "@/domain/types";
 import type { TargetDataset, TargetFilters } from "./realistic-targets";
 import { matchBalancedWeight } from "@/domain/level-cohort";
@@ -125,7 +126,7 @@ export async function getYunaraLevelTargets(
   const pool = chooseLevelPool(countByLevel, requestedLevel);
   if (pool.levels.length === 0) return emptyLevelDataset(requestedLevel);
 
-  const limit = Math.max(1, Math.min(1000, Math.round(filters.limit ?? 500)));
+  const limit = Math.max(1, Math.min(MAX_LEVEL_COHORT_TARGETS, Math.round(filters.limit ?? 500)));
   const rows = await query<LevelTargetRow>(
     `WITH compact_yunara AS (
        SELECT lo.level_observation_id, lo.match_id, lo.participant_id,

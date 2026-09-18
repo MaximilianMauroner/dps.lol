@@ -297,6 +297,29 @@ table,
   margin-top: 14px;
 }
 
+.optimizer-coverage {
+  line-height: 1.55;
+}
+
+.optimizer-coverage strong,
+.optimizer-exclusions strong {
+  color: var(--t2);
+}
+
+.optimizer-exclusions {
+  margin-top: 8px;
+  color: var(--gold);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.optimizer-exclusions ul {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding-left: 17px;
+}
+
 .optimizer-progress-head,
 .optimizer-result-head {
   display: flex;
