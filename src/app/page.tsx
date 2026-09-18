@@ -1,79 +1,54 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
-import type { ActionKind, Target } from "@/domain/types";
-import { weightedHeadlineWinner } from "@/domain/simulator";
-import { buildGoldTotal, duplicateItemIds, itemWarnings, ITEMS } from "@/domain/items";
-import { refreshUntouchedBuildDefaults } from "@/domain/build-state";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ProgressionApiResponse } from "@/data/progression";
+import {
+  buildDiff,
+  comparisonLabels,
+  itemLabel,
+  summarizeWindow,
+  uniqueStrings,
+  type WindowSummary,
+} from "@/domain/compare-view";
+import { duplicateItemIds, ITEMS, itemWarnings } from "@/domain/items";
+import { progressionRarity } from "@/domain/progression";
 import {
   clampSkillRanks,
   defaultSkillRanks,
   skillBounds,
   tryAdjustSkillRank,
 } from "@/domain/skills";
-import { progressionRarity } from "@/domain/progression";
+import { weightedHeadlineWinner } from "@/domain/simulator";
+import type { AbilityRanks, ActionKind, SampleComparison, Target } from "@/domain/types";
 import type {
   WorkerSimulationRequest,
   WorkerSimulationResponse,
 } from "@/workers/simulation.worker";
+import { BreakpointHeat } from "@/components/lab/breakpoints";
+import {
+  actionAvailable,
+  AttackerCard,
+  COMBO_PRESETS,
+  OpenerCard,
+  TargetCard,
+} from "@/components/lab/controls";
+import { DraftSlices } from "@/components/lab/drafts";
+import { HeadToHead } from "@/components/lab/head-to-head";
+import { EvidenceFold, LimitsFold, TraceFold } from "@/components/lab/panels";
+import type { CohortPayload, DraftRow, LabDataset, LabResult } from "@/components/lab/types";
+import { IdenticalBuildsBand, VerdictBand } from "@/components/lab/verdict";
 
-const ICON = "https://ddragon.leagueoflegends.com/cdn/16.18.1/img/item/";
-const itemNames: Record<number, string> = {
-  6672: "Kraken Slayer",
-  3085: "Runaan's Hurricane",
-  3006: "Berserker's Greaves",
-  3008: "Gluttonous Greaves",
-  2523: "Hexoptics C44",
-  3032: "Yun Tal Wildarrows",
-  3031: "Infinity Edge",
-  3036: "Lord Dominik's Regards",
-};
-const itemIcons: Record<number, string> = {
-  6672: "6672.png",
-  3085: "3085.png",
-  3006: "3006.png",
-  3008: "3008.png",
-  2523: "2523.png",
-  3032: "3032.png",
-  3031: "3031.png",
-  3036: "3036.png",
-  3046: "3046.png",
-  3072: "3072.png",
-  3095: "3095.png",
-  3153: "3153.png",
-  3302: "3302.png",
-  3026: "3026.png",
-  3139: "3139.png",
-  3033: "3033.png",
-  2512: "2512.png",
-};
+const PATCH = "26.18";
+const DATA_VERSION = "16.18.1";
+const INFINITY_EDGE = 3031;
+const LORD_DOMINIKS = 3036;
+const FALLBACK_CORE = [6672, 3085, 3006];
+const WINDOWS = [2, 5, 10, 20] as const;
 const SUPPORTED_BUILD_ITEMS = Object.keys(ITEMS)
   .map(Number)
   .sort((left, right) => left - right);
-const INITIAL_REALISTIC_BUILD = [6672, 3085, 3006];
-const WINDOWS = [2, 5, 10, 20] as const;
-const COMBO_PRESETS: Array<{
-  id: string;
-  label: string;
-  actions: ActionKind[];
-  continueAutos: boolean;
-}> = [
-  { id: "autos", label: "Autos", actions: ["AA"], continueAutos: true },
-  { id: "q-autos", label: "Q → autos", actions: ["Q"], continueAutos: true },
-  { id: "r-q-w", label: "R → Q → W → autos", actions: ["R", "Q", "W"], continueAutos: true },
-];
 
-type ResponseData = any;
-
-interface MatrixRow {
-  key: string;
-  label: string;
-  detail: string;
-  n: number;
-  delta: number | null;
-  outcome: "a" | "b" | "tie";
-}
+type BuildSlots = Array<number | 0>;
 
 export default function Home() {
   const [level, setLevel] = useState(13);
@@ -89,17 +64,14 @@ export default function Home() {
   const [selectedTargetId, setSelectedTargetId] = useState("");
   const [continueAutos, setContinueAutos] = useState(true);
   const [yunTalStacks, setYunTalStacks] = useState(0);
-  const [buildAItems, setBuildAItems] = useState<Array<number | 0>>(INITIAL_REALISTIC_BUILD);
-  const [buildBItems, setBuildBItems] = useState<Array<number | 0>>(INITIAL_REALISTIC_BUILD);
-  const [buildAEdited, setBuildAEdited] = useState(false);
-  const [buildBEdited, setBuildBEdited] = useState(false);
-  const [buildAManualLevel, setBuildAManualLevel] = useState<number | null>(null);
-  const [buildBManualLevel, setBuildBManualLevel] = useState<number | null>(null);
-  const [progression, setProgression] = useState<any>(null);
+  const [buildAItems, setBuildAItems] = useState<BuildSlots>([...FALLBACK_CORE, INFINITY_EDGE]);
+  const [buildBItems, setBuildBItems] = useState<BuildSlots>([...FALLBACK_CORE, LORD_DOMINIKS]);
+  const [buildsEdited, setBuildsEdited] = useState(false);
+  const [progression, setProgression] = useState<ProgressionApiResponse | null>(null);
   const [progressionLoading, setProgressionLoading] = useState(true);
   const [progressionError, setProgressionError] = useState("");
   const [rankNotice, setRankNotice] = useState("");
-  const [ranks, setRanks] = useState(() => defaultSkillRanks(13));
+  const [ranks, setRanks] = useState<AbilityRanks>(() => defaultSkillRanks(13));
   const [actions, setActions] = useState<ActionKind[]>(["R", "Q", "W", "AA", "AA"]);
   const [manual, setManual] = useState({
     health: 2200,
@@ -108,115 +80,35 @@ export default function Home() {
     bonusHealth: 500,
     level: 13,
   });
-  const [data, setData] = useState<ResponseData>();
-  const [matrix, setMatrix] = useState<MatrixRow[] | null>(null);
-  const [matrixLoading, setMatrixLoading] = useState(false);
+  const [result, setResult] = useState<LabResult | null>(null);
+  const [windowSummaries, setWindowSummaries] = useState<WindowSummary[]>([]);
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [showLog, setShowLog] = useState(false);
+  const [showComparedTrace, setShowComparedTrace] = useState(false);
+
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
-  const cohortRef = useRef<{ key: string; payload: any } | null>(null);
-  const progressionCacheRef = useRef(new Map<number, any>());
-  const buildAEditedRef = useRef(false);
-  const buildBEditedRef = useRef(false);
+  const cohortRef = useRef<{ key: string; payload: CohortPayload } | null>(null);
+  const progressionCacheRef = useRef(new Map<number, ProgressionApiResponse>());
+  const buildsEditedRef = useRef(false);
   const ranksEditedRef = useRef(false);
   const ranksRef = useRef(ranks);
   const comboEditedRef = useRef(false);
   ranksRef.current = ranks;
 
-  const buildA = useMemo(
-    () => ({
-      name: buildDisplayName(compactBuildItems(buildAItems), "Build A"),
-      itemIds: compactBuildItems(buildAItems),
-    }),
-    [buildAItems],
+  const itemsA = useMemo(() => compact(buildAItems), [buildAItems]);
+  const itemsB = useMemo(() => compact(buildBItems), [buildBItems]);
+  const diff = useMemo(() => buildDiff(itemsA, itemsB), [itemsA, itemsB]);
+  const identical = diff.onlyA.length === 0 && diff.onlyB.length === 0;
+  const labels = useMemo(
+    () =>
+      comparisonLabels(diff, {
+        a: describeBuild(itemsA, "Build A"),
+        b: describeBuild(itemsB, "Build B"),
+      }),
+    [diff, itemsA, itemsB],
   );
-  const buildB = useMemo(
-    () => ({
-      name: buildDisplayName(compactBuildItems(buildBItems), "Build B"),
-      itemIds: compactBuildItems(buildBItems),
-    }),
-    [buildBItems],
-  );
-
-  useEffect(() => {
-    let active = true;
-    async function loadProgression() {
-      setProgressionLoading(true);
-      setProgressionError("");
-      setData(undefined);
-      setLoading(true);
-      try {
-        const cached = progressionCacheRef.current.get(level);
-        const next =
-          cached ??
-          (await fetch(`/api/progression?champion=Yunara&level=${level}`, {
-            headers: { accept: "application/json" },
-          }).then(async (response) => {
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error ?? "Progression query failed");
-            progressionCacheRef.current.set(level, payload);
-            return payload;
-          }));
-        if (!active) return;
-        setProgression(next);
-        if (!ranksEditedRef.current) {
-          const observedRanks = next.skill?.ranks;
-          setRanks(
-            observedRanks && isLegalRankShape(observedRanks, level)
-              ? observedRanks
-              : defaultSkillRanks(level),
-          );
-          setRankNotice("");
-        } else if (!isLegalRankShape(ranksRef.current, level)) {
-          const corrected = clampSkillRanks(ranksRef.current, level);
-          setRanks(corrected);
-          setRankNotice(
-            `Your previous manual ranks were not legal at level ${level}; they were clamped to Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r}.`,
-          );
-        }
-        if (!comboEditedRef.current) {
-          setActions(defaultActionsForLevel(level));
-          setContinueAutos(true);
-        }
-        const recommended = recommendedBuild(next);
-        if (!buildAEditedRef.current) {
-          setBuildAItems(
-            (current) => refreshUntouchedBuildDefaults(current, [], recommended, false, true).a,
-          );
-        }
-        if (!buildBEditedRef.current) {
-          setBuildBItems(
-            (current) => refreshUntouchedBuildDefaults([], current, recommended, true, false).b,
-          );
-        }
-        setBuildAEdited(buildAEditedRef.current);
-        setBuildBEdited(buildBEditedRef.current);
-      } catch (caught) {
-        if (active)
-          setProgressionError(caught instanceof Error ? caught.message : "Progression unavailable");
-      } finally {
-        if (active) setProgressionLoading(false);
-      }
-    }
-    void loadProgression();
-    return () => {
-      active = false;
-    };
-  }, [level]); // manual build edits intentionally do not trigger a default overwrite
-
-  // Clamp a manually edited rank vector as soon as a level change makes it
-  // illegal. This runs before the progression request returns, so an invalid
-  // vector can never spend a render silently simulating at the lower level.
-  useEffect(() => {
-    if (!ranksEditedRef.current || isLegalRankShape(ranksRef.current, level)) return;
-    const corrected = clampSkillRanks(ranksRef.current, level);
-    setRanks(corrected);
-    setRankNotice(
-      `Your previous manual ranks were not legal at level ${level}; they were clamped to Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r}.`,
-    );
-  }, [level]);
 
   useEffect(() => {
     const worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
@@ -229,227 +121,60 @@ export default function Home() {
     };
   }, []);
 
-  async function run(selectedOverride?: string, cohortOverrides: { targetChampion?: string } = {}) {
-    setLoading(true);
-    setError("");
-    setData(undefined);
-    setMatrix(null);
-    try {
-      if (!isLegalRankShape(ranks, level)) {
-        const corrected = clampSkillRanks(ranks, level);
-        setRanks(corrected);
-        setRankNotice(
-          `Ranks were invalid at level ${level}; calculation is paused until the legal ranks Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r} are applied.`,
-        );
-        return;
+  useEffect(() => {
+    let active = true;
+    async function loadProgression() {
+      setProgressionLoading(true);
+      setProgressionError("");
+      try {
+        const next = await loadProgressionLevel(level, progressionCacheRef.current);
+        if (!active) return;
+        setProgression(next);
+        if (!ranksEditedRef.current) {
+          const observed = next.skill?.ranks;
+          setRanks(
+            observed && isLegalRankShape(observed, level) ? observed : defaultSkillRanks(level),
+          );
+          setRankNotice("");
+        }
+        if (!comboEditedRef.current) {
+          setActions(defaultActionsForLevel(level));
+          setContinueAutos(true);
+        }
+        if (!buildsEditedRef.current) {
+          const seeded = defaultComparison(next);
+          setBuildAItems(seeded.a);
+          setBuildBItems(seeded.b);
+        }
+      } catch (caught) {
+        if (active)
+          setProgressionError(caught instanceof Error ? caught.message : "Progression unavailable");
+      } finally {
+        if (active) setProgressionLoading(false);
       }
-      const duplicateA = duplicateItemIds(buildA.itemIds);
-      const duplicateB = duplicateItemIds(buildB.itemIds);
-      if (duplicateA.length || duplicateB.length) {
-        throw new Error(
-          `${duplicateA.length ? `Build A repeats ${duplicateA.map((id) => itemNames[id] ?? ITEMS[id]?.name ?? id).join(", ")}` : ""}${duplicateA.length && duplicateB.length ? "; " : ""}${duplicateB.length ? `Build B repeats ${duplicateB.map((id) => itemNames[id] ?? ITEMS[id]?.name ?? id).join(", ")}` : ""}. Remove duplicate completed items before simulating.`,
-        );
-      }
-      const cohort = await loadCohort(cohortOverrides);
-      const targets = cohort.dataset.targets as Target[];
-      if (!targets.length) throw new Error("No target snapshots matched these filters.");
-      const base = {
-        level,
-        ranks,
-        durationSeconds: duration,
-        actions,
-        continueAutos,
-        yunTalStacks,
-        targetMode: "mortal" as const,
-      };
-      const request: WorkerSimulationRequest = {
-        id: ++requestIdRef.current,
-        base,
-        buildA,
-        buildB,
-        targets,
-        selectedTargetId: selectedOverride ?? selectedTargetId,
-        metric,
-      };
-      const result = await runWorker(request);
-      const simulationWarnings = [
-        "Expected crit mode averages crits; it is not a kill probability.",
-        "Yunara E is unsupported for damage, and Runaan's bolts are excluded for this single-target comparison.",
-        "Builds are compared at listed costs, not equal gold.",
-        "Mortal-target mode stops at death; fixed-window applied damage excludes overkill.",
-        "Expected-crit TTK is a first-crossing model, not a kill probability.",
-        ...result.representative.a.warnings,
-        ...result.representative.b.warnings,
-      ].filter((warning, index, warnings) => warnings.indexOf(warning) === index);
-      setData({
-        patch: "26.18",
-        dataVersion: "16.18.1",
-        engineVersion: "yunara-engine-v1",
-        assumptions: `Level ${level} / Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r}, expected crits, Yun Tal starts at ${yunTalStacks}/125 ranged stacks.`,
-        warnings: simulationWarnings,
-        dataset: { ...cohort.dataset, count: targets.length },
-        builds: { a: buildA, b: buildB },
-        target: result.representative.target,
-        results: {
-          a: result.representative.a,
-          b: result.representative.b,
-          comparison: result.comparison,
-        },
-        breakpoints: result.breakpoints,
-      });
-      await runMatrix(base, targets, result.comparison);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Simulation failed");
-    } finally {
-      setLoading(false);
     }
-  }
+    void loadProgression();
+    return () => {
+      active = false;
+    };
+  }, [level]);
 
-  async function runMatrix(
-    base: WorkerSimulationRequest["base"],
-    targets: Target[],
-    main: WorkerSimulationResponse["comparison"],
-  ) {
-    if (targetMode !== "realistic" || targets.length < 6) {
-      setMatrix(null);
-      return;
-    }
-    setMatrixLoading(true);
-    try {
-      const take = Math.max(2, Math.ceil(targets.length / 3));
-      const topBy = (pick: (target: Target) => number) =>
-        [...targets].sort((x, y) => pick(y) - pick(x)).slice(0, take);
-      const groups = [
-        {
-          key: "hp",
-          label: "HP-heavy draft",
-          detail: "Top third by bonus HP",
-          list: topBy((t) => t.bonusHealth),
-        },
-        {
-          key: "armor",
-          label: "Armor-heavy draft",
-          detail: "Top third by armor",
-          list: topBy((t) => t.armor),
-        },
-        {
-          key: "mr",
-          label: "MR-heavy draft",
-          detail: "Top third by magic resist",
-          list: topBy((t) => t.magicResist),
-        },
-      ];
-      const rows: MatrixRow[] = [
-        {
-          key: "avg",
-          label: "Average draft",
-          detail: `${targets.length} snapshots`,
-          n: targets.length,
-          delta: main.medianRelativeDelta,
-          outcome: weightedHeadlineWinner(main),
-        },
-      ];
-      for (const group of groups) {
-        const response = await runWorker({
-          id: ++requestIdRef.current,
-          base,
-          buildA,
-          buildB,
-          targets: group.list,
-          metric,
-        });
-        rows.push({
-          key: group.key,
-          label: group.label,
-          detail: `${group.list.length} snapshots`,
-          n: group.list.length,
-          delta: response.comparison.medianRelativeDelta,
-          outcome: weightedHeadlineWinner(response.comparison),
-        });
-      }
-      setMatrix(rows);
-    } catch {
-      setMatrix(null);
-    } finally {
-      setMatrixLoading(false);
-    }
-  }
+  // Clamp a manually edited rank vector as soon as a level change makes it
+  // illegal, before the progression request returns, so an invalid vector can
+  // never spend a render silently simulating at the lower level.
+  useEffect(() => {
+    if (!ranksEditedRef.current || isLegalRankShape(ranksRef.current, level)) return;
+    const corrected = clampSkillRanks(ranksRef.current, level);
+    setRanks(corrected);
+    setRankNotice(
+      `Your manual ranks were not legal at level ${level}; they were clamped to Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r}.`,
+    );
+  }, [level]);
 
-  async function loadCohort(overrides: { targetChampion?: string } = {}): Promise<any> {
-    const committedChampion = overrides.targetChampion ?? targetChampion;
-    const key = JSON.stringify({
-      targetMode,
-      region,
-      rank,
-      phase,
-      role,
-      targetChampion: committedChampion,
-      level,
-      manual,
-    });
-    if (cohortRef.current?.key === key) return cohortRef.current.payload;
-    let payload: any;
-    if (targetMode === "manual") {
-      const target = {
-        id: "manual",
-        champion: "Custom target",
-        health: manual.health,
-        armor: manual.armor,
-        magicResist: manual.magicResist,
-        bonusHealth: manual.bonusHealth,
-        level: manual.level,
-        provenance: "fixture",
-        sampleWeight: 1,
-      };
-      payload = {
-        dataset: {
-          targets: [target],
-          provenance: "fixture",
-          phase: "manual target",
-          fallbackLevel: 3,
-          note: "Manual target values supplied by the user; no Riot snapshot claim is made.",
-          count: 1,
-          distinctMatchCount: 0,
-          snapshotCount: 1,
-          availableDistinctMatchCount: 0,
-          availableSnapshotCount: 1,
-          truncated: false,
-          sampleLimitPerMatch: 1,
-          uniqueChampions: [target.champion],
-          uniqueRoles: [],
-          knownRankCount: 0,
-          summary: summarizeTargetValues([target]),
-        },
-      };
-    } else {
-      const response = await fetch("/api/cohort", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          region,
-          rank,
-          phase,
-          role,
-          champion: committedChampion,
-          level,
-          limit: 1000,
-        }),
-      });
-      payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Cohort retrieval failed");
-    }
-    const targets = payload.dataset.targets as Target[];
-    if (targets.length && !targets.some((target) => target.id === selectedTargetId)) {
-      setSelectedTargetId(targets[Math.floor(targets.length / 2)]!.id);
-    }
-    cohortRef.current = { key, payload };
-    return payload;
-  }
-
-  function runWorker(request: WorkerSimulationRequest): Promise<WorkerSimulationResponse> {
+  const runWorker = useCallback((request: WorkerSimulationRequest) => {
     const worker = workerRef.current;
     if (!worker) return Promise.reject(new Error("Simulation worker is unavailable."));
-    return new Promise((resolve, reject) => {
+    return new Promise<WorkerSimulationResponse>((resolve, reject) => {
       const onMessage = (event: MessageEvent<WorkerSimulationResponse>) => {
         if (event.data.id !== request.id) return;
         worker.removeEventListener("message", onMessage);
@@ -465,10 +190,172 @@ export default function Home() {
       worker.addEventListener("error", onError);
       worker.postMessage(request);
     });
-  }
+  }, []);
 
-  // Recompute from the cached cohort whenever an input changes; the champion
-  // text field and manualRun-only edits commit through their Apply buttons.
+  const loadCohort = useCallback(
+    async (overrides: { targetChampion?: string } = {}): Promise<CohortPayload> => {
+      const committedChampion = overrides.targetChampion ?? targetChampion;
+      const key = JSON.stringify({
+        targetMode,
+        region,
+        rank,
+        phase,
+        role,
+        targetChampion: committedChampion,
+        level,
+        manual,
+      });
+      if (cohortRef.current?.key === key) return cohortRef.current.payload;
+      let payload: CohortPayload;
+      if (targetMode === "manual") {
+        payload = { dataset: manualDataset(manual) };
+      } else {
+        const response = await fetch("/api/cohort", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            region,
+            rank,
+            phase,
+            role,
+            champion: committedChampion,
+            level,
+            limit: 1000,
+          }),
+        });
+        const body = (await response.json()) as CohortPayload & { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "Cohort retrieval failed");
+        payload = body;
+      }
+      const targets = payload.dataset.targets;
+      if (targets.length && !targets.some((target) => target.id === selectedTargetId)) {
+        setSelectedTargetId(targets[Math.floor(targets.length / 2)]!.id);
+      }
+      cohortRef.current = { key, payload };
+      return payload;
+    },
+    [level, manual, phase, rank, region, role, selectedTargetId, targetChampion, targetMode],
+  );
+
+  const run = useCallback(
+    async (overrides: { selectedTargetId?: string; targetChampion?: string } = {}) => {
+      setLoading(true);
+      setError("");
+      try {
+        if (!isLegalRankShape(ranks, level)) {
+          const corrected = clampSkillRanks(ranks, level);
+          setRanks(corrected);
+          setRankNotice(
+            `Ranks were invalid at level ${level}; the calculation is paused until the legal ranks Q${corrected.q} W${corrected.w} E${corrected.e} R${corrected.r} are applied.`,
+          );
+          return;
+        }
+        const duplicates = [...duplicateItemIds(itemsA), ...duplicateItemIds(itemsB)];
+        if (duplicates.length) {
+          throw new Error(
+            `A build repeats ${uniqueStrings(duplicates.map(itemLabel)).join(", ")}. Remove the duplicate completed item before simulating.`,
+          );
+        }
+        const cohort = await loadCohort(overrides);
+        const dataset = cohort.dataset;
+        const targets = dataset.targets;
+        if (!targets.length) throw new Error("No target snapshots matched these filters.");
+        const base = {
+          level,
+          ranks,
+          durationSeconds: duration,
+          actions,
+          continueAutos,
+          yunTalStacks,
+          targetMode: "mortal" as const,
+        };
+        const buildA = { name: labels.a, itemIds: itemsA };
+        const buildB = { name: labels.b, itemIds: itemsB };
+        const main = await runWorker({
+          id: ++requestIdRef.current,
+          base,
+          buildA,
+          buildB,
+          targets,
+          selectedTargetId: overrides.selectedTargetId ?? selectedTargetId,
+          metric,
+        });
+        setResult({
+          dataset,
+          target: main.representative.target,
+          a: main.representative.a,
+          b: main.representative.b,
+          comparison: main.comparison,
+          breakpoints: main.breakpoints,
+          assumptions: `Patch ${PATCH} (Data Dragon ${DATA_VERSION}) · level ${level} · Q${ranks.q} W${ranks.w} E${ranks.e} R${ranks.r} · expected crits · Yun Tal starts at ${yunTalStacks}/125 ranged stacks.`,
+          modelWarnings: uniqueStrings([
+            ...main.representative.a.warnings,
+            ...main.representative.b.warnings,
+          ]),
+        });
+
+        if (identical) {
+          setWindowSummaries([]);
+          setDrafts([]);
+          return;
+        }
+        const [summaries, draftRows] = await Promise.all([
+          collectWindowSummaries({
+            base,
+            buildA,
+            buildB,
+            targets,
+            metric,
+            duration,
+            main: main.comparison,
+            runWorker,
+            nextId: () => ++requestIdRef.current,
+          }),
+          collectDraftRows({
+            base,
+            buildA,
+            buildB,
+            targets,
+            metric,
+            main: main.comparison,
+            enabled: targetMode === "realistic",
+            runWorker,
+            nextId: () => ++requestIdRef.current,
+          }),
+        ]);
+        setWindowSummaries(summaries);
+        setDrafts(draftRows);
+      } catch (caught) {
+        setResult(null);
+        setWindowSummaries([]);
+        setDrafts([]);
+        setError(caught instanceof Error ? caught.message : "Simulation failed");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [
+      actions,
+      continueAutos,
+      duration,
+      identical,
+      itemsA,
+      itemsB,
+      labels.a,
+      labels.b,
+      level,
+      loadCohort,
+      metric,
+      ranks,
+      runWorker,
+      selectedTargetId,
+      targetMode,
+      yunTalStacks,
+    ],
+  );
+
+  // Recompute from the cached cohort whenever an input changes. The champion
+  // text field commits through its own Apply button.
   const autoKey = JSON.stringify({
     level,
     duration,
@@ -494,32 +381,51 @@ export default function Home() {
   }, [autoKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
-  function addAction(action: ActionKind) {
-    if (!actionAvailable(action, level)) return;
-    comboEditedRef.current = true;
-    setActions((current) => [...current, action]);
-  }
-  function removeAction(index: number) {
-    comboEditedRef.current = true;
-    setActions((current) => current.filter((_, i) => i !== index));
+  function markBuildsEdited() {
+    buildsEditedRef.current = true;
+    setBuildsEdited(true);
   }
 
-  function moveAction(index: number, direction: -1 | 1) {
-    comboEditedRef.current = true;
-    setActions((current) => {
-      const destination = index + direction;
-      if (destination < 0 || destination >= current.length) return current;
-      const next = [...current];
-      [next[index], next[destination]] = [next[destination]!, next[index]!];
-      return next;
-    });
+  function updateSide(side: "a" | "b", index: number, value: number | null) {
+    markBuildsEdited();
+    const setter = side === "a" ? setBuildAItems : setBuildBItems;
+    setter((current) => writeSlot(current, index, value));
   }
 
-  function applyComboPreset(preset: (typeof COMBO_PRESETS)[number]) {
-    const legal = preset.actions.filter((action) => actionAvailable(action, level));
-    comboEditedRef.current = true;
-    setActions(legal.length ? legal : ["AA"]);
-    setContinueAutos(preset.continueAutos);
+  function updateShared(aIndex: number, bIndex: number, value: number | null) {
+    markBuildsEdited();
+    setBuildAItems((current) => writeSlot(current, aIndex, value));
+    setBuildBItems((current) => writeSlot(current, bIndex, value));
+  }
+
+  function addSide(side: "a" | "b") {
+    markBuildsEdited();
+    const setter = side === "a" ? setBuildAItems : setBuildBItems;
+    setter((current) => (current.length >= 6 ? current : [...current, 0]));
+  }
+
+  function addShared() {
+    markBuildsEdited();
+    setBuildAItems((current) => (current.length >= 6 ? current : [...current, 0]));
+    setBuildBItems((current) => (current.length >= 6 ? current : [...current, 0]));
+  }
+
+  function resetToDefault() {
+    const seeded = defaultComparison(progression);
+    setBuildAItems(seeded.a);
+    setBuildBItems(seeded.b);
+    buildsEditedRef.current = false;
+    setBuildsEdited(false);
+    ranksEditedRef.current = false;
+    comboEditedRef.current = false;
+    setRanks(
+      progression?.skill.ranks && isLegalRankShape(progression.skill.ranks, level)
+        ? progression.skill.ranks
+        : defaultSkillRanks(level),
+    );
+    setActions(defaultActionsForLevel(level));
+    setContinueAutos(true);
+    setYunTalStacks(0);
   }
 
   function adjustRank(key: "q" | "w" | "e" | "r", delta: number) {
@@ -530,940 +436,240 @@ export default function Home() {
     setRankNotice("");
   }
 
-  function markBuildEdited(side: "a" | "b") {
-    if (side === "a") {
-      buildAEditedRef.current = true;
-      setBuildAEdited(true);
-      setBuildAManualLevel(level);
-    } else {
-      buildBEditedRef.current = true;
-      setBuildBEdited(true);
-      setBuildBManualLevel(level);
-    }
-  }
-
-  function updateBuild(side: "a" | "b", index: number, value: number | null) {
-    markBuildEdited(side);
-    const setter = side === "a" ? setBuildAItems : setBuildBItems;
-    setter((current) => {
-      if (value === null) {
-        const next = current.filter((_, itemIndex) => itemIndex !== index);
-        return next.length > 0 ? next : [0];
-      }
-      const next = [...current];
-      next[index] = value;
-      return next.length > 0 ? next : [value];
-    });
-  }
-
-  function addBuildItem(side: "a" | "b") {
-    markBuildEdited(side);
-    const setter = side === "a" ? setBuildAItems : setBuildBItems;
-    setter((current) => (current.length >= 6 ? current : [...current, 0]));
-  }
-
-  function resetRealisticBuild() {
-    const recommended = recommendedBuild(progression);
-    setBuildAItems(recommended);
-    setBuildBItems(recommended);
-    buildAEditedRef.current = false;
-    buildBEditedRef.current = false;
-    setBuildAEdited(false);
-    setBuildBEdited(false);
-    setBuildAManualLevel(null);
-    setBuildBManualLevel(null);
-    ranksEditedRef.current = false;
-    comboEditedRef.current = false;
-    setRanks(
-      progression?.skill?.ranks && isLegalRankShape(progression.skill.ranks, level)
-        ? progression.skill.ranks
-        : defaultSkillRanks(level),
-    );
-    setActions(defaultActionsForLevel(level));
-    setContinueAutos(true);
-    setYunTalStacks(0);
+  function applyComboPreset(preset: (typeof COMBO_PRESETS)[number]) {
+    const legal = preset.actions.filter((action) => actionAvailable(action, level));
+    comboEditedRef.current = true;
+    setActions(legal.length ? legal : ["AA"]);
+    setContinueAutos(preset.continueAutos);
   }
 
   function commitTargetChampion() {
     const next = targetChampionDraft.trim().slice(0, 48);
     setTargetChampion(next);
     cohortRef.current = null;
-    void run(undefined, { targetChampion: next });
+    void run({ targetChampion: next });
   }
 
-  function setIeLdrComparison() {
-    markBuildEdited("a");
-    markBuildEdited("b");
-    const baseline = progression ? recommendedBuild(progression) : INITIAL_REALISTIC_BUILD;
-    const completed = baseline.filter((id) => !isBootItem(id) && id !== 3031 && id !== 3036);
-    const core = [...new Set(completed)];
-    const withBoot = [...core, ...baseline.filter((id) => isBootItem(id))];
-    setBuildAItems([...withBoot, 3031]);
-    setBuildBItems([...withBoot, 3036]);
+  function suggestAlternative(itemId: number) {
+    markBuildsEdited();
+    setBuildBItems((current) => replaceLastLegendary(current, itemId));
   }
 
-  const resultA = data?.results?.a;
-  const resultB = data?.results?.b;
-  const comparison = data?.results?.comparison;
-  const buildsAreIdentical = sameInventory(buildA.itemIds, buildB.itemIds);
-  const hasCurrentResult = Boolean(comparison) && !loading;
-  const headlineOutcome = hasCurrentResult ? weightedHeadlineWinner(comparison) : "tie";
-  const winnerName = buildsAreIdentical
-    ? null
-    : headlineOutcome === "a"
-      ? buildA.name
-      : headlineOutcome === "b"
-        ? buildB.name
-        : null;
-  const scope = targetMode === "manual" ? "custom target" : `real level-${level} enemy cohort`;
-  const verdictTitle = buildsAreIdentical ? (
-    <>Builds are identical — choose an item to compare</>
-  ) : winnerName ? (
-    <>
-      <span className="winner">{winnerName}</span> leads the {scope}
-    </>
-  ) : (
-    <>The builds are tied on the {scope}</>
+  const dataset = result?.dataset ?? null;
+  const comparison = result?.comparison ?? null;
+  const datasetLabel = dataset
+    ? `${dataset.count} ${dataset.provenance === "riot" ? "Riot" : "fixture"} snapshot${dataset.count === 1 ? "" : "s"}`
+    : "no snapshots yet";
+  const rarity = useMemo(() => {
+    const selection = progression?.selection;
+    if (!selection) return null;
+    const count = itemsA.filter((id) => !ITEMS[id]?.boots).length;
+    return {
+      ...progressionRarity(selection, count),
+      lowSample: selection.lowSample,
+      sampleCount: selection.sampleCount,
+    };
+  }, [itemsA, progression]);
+  const suggestions = useMemo(
+    () => alternativeQuestions(progression, itemsA),
+    [itemsA, progression],
   );
-  const delta = comparison?.medianRelativeDelta ?? 0;
-  const signed = `${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}%`;
-  const verdictSub = loading
-    ? "Running the current level, build, combo, and target settings…"
-    : !comparison
-      ? error
-        ? "No result is being shown until the input issue is corrected."
-        : "Run a comparison to see the measured result."
-      : buildsAreIdentical
-        ? `Both builds use the same ${buildA.itemIds.filter((id) => !isBootItem(id)).length}-item inventory, so every target is a tie. Use “Compare IE vs LDR” or edit Build B; no recommendation is implied.`
-        : comparisonSentence(comparison, {
-            buildA: buildA.name,
-            buildB: buildB.name,
-            duration,
-            level,
-            metric,
-            targetMode,
-            targetCount: data?.dataset?.count ?? comparison.count,
-            distinctMatchCount: data?.dataset?.distinctMatchCount ?? comparison.distinctMatchCount,
-          });
 
   return (
-    <main className="page">
+    <div className="page">
       <header className="top">
         <div className="top-in">
           <span className="logo" aria-hidden>
             Δ
           </span>
           <strong>Rift Delta</strong>
-          <nav aria-label="Sections">
-            <a href="#verdict">Lab</a>
-            <a href="#drafts">Drafts</a>
-            <a href="#trace">Traces</a>
-          </nav>
           <div className="top-right">
-            <span className="pill pill-gold">Patch 26.18 · 16.18.1</span>
-            <span className="pill">
-              <span className="dot" aria-hidden /> Engine ready
+            <span className="pill pill-gold">
+              Patch {PATCH} · {DATA_VERSION}
             </span>
+            {dataset && (
+              <span className={dataset.provenance === "riot" ? "pill pill-riot" : "pill pill-demo"}>
+                {dataset.provenance === "riot" ? "Riot snapshots" : "Fixture / demo data"}
+              </span>
+            )}
           </div>
         </div>
       </header>
 
-      <div className="wrap">
-        <section className="card verdict" id="verdict" aria-live="polite">
-          <div>
-            <h1>
-              {loading
-                ? "Computing the verdict…"
-                : !comparison
-                  ? "No current comparison"
-                  : verdictTitle}
-            </h1>
-            <p>
-              <strong>{verdictSub}</strong>
-              {" · "}Level-aware attacker inventory{" · "}R-Q-W-AA-AA + autos{" · "}
-              {buildGoldTotal(buildB.itemIds).toLocaleString()}g vs{" "}
-              {buildGoldTotal(buildA.itemIds).toLocaleString()}g
-            </p>
-          </div>
-          <div className="segs" role="group" aria-label="Fight length">
-            {WINDOWS.map((value) => (
-              <button
-                key={value}
-                className={duration === value ? "on" : ""}
-                onClick={() => setDuration(value)}
-                aria-pressed={duration === value}
-              >
-                {value}s
-              </button>
-            ))}
-          </div>
-        </section>
-
-        {error && (
-          <div className="error" role="alert">
-            {error}
-          </div>
-        )}
-
-        <section aria-labelledby="builds-h">
-          <h2 id="builds-h">Build comparison</h2>
-          <p className="sub">
-            Same opener, same targets, mortal-target rules. The winner is computed over the whole
-            cohort.
-          </p>
-          <div className="build-actions">
-            <button className="ghost-btn" onClick={resetRealisticBuild} disabled={!progression}>
-              Use realistic level default
-            </button>
-            <button className="ghost-btn" onClick={setIeLdrComparison}>
-              Compare IE vs LDR
-            </button>
-            {buildsAreIdentical && !hasCurrentResult && (
-              <span className="dim">
-                Start from the observed default, then change one slot to make the question
-                comparative.
-              </span>
-            )}
-            {(buildAEdited || buildBEdited) && (
-              <span className="dim">
-                {buildAEdited ? "Build A is manual." : ""}
-                {buildAEdited && buildBEdited ? " " : ""}
-                {buildBEdited ? "Build B is manual." : ""} Untouched builds follow each new level
-                default.
-              </span>
-            )}
-          </div>
-          {progression && unsupportedObservedDefaults(progression).length > 0 && (
-            <p className="warn build-default-warning" role="status">
-              The realistic level default observed{" "}
-              {progression.selection.recommendedObservedItemIds.length} completed items, but{" "}
-              {unsupportedObservedDefaults(progression).join(", ")}{" "}
-              {unsupportedObservedDefaults(progression).length === 1 ? "is" : "are"} not modeled by
-              the combat engine. It is excluded from both builds; damage uses the nearest supported
-              observed subset and does not treat the omitted item as statless. Choose a supported
-              item manually if you want a different comparison.
-            </p>
-          )}
-          <div className="duel">
-            <BuildCard
-              side="a"
-              name={buildA.name}
-              itemIds={buildA.itemIds}
-              slots={buildAItems}
-              cost={buildGoldTotal(buildA.itemIds)}
-              result={resultA}
-              onChange={updateBuild}
-              onAdd={addBuildItem}
-              tag={
-                hasCurrentResult
-                  ? buildsAreIdentical
-                    ? "SAME BUILD"
-                    : headlineOutcome === "a"
-                      ? "WINNER"
-                      : "2ND"
-                  : null
-              }
-              leads={hasCurrentResult && !buildsAreIdentical && headlineOutcome === "a"}
-              maxSource={maxSource(resultA, resultB)}
-              rarity={buildRarity(progression, buildA.itemIds)}
-              warnings={itemWarnings(buildA.itemIds)}
-              manualOverride={buildAEdited}
-              manualLevel={buildAManualLevel}
-              level={level}
-            />
-            <div className="vs" aria-hidden>
-              <span>VS</span>
-            </div>
-            <BuildCard
-              side="b"
-              name={buildB.name}
-              itemIds={buildB.itemIds}
-              slots={buildBItems}
-              cost={buildGoldTotal(buildB.itemIds)}
-              result={resultB}
-              onChange={updateBuild}
-              onAdd={addBuildItem}
-              tag={
-                hasCurrentResult
-                  ? buildsAreIdentical
-                    ? "SAME BUILD"
-                    : headlineOutcome === "b"
-                      ? "WINNER"
-                      : "2ND"
-                  : null
-              }
-              leads={hasCurrentResult && !buildsAreIdentical && headlineOutcome === "b"}
-              maxSource={maxSource(resultA, resultB)}
-              rarity={buildRarity(progression, buildB.itemIds)}
-              warnings={itemWarnings(buildB.itemIds)}
-              manualOverride={buildBEdited}
-              manualLevel={buildBManualLevel}
-              level={level}
-            />
-          </div>
-          {hasCurrentResult ? (
-            <div className="card dist">
-              <div
-                className="winbar"
-                role="img"
-                aria-label={`Build A wins ${Math.round((comparison?.buildAWinRate ?? 0) * 100)} percent of cohort mass`}
-              >
-                <i style={{ width: `${(comparison?.buildAWinRate ?? 0) * 100}%` }} />
-              </div>
-              <div className="winlbl">
-                <span>
-                  <strong>{buildA.name}</strong> {aWinsLabel(comparison)}
-                </span>
-                <span>
-                  <strong>{buildB.name}</strong> {bWinsLabel(comparison)}
-                </span>
-              </div>
-              <div className="dist-meta">
-                <span>
-                  Median <strong>{comparison ? `${signed}` : "—"}</strong>
-                  {metric === "ttk" ? " first-crossing" : " damage"}
-                </span>
-                <span>
-                  P25 → P75{" "}
-                  <strong>
-                    {comparison
-                      ? `${comparison.p25RelativeDelta}% → ${comparison.p75RelativeDelta}%`
-                      : "—"}
-                  </strong>
-                </span>
-                <span>
-                  Sample <strong>{data?.dataset?.count ?? "—"}</strong>
-                  {data?.dataset?.fallbackLevel
-                    ? ` · fallback level ${data.dataset.fallbackLevel}`
-                    : ""}
-                </span>
-                <span>
-                  {comparison
-                    ? `${comparison.ties} ties · ${comparison.censored} censored · ${comparison.aNotKilled}/${comparison.bNotKilled} not killed A/B`
-                    : "Inspecting snapshots"}
-                </span>
-              </div>
-              <div className="chips-row" aria-label="Role breakdown">
-                <span className="chips-label">Roles</span>
-                {(comparison?.byRole ?? []).map((group: any) => (
-                  <span className="chip" key={group.role}>
-                    {group.role} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
-                  </span>
-                ))}
-                {(comparison?.byRole ?? []).length === 0 && (
-                  <span className="dim">Needs 2+ samples per role</span>
-                )}
-              </div>
-              <div className="chips-row" aria-label="Champion breakdown">
-                <span className="chips-label">Champions</span>
-                {(comparison?.byChampion ?? []).map((group: any) => (
-                  <span className="chip" key={group.champion}>
-                    {group.champion} <strong>{Math.round(group.buildAWinRate * 100)}% A</strong>
-                  </span>
-                ))}
-                {(comparison?.byChampion ?? []).length === 0 && (
-                  <span className="dim">Needs duplicate observations</span>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="card dist" aria-live="polite">
-              <p className="dim">
-                {loading
-                  ? "Computing the cohort comparison…"
-                  : error
-                    ? "No current result."
-                    : "Run a comparison to see the cohort result."}
-              </p>
-            </div>
-          )}
-        </section>
-
-        <section className="card progression-panel" aria-labelledby="progression-h">
-          <div className="section-head">
-            <div>
-              <h2 id="progression-h">Yunara inventory at level {level}</h2>
-              <p className="sub">
-                Attacker progression comes from Yunara snapshots; it is independent of the enemy
-                target cohort used for damage.
-              </p>
-            </div>
-            <span className="pill">Patch 26.18 · Data Dragon 16.18.1</span>
-          </div>
-          {progressionLoading && <p className="dim">Loading observed inventory states…</p>}
-          {progressionError && (
-            <p className="warn">{progressionError} Using the last known/default state.</p>
-          )}
-          {progression && (
-            <>
-              <div className="progression-stats">
-                <span>
-                  <strong>{progression.exactLevel.sampleCount}</strong> exact-level observations
-                </span>
-                <span>
-                  <strong>{progression.exactLevel.distinctMatchCount}</strong> distinct matches
-                </span>
-                <span>
-                  Mean <strong>{progression.selection.meanCompletedLegendary.toFixed(2)}</strong>
-                </span>
-                <span>
-                  Median <strong>{progression.selection.medianCompletedLegendary}</strong>
-                </span>
-                <span>
-                  Mode <strong>{progression.selection.modeCompletedLegendary}</strong>
-                </span>
-              </div>
-              <p className="dim progression-note">
-                {progression.selection.fallbackUsed
-                  ? progression.selection.fallbackLabel
-                  : "Exact level sample used."}
-                {progression.selection.lowSample
-                  ? " Low-sample estimate (fewer than 20 exact observations)."
-                  : ""}{" "}
-                {progression.dedupeRule}
-              </p>
-              <div className="skill-summary" role="status">
-                <strong>
-                  Common skill ranks: Q{progression.skill.ranks.q} W{progression.skill.ranks.w} E
-                  {progression.skill.ranks.e} R{progression.skill.ranks.r}
-                </strong>
-                <span>
-                  {progression.skill.provenance === "timeline"
-                    ? "Archived timeline-derived"
-                    : "Legal fallback"}
-                  {progression.skill.sampleCount > 0 ? ` · n=${progression.skill.sampleCount}` : ""}
-                  . {progression.skill.note}
-                </span>
-              </div>
-              <div className="progression-grid">
-                <div>
-                  <h3>Completed legendary count</h3>
-                  <div className="distribution-list">
-                    {progression.selection.distribution.map((row: any) => (
-                      <span key={row.count}>
-                        <strong>{row.count}</strong> items · {row.observations} ({row.percent}%)
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h3>Common observed core</h3>
-                  <div className="distribution-list">
-                    {progression.selection.commonPatterns.slice(0, 3).map((pattern: any) => (
-                      <span key={pattern.itemIds.join(",")}>
-                        {pattern.itemNames.join(" + ") || "No completed legendary"} ·{" "}
-                        {pattern.percent}%
-                      </span>
-                    ))}
-                  </div>
-                  <p className="dim">
-                    Boots are separate:{" "}
-                    {progression.selection.commonBootId
-                      ? (itemNames[progression.selection.commonBootId] ??
-                        `item ${progression.selection.commonBootId}`)
-                      : "none observed"}{" "}
-                    ({progression.selection.commonBootTier}). Components/wards do not count as
-                    legendaries.
-                  </p>
-                </div>
-              </div>
-              <p className="provenance">
-                {progression.provenance === "riot"
-                  ? "Observed verified Riot timeline snapshots"
-                  : "Fixture / demo inventory progression"}
-                . {progression.note}
-              </p>
-              <p className="dim">
-                Mode observed completed core:{" "}
-                {progression.selection.recommendedObservedItemIds
-                  .map((id: number) => itemNames[id] ?? ITEMS[id]?.name ?? `item ${id}`)
-                  .join(" + ") || "none"}
-                . The simulated default uses only supported mechanics; observed unsupported items
-                stay visible in the pattern but are not fabricated into damage.
-              </p>
-              <p className="progression-interpretation">
-                The level-{level} default uses the modal full core:{" "}
-                <strong>
-                  {progression.selection.modeCompletedLegendary} completed legendary items
-                </strong>
-                . Boots and components are shown separately and never increase that count.
-              </p>
-            </>
-          )}
-        </section>
-
-        {targetMode === "realistic" && (
-          <section aria-labelledby="drafts-h" id="drafts">
-            <h2 id="drafts-h">Enemy draft matrix</h2>
-            <p className="sub">
-              The same question against heavier drafts — each row is a real re-simulation over that
-              slice of the cohort.
-            </p>
-            <div className="card">
-              {matrixLoading && !matrix && <p className="dim">Simulating draft slices…</p>}
-              {(matrix ?? []).map((row) => (
-                <div className="mrow" key={row.key}>
-                  <span>
-                    {row.label}
-                    <small>{row.detail}</small>
-                  </span>
-                  <span className="track" aria-hidden>
-                    {row.delta !== null && (
-                      <i
-                        className={row.delta >= 0 ? "pos" : "neg"}
-                        style={
-                          row.delta >= 0
-                            ? { left: "50%", width: `${Math.min(50, Math.abs(row.delta) * 2.4)}%` }
-                            : { right: "50%", width: `${Math.min(50, Math.abs(row.delta) * 2.4)}%` }
-                        }
-                      />
-                    )}
-                  </span>
-                  <span
-                    className={`delta ${row.outcome === "tie" ? "" : row.delta !== null && row.delta >= 0 ? "u" : "d"}`}
-                  >
-                    {row.delta === null
-                      ? "—"
-                      : row.outcome === "tie"
-                        ? "Tie"
-                        : `${row.outcome === "a" ? buildA.name : buildB.name} ${formatDelta(row.delta)}`}
-                  </span>
-                </div>
-              ))}
-              {!matrixLoading && !matrix && (
-                <p className="dim">Needs 6+ snapshots to slice the cohort.</p>
-              )}
-            </div>
-          </section>
-        )}
-
-        <section aria-labelledby="setup-h">
-          <h2 id="setup-h">Setup</h2>
-          <p className="sub">
-            Attacker, opener, and target. Everything recomputes from the cached cohort.
-          </p>
-          <div className="setup">
-            <div className="card">
-              <h3>Attacker · Yunara</h3>
-              <label className="fl" htmlFor="level">
-                Level
-              </label>
-              <select
-                id="level"
-                value={level}
-                onChange={(event) => setLevel(Number(event.target.value))}
-              >
-                {Array.from({ length: 18 }, (_, i) => (
-                  <option key={i + 1}>{i + 1}</option>
-                ))}
-              </select>
-              <span className="fl">Ability ranks</span>
-              <div className="ranks" role="group" aria-label="Ability ranks">
-                {(["q", "w", "e", "r"] as const).map((key) => (
-                  <div className="rank" key={key}>
-                    <span>{key.toUpperCase()}</span>
-                    <div className="stepper">
-                      <button
-                        aria-label={`Decrease ${key.toUpperCase()}`}
-                        disabled={ranks[key] <= skillBounds(level)[key].min}
-                        onClick={() => adjustRank(key, -1)}
-                      >
-                        −
-                      </button>
-                      <strong
-                        title={`Legal range ${skillBounds(level)[key].min}–${skillBounds(level)[key].max}`}
-                      >
-                        {ranks[key]}
-                      </strong>
-                      <button
-                        aria-label={`Increase ${key.toUpperCase()}`}
-                        disabled={ranks[key] >= skillBounds(level)[key].max}
-                        onClick={() => adjustRank(key, 1)}
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {rankNotice && (
-                <p className="warn" role="alert">
-                  {rankNotice}
-                </p>
-              )}
-              <label className="fl" htmlFor="yun-tal-stacks">
-                Yun Tal starting stacks (ranged)
-              </label>
-              <input
-                id="yun-tal-stacks"
-                type="number"
-                min={0}
-                max={125}
-                step={1}
-                value={yunTalStacks}
-                onChange={(event) =>
-                  setYunTalStacks(
-                    Math.max(0, Math.min(125, Math.round(Number(event.target.value) || 0))),
-                  )
-                }
-              />
-              <p className="dim" style={{ marginTop: 10 }}>
-                Patch pinned to 26.18 · level changes load the common archived skill pattern when
-                available; manual edits are preserved · E is mobility-only · 3032 starts at the
-                explicit stack value above because stored frames do not expose crit chance.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Opener</h3>
-              <div className="preset-row" aria-label="Simulator combo presets">
-                {COMBO_PRESETS.map((preset) => (
-                  <button key={preset.id} onClick={() => applyComboPreset(preset)}>
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-              <div className="opener">
-                {actions.map((action, index) => (
-                  <span className="op-wrap" key={`${action}-${index}`}>
-                    <button
-                      className="op"
-                      onClick={() => removeAction(index)}
-                      title="Remove action"
-                    >
-                      {action} <small aria-hidden>×</small>
-                    </button>
-                    <button
-                      className="op-move"
-                      aria-label={`Move ${action} ${index === 0 ? "down" : "up"}`}
-                      onClick={() => moveAction(index, index === 0 ? 1 : -1)}
-                    >
-                      {index === 0 ? "↓" : "↑"}
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="addrow">
-                {(["AA", "Q", "W", "R", "E"] as ActionKind[]).map((action) => (
-                  <button
-                    key={action}
-                    onClick={() => addAction(action)}
-                    disabled={!actionAvailable(action, level)}
-                  >
-                    + {action}
-                  </button>
-                ))}
-              </div>
-              <p className="dim">
-                E can be sequenced for timing, but remains mobility-only and contributes no damage
-                in this MVP.
-              </p>
-              {!actions.every((action) => actionAvailable(action, level)) && (
-                <p className="warn">
-                  This opener contains an ability unavailable at level {level}; choose a preset or
-                  remove it.
-                </p>
-              )}
-              <span className="fl">After the opener</span>
-              <div className="toggle" role="group" aria-label="Continue autos">
-                <button
-                  className={continueAutos ? "on" : ""}
-                  onClick={() => setContinueAutos(true)}
-                  aria-pressed={continueAutos}
-                >
-                  Keep autoing
-                </button>
-                <button
-                  className={!continueAutos ? "on" : ""}
-                  onClick={() => setContinueAutos(false)}
-                  aria-pressed={!continueAutos}
-                >
-                  Stop
-                </button>
-              </div>
-              <label className="fl" htmlFor="duration">
-                Window (seconds)
-              </label>
-              <input
-                id="duration"
-                type="number"
-                min={1}
-                max={60}
-                value={duration}
-                onChange={(event) => setDuration(Number(event.target.value))}
-              />
-              <button className="run" onClick={() => void run()} disabled={loading}>
-                {loading ? "Calculating…" : "Run comparison"}
-              </button>
-            </div>
-
-            <div className="card">
-              <h3>Target</h3>
-              <div className="toggle" role="group" aria-label="Target mode">
-                <button
-                  className={targetMode === "realistic" ? "on" : ""}
-                  onClick={() => setTargetMode("realistic")}
-                  aria-pressed={targetMode === "realistic"}
-                >
-                  Realistic
-                </button>
-                <button
-                  className={targetMode === "manual" ? "on" : ""}
-                  onClick={() => setTargetMode("manual")}
-                  aria-pressed={targetMode === "manual"}
-                >
-                  Manual
-                </button>
-              </div>
-              {targetMode === "realistic" ? (
-                <>
-                  <label className="fl" htmlFor="region">
-                    Region
-                  </label>
-                  <select
-                    id="region"
-                    value={region}
-                    onChange={(event) => setRegion(event.target.value)}
-                  >
-                    <option value="EUW1">EUW1</option>
-                    <option value="NA1">NA1</option>
-                    <option value="KR">KR</option>
-                  </select>
-                  <div className="two">
-                    <div>
-                      <label className="fl" htmlFor="rank">
-                        Rank
-                      </label>
-                      <select
-                        id="rank"
-                        value={rank}
-                        onChange={(event) => setRank(event.target.value)}
-                      >
-                        <option value="ALL">All ranks</option>
-                        <option value="CHALLENGER">Challenger</option>
-                        <option value="GRANDMASTER">Grandmaster</option>
-                        <option value="MASTER">Master</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="fl" htmlFor="role">
-                        Role
-                      </label>
-                      <select
-                        id="role"
-                        value={role}
-                        onChange={(event) => setRole(event.target.value)}
-                      >
-                        <option value="ALL">All roles</option>
-                        <option>TOP</option>
-                        <option>JUNGLE</option>
-                        <option>MIDDLE</option>
-                        <option>BOTTOM</option>
-                        <option>UTILITY</option>
-                      </select>
-                    </div>
-                  </div>
-                  <label className="fl" htmlFor="phase">
-                    Timing
-                  </label>
-                  <select
-                    id="phase"
-                    value={phase}
-                    onChange={(event) => setPhase(event.target.value)}
-                  >
-                    <option value="yunara-level">Same-frame Yunara level (recommended)</option>
-                    <option value="yunara-third-item">Yunara third item</option>
-                    <option value="bot-carry-third-item">Bot carry fallback</option>
-                    <option value="minute-window">Around minute 25</option>
-                  </select>
-                  <label className="fl" htmlFor="champ">
-                    Champion
-                  </label>
-                  <div className="apply-row">
-                    <input
-                      id="champ"
-                      type="text"
-                      placeholder="Any champion"
-                      value={targetChampionDraft}
-                      onChange={(event) => setTargetChampionDraft(event.target.value.slice(0, 48))}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          commitTargetChampion();
-                        }
-                      }}
-                    />
-                    <button onClick={commitTargetChampion}>Apply</button>
-                  </div>
-                  <p className="dim">
-                    {targetChampion
-                      ? `Applied filter: ${targetChampion}`
-                      : "Applied filter: any champion"}
-                    . Editing the field does not fetch until Apply or Enter.
-                  </p>
-                </>
-              ) : (
-                <div className="two" style={{ marginTop: 4 }}>
-                  {(
-                    [
-                      ["health", "HP"],
-                      ["armor", "Armor"],
-                      ["magicResist", "MR"],
-                      ["bonusHealth", "Bonus HP"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <div key={key}>
-                      <label className="fl" htmlFor={`m-${key}`}>
-                        {label}
-                      </label>
-                      <input
-                        id={`m-${key}`}
-                        type="number"
-                        value={manual[key]}
-                        onChange={(event) =>
-                          setManual({ ...manual, [key]: Number(event.target.value) })
-                        }
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-              <span className="fl">Metric</span>
-              <div className="toggle" role="group" aria-label="Comparison metric">
-                <button
-                  className={metric === "damage" ? "on" : ""}
-                  onClick={() => setMetric("damage")}
-                  aria-pressed={metric === "damage"}
-                >
-                  Damage
-                </button>
-                <button
-                  className={metric === "ttk" ? "on" : ""}
-                  onClick={() => setMetric("ttk")}
-                  aria-pressed={metric === "ttk"}
-                >
-                  TTK
-                </button>
-              </div>
-              <p className="dim" style={{ marginTop: 10 }}>
-                {metric === "ttk"
-                  ? "Lower first-crossing time wins; uncensored kills only."
-                  : "Mortal targets stop at death; both kills are an applied-damage tie."}
-              </p>
-              {targetMode === "realistic" && (
-                <p className="provenance">
-                  Level {level} loads enemy vectors from the same archived match/frame as the Yunara
-                  level observation. Build, combo, rank, and stack edits reuse this cohort;
-                  level/filter changes fetch a new one.
-                </p>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="card" aria-labelledby="trace-h" id="trace">
-          <h2 id="trace-h">Damage trace</h2>
-          <p className="sub">
-            One observed vector, shot by shot. The headline uses the whole cohort; this panel shows
-            the kill.
-          </p>
-          <label className="fl" htmlFor="target-sel">
-            Selected target
-          </label>
-          <select
-            id="target-sel"
-            value={selectedTargetId}
-            onChange={(event) => {
-              setSelectedTargetId(event.target.value);
-              void run(event.target.value);
+      <div className="lab">
+        <aside className="rail" aria-label="Simulation setup">
+          <AttackerCard
+            level={level}
+            ranks={ranks}
+            rankNotice={rankNotice}
+            yunTalStacks={yunTalStacks}
+            onLevel={setLevel}
+            onAdjustRank={adjustRank}
+            onYunTalStacks={setYunTalStacks}
+          />
+          <OpenerCard
+            actions={actions}
+            level={level}
+            continueAutos={continueAutos}
+            duration={duration}
+            onPreset={applyComboPreset}
+            onAddAction={(action) => {
+              if (!actionAvailable(action, level)) return;
+              comboEditedRef.current = true;
+              setActions((current) => [...current, action]);
             }}
-          >
-            {(data?.dataset?.targets ?? []).map((target: Target) => (
-              <option value={target.id} key={target.id}>
-                {target.champion} · {target.role ?? "unknown role"} · {Math.round(target.health)} HP
-                / {Math.round(target.armor)} armor
-              </option>
-            ))}
-          </select>
-          {resultA && (
-            <p className="kill">
-              {resultA.killed ? `Killed at ${resultA.ttk}s` : "Not killed in window"} · overkill{" "}
-              {resultA.overkill}
+            onRemoveAction={(index) => {
+              comboEditedRef.current = true;
+              setActions((current) => current.filter((_, position) => position !== index));
+            }}
+            onMoveAction={(index, direction) => {
+              comboEditedRef.current = true;
+              setActions((current) => moveItem(current, index, direction));
+            }}
+            onContinueAutos={setContinueAutos}
+            onDuration={(seconds) => setDuration(clampDuration(seconds))}
+          />
+          <TargetCard
+            targetMode={targetMode}
+            region={region}
+            rank={rank}
+            role={role}
+            phase={phase}
+            targetChampionDraft={targetChampionDraft}
+            appliedChampion={targetChampion}
+            manual={manual}
+            metric={metric}
+            snapshotCount={dataset?.count ?? null}
+            onTargetMode={setTargetMode}
+            onRegion={setRegion}
+            onRank={setRank}
+            onRole={setRole}
+            onPhase={setPhase}
+            onChampionDraft={setTargetChampionDraft}
+            onCommitChampion={commitTargetChampion}
+            onManual={setManual}
+            onMetric={setMetric}
+          />
+          <section className="card status">
+            <p>
+              <strong>Live</strong> — every change re-runs against the cached cohort. Level and
+              filter changes fetch a new one.
             </p>
-          )}
-          <div className="events">
-            {(resultA?.events ?? []).slice(0, 30).map((event: any, index: number) => (
-              <div className="event" key={`${event.time}-${index}`}>
-                <time>{event.time.toFixed(2)}s</time>
-                <strong>{event.source}</strong>
-                <span>
-                  {event.raw} → <strong>{event.final}</strong>
-                </span>
-                <small>{event.notes.join(" · ")}</small>
-              </div>
-            ))}
-            {!(resultA?.events ?? []).length && <p className="dim">Waiting for a run…</p>}
-          </div>
-          <button
-            className="ghost-btn"
-            onClick={() => setShowLog(!showLog)}
-            aria-expanded={showLog}
-          >
-            {showLog ? "Hide full damage log" : "Show full damage log"}
-          </button>
-          {showLog && (
-            <div className="fulllog">
-              {(resultB?.events ?? []).slice(0, 30).map((event: any, index: number) => (
-                <div className="event" key={`b-${event.time}-${index}`}>
-                  <time>{event.time.toFixed(2)}s</time>
-                  <strong>
-                    {buildB.name} · {event.source}
-                  </strong>
-                  <span>
-                    {event.raw} → <strong>{event.final}</strong>
-                  </span>
-                  <small>{event.notes.join(" · ")}</small>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="prov">
-            <span
-              className={data?.dataset?.provenance === "riot" ? "badge b-riot" : "badge b-demo"}
-            >
-              {data?.dataset?.provenance === "riot" ? "Riot snapshots" : "Fixture / demo"}
-            </span>
-            <span>{data?.dataset?.note ?? "Loading target provenance…"}</span>
-          </div>
-          {data?.dataset && (
-            <p className="dim">
-              {data.dataset.distinctMatchCount ?? 0} distinct matches ·{" "}
-              {data.dataset.snapshotCount ?? data.dataset.count ?? 0} snapshots ·{" "}
-              {data.dataset.uniqueChampions?.length ?? 0} champions
-            </p>
-          )}
-          {(data?.warnings ?? []).map((warning: string) => (
-            <p className="warn" key={warning}>
-              {warning}
-            </p>
-          ))}
-          {data?.assumptions && <p className="dim">{data.assumptions}</p>}
-        </section>
+            <button className="ghost" onClick={() => void run()} disabled={loading}>
+              {loading ? "Calculating…" : "Run again"}
+            </button>
+          </section>
+        </aside>
 
-        <section className="card" aria-labelledby="cohort-h">
-          <h2 id="cohort-h">Cohort detail</h2>
-          <p className="sub">Observed enemy stats and where the builds trade places.</p>
-          <div className="cohort-grid">
-            <div>
-              <h3>Target snapshot summary</h3>
-              <SummaryTable summary={data?.dataset?.summary} />
+        <main className="board">
+          {error && (
+            <div className="error" role="alert">
+              {error}
             </div>
-            <div>
-              <h3>Breakpoint map · {duration}s damage delta</h3>
-              <BreakpointTable rows={data?.breakpoints ?? []} />
-            </div>
+          )}
+
+          {identical ? (
+            <IdenticalBuildsBand
+              itemName={itemsA.map(itemLabel).join(" + ") || "no items"}
+              damage={result?.a.totalDamage ?? null}
+              dps={result?.a.dps ?? null}
+              ttk={result?.a.ttk ?? null}
+              suggestions={suggestions.map((suggestion) => ({
+                ...suggestion,
+                apply: () => suggestAlternative(suggestion.itemId),
+              }))}
+              onResetDefault={resetToDefault}
+            />
+          ) : comparison && result ? (
+            <VerdictBand
+              labels={labels}
+              level={level}
+              metric={metric}
+              duration={duration}
+              windows={windowSummaries}
+              comparison={comparison}
+              drafts={drafts}
+              datasetLabel={datasetLabel}
+              recomputing={loading}
+              onDuration={setDuration}
+              onSwitchToTtk={() => setMetric("ttk")}
+            >
+              <BreakpointHeat points={result.breakpoints} duration={duration} labels={labels} />
+            </VerdictBand>
+          ) : (
+            <section className="card band band-flat" aria-live="polite">
+              <div>
+                <h1 className="question">
+                  {loading ? "Running the comparison…" : "No current comparison"}
+                </h1>
+                <p className="lede">
+                  {loading
+                    ? "Simulating both builds against every target in the cohort."
+                    : "Correct the input above to see a result."}
+                </p>
+              </div>
+              <div />
+            </section>
+          )}
+
+          <div className={identical ? "" : "grid2"}>
+            <HeadToHead
+              labels={labels}
+              slotsA={buildAItems}
+              slotsB={buildBItems}
+              supportedItems={SUPPORTED_BUILD_ITEMS}
+              duration={duration}
+              resultA={result?.a}
+              resultB={result?.b}
+              manualNote={
+                buildsEdited
+                  ? "These builds are manual; they no longer follow the observed level default."
+                  : "Untouched builds follow each new level default."
+              }
+              itemWarnings={uniqueStrings([...itemWarnings(itemsA), ...itemWarnings(itemsB)])}
+              onSharedChange={updateShared}
+              onSideChange={updateSide}
+              onAddShared={addShared}
+              onAddSide={addSide}
+              onResetDefault={resetToDefault}
+            />
+            {!identical && (
+              <DraftSlices
+                rows={drafts}
+                labels={labels}
+                comparison={comparison}
+                dataset={dataset}
+                loading={loading}
+              />
+            )}
           </div>
-        </section>
+
+          <TraceFold
+            labels={labels}
+            dataset={dataset}
+            selectedTargetId={selectedTargetId}
+            resultA={result?.a}
+            resultB={result?.b}
+            compared={showComparedTrace}
+            onSelectTarget={(id) => {
+              setSelectedTargetId(id);
+              void run({ selectedTargetId: id });
+            }}
+            onToggleCompared={() => setShowComparedTrace((current) => !current)}
+          />
+          <EvidenceFold
+            progression={progression}
+            level={level}
+            loading={progressionLoading}
+            error={progressionError}
+            excludedNames={progression?.selection.recommendedExcludedItemNames ?? []}
+            rarity={rarity}
+          />
+          <LimitsFold
+            modelWarnings={result?.modelWarnings ?? []}
+            assumptions={result?.assumptions ?? ""}
+          />
+        </main>
       </div>
 
       <footer>
@@ -1471,35 +677,64 @@ export default function Home() {
         involved in producing or managing League of Legends. League of Legends and Riot Games are
         trademarks or registered trademarks of Riot Games, Inc.
       </footer>
-    </main>
+    </div>
   );
 }
 
-function actionAvailable(action: ActionKind, level: number): boolean {
-  if (action === "R") return level >= 6;
-  return level >= 1;
+async function loadProgressionLevel(
+  level: number,
+  cache: Map<number, ProgressionApiResponse>,
+): Promise<ProgressionApiResponse> {
+  const cached = cache.get(level);
+  if (cached) return cached;
+  const response = await fetch(`/api/progression?champion=Yunara&level=${level}`, {
+    headers: { accept: "application/json" },
+  });
+  const payload = (await response.json()) as ProgressionApiResponse & { error?: string };
+  if (!response.ok) throw new Error(payload.error ?? "Progression query failed");
+  cache.set(level, payload);
+  return payload;
 }
 
-function sameInventory(left: number[], right: number[]): boolean {
-  if (left.length !== right.length) return false;
-  const a = [...left].sort((x, y) => x - y);
-  const b = [...right].sort((x, y) => x - y);
-  return a.every((value, index) => value === b[index]);
-}
-
-function compactBuildItems(slots: Array<number | 0>): number[] {
+function compact(slots: BuildSlots): number[] {
   return slots.filter((id): id is number => id > 0);
 }
 
-function defaultActionsForLevel(level: number): ActionKind[] {
-  if (level < 6) return ["Q", "AA"];
-  return ["R", "Q", "W", "AA", "AA"];
+function writeSlot(slots: BuildSlots, index: number, value: number | null): BuildSlots {
+  if (value === null) {
+    const next = slots.filter((_, position) => position !== index);
+    return next.length > 0 ? next : [0];
+  }
+  const next = [...slots];
+  next[index] = value;
+  return next;
 }
 
-function isLegalRankShape(
-  ranks: { q: number; w: number; e: number; r: number },
-  level: number,
-): boolean {
+function moveItem<T>(items: T[], index: number, direction: -1 | 1): T[] {
+  const destination = index + direction;
+  if (destination < 0 || destination >= items.length) return items;
+  const next = [...items];
+  [next[index], next[destination]] = [next[destination]!, next[index]!];
+  return next;
+}
+
+function clampDuration(seconds: number): number {
+  if (!Number.isFinite(seconds)) return 5;
+  return Math.max(1, Math.min(60, Math.round(seconds)));
+}
+
+function describeBuild(itemIds: number[], fallback: string): string {
+  const names = [...new Set(itemIds.filter((id) => !ITEMS[id]?.boots).map(itemLabel))];
+  if (names.length === 0) return fallback;
+  if (names.length <= 3) return names.join(" + ");
+  return `${names[0]} + ${names[1]} + ${names.length - 2} more`;
+}
+
+function defaultActionsForLevel(level: number): ActionKind[] {
+  return level < 6 ? ["Q", "AA"] : ["R", "Q", "W", "AA", "AA"];
+}
+
+function isLegalRankShape(ranks: AbilityRanks, level: number): boolean {
   const bounds = skillBounds(level);
   return (
     (["q", "w", "e", "r"] as const).every((key) => {
@@ -1509,413 +744,200 @@ function isLegalRankShape(
   );
 }
 
-function comparisonSentence(
-  comparison: any,
-  context: {
-    buildA: string;
-    buildB: string;
-    duration: number;
-    level: number;
-    metric: "damage" | "ttk";
-    targetMode: "realistic" | "manual";
-    targetCount: number;
-    distinctMatchCount: number;
-  },
-): string {
-  const total = Object.values(comparison.weightedOutcomes ?? {}).reduce(
-    (sum: number, value) => sum + Number(value ?? 0),
-    0,
-  );
-  const aMass = Number(comparison.weightedOutcomes?.a ?? 0);
-  const bMass = Number(comparison.weightedOutcomes?.b ?? 0);
-  const pct = (value: number) => (total > 0 ? Math.round((value / total) * 100) : 0);
-  const median = Number(comparison.medianRelativeDelta ?? 0);
-  const medianMagnitude = Math.abs(median);
-  const subject =
-    context.targetMode === "manual"
-      ? "Against the custom target"
-      : `Against ${context.distinctMatchCount} level-${context.level} matches (${context.targetCount} enemy snapshots)`;
-  const medianClause =
-    context.metric === "ttk"
-      ? median > 0
-        ? `${context.buildA} reaches first kill a median ${medianMagnitude}% sooner than ${context.buildB}`
-        : median < 0
-          ? `${context.buildB} reaches first kill a median ${medianMagnitude}% sooner than ${context.buildA}`
-          : `the builds have the same median first-crossing time`
-      : median > 0
-        ? `${context.buildA} deals a median ${medianMagnitude}% more ${context.duration}s damage than ${context.buildB}`
-        : median < 0
-          ? `${context.buildB} deals a median ${medianMagnitude}% more ${context.duration}s damage than ${context.buildA}`
-          : `the builds have the same median ${context.duration}s damage`;
-  const leader = aMass > bMass ? context.buildA : bMass > aMass ? context.buildB : null;
-  const leadClause = leader
-    ? `${leader} leads on ${pct(Math.max(aMass, bMass))}% of weighted targets`
-    : "neither build leads on weighted targets";
-  return `${subject}, ${medianClause}, and ${leadClause}.`;
-}
-
-function maxSource(a: any, b: any) {
-  const values = [
-    ...Object.values((a?.sources ?? {}) as Record<string, number>),
-    ...Object.values((b?.sources ?? {}) as Record<string, number>),
-  ].map(Number);
-  return Math.max(1, ...values);
-}
-
-function buildDisplayName(itemIds: number[], fallback: string): string {
-  const names = [
-    ...new Set(
-      itemIds.filter((id) => !isBootItem(id)).map((id) => itemNames[id] ?? ITEMS[id]?.name),
-    ),
-  ].filter(Boolean) as string[];
-  if (names.length === 0) return fallback;
-  if (names.length <= 3) return names.join(" + ");
-  return `${names[0]} + ${names[1]} + ${names.length - 2} more`;
-}
-
-function recommendedBuild(progression: any): number[] {
-  const selected = progression?.selection;
-  if (!selected) return [...INITIAL_REALISTIC_BUILD];
-  const supported = (selected.recommendedSupportedItemIds ?? []).filter((id: number) =>
+/**
+ * Seed the lab with a real question: the observed core at this level, with
+ * Infinity Edge against Lord Dominik's Regards in the free slot. Opening on two
+ * identical builds would make every panel print a tie.
+ */
+function defaultComparison(progression: ProgressionApiResponse | null): {
+  a: BuildSlots;
+  b: BuildSlots;
+} {
+  const selection = progression?.selection;
+  const observed = (selection?.recommendedSupportedItemIds ?? []).filter((id) =>
     SUPPORTED_BUILD_ITEMS.includes(id),
   );
-  const boot = Number(selected.recommendedBootId);
-  const next: number[] = [...new Set<number>(supported)];
-  if (Number.isInteger(boot) && SUPPORTED_BUILD_ITEMS.includes(boot)) next.push(boot);
-  return next.length > 0 ? next.slice(0, 6) : [...INITIAL_REALISTIC_BUILD];
-}
-
-function unsupportedObservedDefaults(progression: any): string[] {
-  const selection = progression?.selection;
-  if (!selection) return [];
-  if (Array.isArray(selection.recommendedExcludedItemNames)) {
-    return selection.recommendedExcludedItemNames;
+  const boot = Number(selection?.recommendedBootId);
+  const core = [...new Set(observed)].filter((id) => id !== INFINITY_EDGE && id !== LORD_DOMINIKS);
+  if (Number.isInteger(boot) && SUPPORTED_BUILD_ITEMS.includes(boot) && !core.includes(boot)) {
+    core.push(boot);
   }
-  const supported = new Set<number>(selection.recommendedSupportedItemIds ?? []);
-  return (selection.recommendedObservedItemIds ?? [])
-    .filter((id: number) => !supported.has(id))
-    .map((id: number) => "item " + id);
+  const base = core.length > 0 ? core.slice(0, 5) : [...FALLBACK_CORE];
+  return { a: [...base, INFINITY_EDGE], b: [...base, LORD_DOMINIKS] };
 }
 
-function isBootItem(id: number): boolean {
-  return Boolean(ITEMS[id]?.boots);
+/** Replace the last non-boot item so a suggestion stays a one-item swap. */
+function replaceLastLegendary(slots: BuildSlots, itemId: number): BuildSlots {
+  const next = [...slots];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const current = next[index];
+    if (current && current > 0 && !ITEMS[current]?.boots) {
+      next[index] = itemId;
+      return next;
+    }
+  }
+  return next.length < 6 ? [...next, itemId] : next;
 }
 
-function buildRarity(progression: any, itemIds: number[]) {
-  const selected = progression?.selection;
-  if (!selected) return null;
-  const count = itemIds.filter((id) => !isBootItem(id)).length;
-  const rarity = progressionRarity(selected, count);
-  const coreIds = [...new Set(itemIds.filter((id) => !isBootItem(id)))].sort(
-    (left, right) => left - right,
-  );
-  const core = selected.supportedCoreFrequencies?.find(
-    (row: any) => row.itemIds.join(",") === coreIds.join(","),
-  );
+/**
+ * Ways out of an identical comparison. Observed items come first with their
+ * frequency; supported items fill the rest and are never labelled as observed.
+ */
+function alternativeQuestions(
+  progression: ProgressionApiResponse | null,
+  current: number[],
+): Array<{ id: string; itemId: number; label: string; detail: string }> {
+  const observed = (progression?.selection.commonCompletedItems ?? [])
+    .filter((item) => SUPPORTED_BUILD_ITEMS.includes(item.itemId) && !current.includes(item.itemId))
+    .map((item) => ({
+      id: `suggest-${item.itemId}`,
+      itemId: item.itemId,
+      label: `Test ${itemLabel(item.itemId)} instead`,
+      detail: `Seen in ${item.percent}% of observed states at this level`,
+    }));
+  const filler = SUPPORTED_BUILD_ITEMS.filter(
+    (id) =>
+      !ITEMS[id]?.boots &&
+      !current.includes(id) &&
+      !observed.some((suggestion) => suggestion.itemId === id),
+  )
+    .sort((left, right) => (left === LORD_DOMINIKS ? -1 : right === LORD_DOMINIKS ? 1 : 0))
+    .map((id) => ({
+      id: `suggest-${id}`,
+      itemId: id,
+      label: `Test ${itemLabel(id)} instead`,
+      detail: "Supported by the engine; not part of an observed core here",
+    }));
+  return [...observed, ...filler].slice(0, 3);
+}
+
+function manualDataset(manual: {
+  health: number;
+  armor: number;
+  magicResist: number;
+  bonusHealth: number;
+  level: number;
+}): LabDataset {
+  const target: Target = {
+    id: "manual",
+    champion: "Custom target",
+    health: manual.health,
+    armor: manual.armor,
+    magicResist: manual.magicResist,
+    bonusHealth: manual.bonusHealth,
+    level: manual.level,
+    provenance: "fixture",
+    sampleWeight: 1,
+  };
   return {
-    count,
-    progressionPercentile: rarity.progressionPercentile,
-    tailPercent: rarity.tailPercent,
-    exactPercent: rarity.exactPercent,
-    tailObservations: rarity.tailObservations,
-    exactObservations: rarity.exactObservations,
-    corePercent: Number(core?.percent ?? 0),
-    sampleCount: selected.sampleCount,
-    lowSample: Boolean(selected.lowSample),
+    targets: [target],
+    provenance: "fixture",
+    phase: "manual target",
+    fallbackLevel: manual.level,
+    note: "Manual target values supplied by the user; no Riot snapshot claim is made.",
+    count: 1,
+    distinctMatchCount: 0,
+    snapshotCount: 1,
+    availableDistinctMatchCount: 0,
+    availableSnapshotCount: 1,
+    truncated: false,
+    sampleLimitPerMatch: 1,
+    uniqueChampions: [target.champion],
+    uniqueRoles: [],
+    knownRankCount: 0,
+    collection: { earliest: null, latest: null },
+    summary: summarizeTargets([target]),
   };
 }
 
-function BuildRarity({ rarity }: { rarity: any }) {
-  const ahead = Math.max(0, Math.min(100, Number(rarity.progressionPercentile)));
-  const aheadText =
-    rarity.tailObservations === 0 && rarity.sampleCount > 0
-      ? `ahead of essentially all observed Yunara states at this level (${ahead}%)`
-      : `ahead of ${ahead}% of observed Yunara states at this level`;
-  return (
-    <div className="build-rarity" aria-label="Economic item progression rarity">
-      <strong>
-        {rarity.count} completed legendary item{rarity.count === 1 ? "" : "s"}
-      </strong>
-      <span>
-        {rarity.lowSample ? "Low-sample · " : ""}
-        {aheadText}
-      </span>
-      <span>
-        {rarity.tailObservations} of {rarity.sampleCount} observed states had ≥{rarity.count} ·
-        exact count {rarity.exactPercent}% ({rarity.exactObservations}) · exact selected core{" "}
-        {rarity.corePercent}%
-      </span>
-      <small>Economic/item progression only; not player skill or win probability.</small>
-    </div>
-  );
-}
-
-function formatDelta(delta: number) {
-  return `${delta >= 0 ? "+" : "−"}${Math.abs(delta)}%`;
-}
-
-function aWinsLabel(comparison: any) {
-  if (!comparison) return "—";
-  return `${comparison.aWins} rows · ${Math.round(weightedShare(comparison, "a") * 100)}% mass`;
-}
-
-function bWinsLabel(comparison: any) {
-  if (!comparison) return "—";
-  return `${comparison.bWins} rows · ${Math.round(weightedShare(comparison, "b") * 100)}% mass`;
-}
-
-function BuildCard({
-  side,
-  name,
-  itemIds,
-  slots,
-  cost,
-  result,
-  onChange,
-  onAdd,
-  tag,
-  leads,
-  maxSource: max,
-  rarity,
-  warnings,
-  manualOverride,
-  manualLevel,
-  level,
-}: {
-  side: "a" | "b";
-  name: string;
-  itemIds: number[];
-  slots: Array<number | 0>;
-  cost: number;
-  result: any;
-  onChange: (side: "a" | "b", index: number, value: number | null) => void;
-  onAdd: (side: "a" | "b") => void;
-  tag: string | null;
-  leads: boolean;
-  maxSource: number;
-  rarity: any;
-  warnings: string[];
-  manualOverride: boolean;
-  manualLevel: number | null;
-  level: number;
-}) {
-  const heroItem = itemIds[itemIds.length - 1] ?? 6672;
-  const selectedIds = slots.filter((id): id is number => id > 0);
-  const selectedCounts = selectedIds.reduce(
-    (counts, id) => counts.set(id, (counts.get(id) ?? 0) + 1),
-    new Map<number, number>(),
-  );
-  return (
-    <article className={`build ${leads ? "win" : ""}`}>
-      <div className="build-head">
-        <Image
-          src={`${ICON}${itemIcons[heroItem] ?? `${heroItem}.png`}`}
-          alt=""
-          width={44}
-          height={44}
-          unoptimized
-          className="third-icon"
-        />
-        <div>
-          <strong>{name}</strong>
-          <small>{cost.toLocaleString()}g</small>
-          {manualOverride && (
-            <small className="dim">
-              Manual override
-              {manualLevel !== null && manualLevel !== level ? ` from level ${manualLevel}` : ""} ·
-              evaluated at level {level}
-            </small>
-          )}
-        </div>
-        {tag && <span className={`tag ${leads ? "" : "dim"}`}>{tag}</span>}
-      </div>
-      <div className="items">
-        {slots.map((id, index) => (
-          <label className="build-slot" key={`${side}-${index}`}>
-            {id > 0 ? (
-              <Image
-                src={`${ICON}${itemIcons[id] ?? `${id}.png`}`}
-                alt=""
-                width={30}
-                height={30}
-                unoptimized
-              />
-            ) : (
-              <span className="empty-item" aria-hidden>
-                ?
-              </span>
-            )}
-            <select
-              aria-label={`${side === "a" ? "Build A" : "Build B"} item ${index + 1}`}
-              value={id > 0 ? id : ""}
-              onChange={(event) =>
-                onChange(side, index, event.target.value === "" ? null : Number(event.target.value))
-              }
-            >
-              <option value="">Choose an item…</option>
-              {SUPPORTED_BUILD_ITEMS.map((candidate) => (
-                <option
-                  value={candidate}
-                  key={candidate}
-                  disabled={
-                    (selectedCounts.get(candidate) ?? 0) > 0 &&
-                    !(candidate === id && selectedCounts.get(candidate) === 1)
-                  }
-                >
-                  {itemNames[candidate] ?? ITEMS[candidate]?.name ?? candidate}
-                </option>
-              ))}
-            </select>
-            {itemIds.length > 1 && (
-              <button
-                type="button"
-                className="remove-slot"
-                aria-label={`Remove ${side === "a" ? "Build A" : "Build B"} item ${index + 1}`}
-                onClick={() => onChange(side, index, null)}
-              >
-                ×
-              </button>
-            )}
-          </label>
-        ))}
-        <button
-          type="button"
-          className="add-slot"
-          onClick={() => onAdd(side)}
-          disabled={slots.length >= 6}
-        >
-          + item
-        </button>
-      </div>
-      {rarity && <BuildRarity rarity={rarity} />}
-      {warnings.length > 0 && (
-        <div className="build-warnings" role="note">
-          {warnings.map((warning) => (
-            <span key={warning}>⚠ {warning}</span>
-          ))}
-        </div>
-      )}
-      <div className="bignum num">
-        {result ? Math.round(result.totalDamage).toLocaleString() : "—"}
-        <small>total damage</small>
-      </div>
-      <div className="stat-chips">
-        <span className="chip">
-          <strong className="num">{result ? Math.round(result.dps).toLocaleString() : "—"}</strong>{" "}
-          DPS
-        </span>
-        <span className="chip">
-          TTK{" "}
-          <strong className="num">
-            {result?.ttk !== null && result?.ttk !== undefined ? `${result.ttk}s` : "censored"}
-          </strong>
-        </span>
-        <span className="chip">
-          <strong className="num">
-            {result && result.totalDamage > 0
-              ? `${Math.round((result.split.physical / result.totalDamage) * 100)}%`
-              : "—"}
-          </strong>{" "}
-          physical
-        </span>
-      </div>
-      <div className="sources">
-        {result &&
-          Object.entries(result.sources)
-            .slice(0, 4)
-            .map(([source, value]) => (
-              <div className="src" key={source}>
-                <span>{source}</span>
-                <span className="bar" aria-hidden>
-                  <i style={{ width: `${(Number(value) / max) * 100}%` }} />
-                </span>
-                <strong className="num">{Number(value).toLocaleString()}</strong>
-              </div>
-            ))}
-      </div>
-    </article>
-  );
-}
-
-function weightedShare(comparison: any, side: "a" | "b") {
-  const weighted = comparison.weightedOutcomes;
-  const decisive = Number(weighted?.a ?? 0) + Number(weighted?.b ?? 0);
-  return decisive > 0 ? Number(weighted?.[side] ?? 0) / decisive : 0;
-}
-
-function summarizeTargetValues(targets: Array<Record<string, unknown>>) {
+function summarizeTargets(targets: Target[]) {
   const keys = ["health", "bonusHealth", "armor", "magicResist", "level", "minute"] as const;
   return Object.fromEntries(
     keys.map((key) => {
-      const values = targets.map((target) => Number(target[key] ?? 0)).sort((a, b) => a - b);
-      const at = (p: number) =>
-        values[Math.min(values.length - 1, Math.floor((values.length - 1) * p))] ?? 0;
+      const values = targets
+        .map((target) => Number((target as unknown as Record<string, unknown>)[key] ?? 0))
+        .sort((left, right) => left - right);
+      const at = (quantile: number) =>
+        values[Math.min(values.length - 1, Math.floor((values.length - 1) * quantile))] ?? 0;
       return [key, { p25: at(0.25), median: at(0.5), p75: at(0.75) }];
     }),
   );
 }
 
-function SummaryTable({ summary }: { summary: any }) {
-  if (!summary) return <p className="dim">Waiting for snapshots…</p>;
-  return (
-    <div className="summary">
-      {[
-        ["Health", "health"],
-        ["Bonus health", "bonusHealth"],
-        ["Armor", "armor"],
-        ["Magic resist", "magicResist"],
-        ["Level", "level"],
-        ["Game minute", "minute"],
-      ].map(([label, key]) => (
-        <div className="srow" key={key}>
-          <span>{label}</span>
-          <strong className="num">{summary[key].median}</strong>
-          <small className="num">
-            {summary[key].p25} – {summary[key].p75}
-          </small>
-        </div>
-      ))}
-    </div>
-  );
+interface SweepContext {
+  base: WorkerSimulationRequest["base"];
+  buildA: WorkerSimulationRequest["buildA"];
+  buildB: WorkerSimulationRequest["buildB"];
+  targets: Target[];
+  metric: "damage" | "ttk";
+  main: SampleComparison;
+  runWorker: (request: WorkerSimulationRequest) => Promise<WorkerSimulationResponse>;
+  nextId: () => number;
 }
 
-function BreakpointTable({ rows }: { rows: any[] }) {
-  const armorValues = [...new Set(rows.map((row) => row.armor))];
-  const healthValues = [...new Set(rows.map((row) => row.bonusHealth))];
-  if (!rows.length) return <p className="dim">Waiting for calculation…</p>;
-  return (
-    <div className="bpscroll">
-      <table className="bp">
-        <thead>
-          <tr>
-            <th scope="col">Armor \ bonus HP</th>
-            {healthValues.map((value) => (
-              <th scope="col" key={value} className="num">
-                {value}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {armorValues.map((armor) => (
-            <tr key={armor}>
-              <th scope="row" className="num">
-                {armor}
-              </th>
-              {healthValues.map((health) => {
-                const row = rows.find(
-                  (candidate) => candidate.armor === armor && candidate.bonusHealth === health,
-                );
-                return (
-                  <td className={`num ${row && row.delta >= 0 ? "pos" : "neg"}`} key={health}>
-                    {row ? formatDelta(Math.round(row.delta)) : "—"}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+/** One verdict per fight length, so the answer's stability over time is visible. */
+async function collectWindowSummaries(
+  context: SweepContext & { duration: number },
+): Promise<WindowSummary[]> {
+  const durations = [...new Set([...WINDOWS, context.duration])].sort(
+    (left, right) => left - right,
   );
+  const summaries: WindowSummary[] = [];
+  for (const seconds of durations) {
+    if (seconds === context.duration) {
+      summaries.push(summarizeWindow(seconds, context.main));
+      continue;
+    }
+    const response = await context.runWorker({
+      id: context.nextId(),
+      base: { ...context.base, durationSeconds: seconds },
+      buildA: context.buildA,
+      buildB: context.buildB,
+      targets: context.targets,
+      metric: context.metric,
+      includeBreakpoints: false,
+    });
+    summaries.push(summarizeWindow(seconds, response.comparison));
+  }
+  return summaries;
+}
+
+async function collectDraftRows(context: SweepContext & { enabled: boolean }): Promise<DraftRow[]> {
+  if (!context.enabled || context.targets.length < 6) return [];
+  const take = Math.max(2, Math.ceil(context.targets.length / 3));
+  const topBy = (pick: (target: Target) => number) =>
+    [...context.targets].sort((left, right) => pick(right) - pick(left)).slice(0, take);
+  const groups = [
+    { key: "hp", label: "HP-heavy draft", list: topBy((target) => target.bonusHealth) },
+    { key: "armor", label: "Armor-heavy draft", list: topBy((target) => target.armor) },
+    { key: "mr", label: "MR-heavy draft", list: topBy((target) => target.magicResist) },
+  ];
+  const rows: DraftRow[] = [
+    {
+      key: "avg",
+      label: "Average draft",
+      detail: `${context.targets.length} snapshots`,
+      delta: context.main.medianRelativeDelta,
+      outcome: weightedHeadlineWinner(context.main),
+    },
+  ];
+  for (const group of groups) {
+    const response = await context.runWorker({
+      id: context.nextId(),
+      base: context.base,
+      buildA: context.buildA,
+      buildB: context.buildB,
+      targets: group.list,
+      metric: context.metric,
+      includeBreakpoints: false,
+    });
+    rows.push({
+      key: group.key,
+      label: group.label,
+      detail: `${group.list.length} snapshots`,
+      delta: response.comparison.medianRelativeDelta,
+      outcome: weightedHeadlineWinner(response.comparison),
+    });
+  }
+  return rows;
 }

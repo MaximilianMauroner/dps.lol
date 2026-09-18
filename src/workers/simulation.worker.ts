@@ -9,6 +9,8 @@ export interface WorkerSimulationRequest {
   targets: Target[];
   selectedTargetId?: string;
   metric?: "damage" | "ttk";
+  /** Secondary runs (draft slices, other fight lengths) do not need the grid. */
+  includeBreakpoints?: boolean;
 }
 
 export interface WorkerSimulationResponse {
@@ -47,7 +49,10 @@ self.onmessage = (event: MessageEvent<WorkerSimulationRequest>) => {
       a: simulateYunara({ ...request.base, build: request.buildA, target }),
       b: simulateYunara({ ...request.base, build: request.buildB, target }),
     },
-    breakpoints: breakpointGrid(request.base, request.buildA, request.buildB, target),
+    breakpoints:
+      request.includeBreakpoints === false
+        ? []
+        : breakpointGrid(request.base, request.buildA, request.buildB, target),
   };
   self.postMessage(response);
 };
