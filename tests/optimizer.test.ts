@@ -10,6 +10,7 @@ import {
   OPTIMIZER_COVERAGE,
   OPTIMIZER_ELIGIBLE_ITEM_IDS,
   OPTIMIZER_EXCLUDED_ITEM_IDS,
+  OPTIMIZER_MODELED_NO_EFFECT_ITEM_IDS,
   optimizerContinuationForObjective,
   optimizerEligibleItemIds,
   resolveOptimizerEligibility,
@@ -44,20 +45,43 @@ describe("optimizer eligibility", () => {
     expect(result.eligibleItemIds).toEqual([3031, 3032]);
     expect(result.duplicateItemIds).toEqual([3031]);
     expect(result.unsupportedItemIds).toEqual([999999]);
+    expect(result.excludedUnsupportedItemIds).toEqual([]);
     expect(result.excludedPartialItemIds).toEqual([]);
     expect(optimizerEligibleItemIds()).toEqual(OPTIMIZER_ELIGIBLE_ITEM_IDS);
     expect(OPTIMIZER_COVERAGE).toHaveLength(Object.keys(ITEMS).length);
-    expect(OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted")).toHaveLength(6);
-    expect(OPTIMIZER_COVERAGE.filter((item) => item.status === "excluded-partial")).toHaveLength(
-      11,
-    );
+    expect(OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted")).toHaveLength(17);
+    expect(
+      OPTIMIZER_COVERAGE.filter((item) => item.status === "excluded-unsupported"),
+    ).toHaveLength(0);
     expect(
       OPTIMIZER_COVERAGE.filter((item) => item.status === "trusted").map((item) => item.id),
-    ).toEqual([3006, 3031, 3032, 3036, 3085, 6672]);
-    expect(OPTIMIZER_EXCLUDED_ITEM_IDS).toEqual([
-      2512, 2523, 3008, 3026, 3033, 3046, 3072, 3095, 3139, 3153, 3302,
+    ).toEqual([
+      2512, 2523, 3006, 3008, 3026, 3031, 3032, 3033, 3036, 3046, 3072, 3085, 3095, 3139, 3153,
+      3302, 6672,
     ]);
-    expect(resolveOptimizerEligibility([3008, 999999]).excludedPartialItemIds).toEqual([3008]);
+    expect(OPTIMIZER_COVERAGE.map((item) => `${item.id}:${item.name}`)).toEqual([
+      "2512:Fiendhunter Bolts",
+      "2523:Hexoptics C44",
+      "3006:Berserker's Greaves",
+      "3008:Gluttonous Greaves",
+      "3026:Guardian Angel",
+      "3031:Infinity Edge",
+      "3032:Yun Tal Wildarrows",
+      "3033:Mortal Reminder",
+      "3036:Lord Dominik's Regards",
+      "3046:Phantom Dancer",
+      "3072:Bloodthirster",
+      "3085:Runaan's Hurricane",
+      "3095:Stormrazor",
+      "3139:Mercurial Scimitar",
+      "3153:Blade of The Ruined King",
+      "3302:Terminus",
+      "6672:Kraken Slayer",
+    ]);
+    expect(OPTIMIZER_EXCLUDED_ITEM_IDS).toEqual([]);
+    expect(OPTIMIZER_MODELED_NO_EFFECT_ITEM_IDS).toEqual([3008]);
+    expect(resolveOptimizerEligibility([3008, 999999]).eligibleItemIds).toEqual([3008]);
+    expect(resolveOptimizerEligibility([3008, 999999]).excludedUnsupportedItemIds).toEqual([]);
   });
 });
 
@@ -172,19 +196,12 @@ describe("legal exhaustive candidate generation", () => {
     ).toBe(true);
   });
 
-  test("does not admit excluded partial catalog items without an explicit opt-in", () => {
+  test("admits every pinned catalog item without a partial-coverage escape hatch", () => {
     const requested = [3006, 3008, 3031, 3032];
-    expect(optimizerEligibleItemIds(ITEMS, requested)).toEqual([3006, 3031, 3032]);
+    expect(optimizerEligibleItemIds(ITEMS, requested)).toEqual(requested);
     expect(
       generateLegalBuilds({
         eligibleItemIds: requested,
-        constraints: { slotCount: 2, bootRule: "required" },
-      }).every((build) => !build.itemIds.includes(3008)),
-    ).toBe(true);
-    expect(
-      generateLegalBuilds({
-        eligibleItemIds: requested,
-        allowPartialItems: true,
         constraints: { slotCount: 2, bootRule: "required" },
       }).some((build) => build.itemIds.includes(3008)),
     ).toBe(true);

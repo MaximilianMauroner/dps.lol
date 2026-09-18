@@ -4,20 +4,103 @@ export interface ItemMechanic {
   goldTotal: number;
   attackDamage?: number;
   attackSpeed?: number;
+  abilityHaste?: number;
+  ultimateAbilityHaste?: number;
   critChance?: number;
   critDamage?: number;
   armorPenPercent?: number;
+  armor?: number;
+  magicResist?: number;
+  lifeSteal?: number;
+  omnivamp?: number;
+  movementSpeed?: number;
   boots?: boolean;
-  /** Important passive effects that are not represented by the MVP damage engine. */
+  /** Explicit scope note shown with simulator results. */
   warning?: string;
+  /** Damage-relevant item data pinned to Data Dragon/CommunityDragon 16.18. */
+  damage?: {
+    hexoptics?: {
+      maxRange: number;
+      maxDamageAmp: number;
+    };
+    fiendhunter?: {
+      duration: number;
+      bonusAttackSpeed: number;
+      attacks: number;
+      critModifier: number;
+      bonusTrueDamage: number;
+      cooldown: number;
+    };
+    stormrazor?: {
+      procDamage: number;
+      bonusMovementSpeed: number;
+      bonusMovementDuration: number;
+      attackStacks: number;
+      movementUnitsPerStack: number;
+      maxStacks: number;
+    };
+    bladeOfTheRuinedKing?: {
+      rangedCurrentHealthPercent: number;
+      meleeCurrentHealthPercent: number;
+      monsterDamageCap: number;
+    };
+    terminus?: {
+      onHitBaseDamage: number;
+      onHitBonusAdRatio: number;
+      onHitApRatio: number;
+      penPerDarkAttack: number;
+      maxDarkStacks: number;
+      lightResistPerAttackByLevel: readonly { minLevel: number; value: number }[];
+      maxLightStacks: number;
+      buffDuration: number;
+    };
+  };
 }
 
+export interface ItemStats {
+  attackDamage: number;
+  attackSpeed: number;
+  abilityHaste: number;
+  ultimateAbilityHaste: number;
+  critChance: number;
+  critDamage: number;
+  armorPenPercent: number;
+  armorPenPercentSources: number[];
+  armor: number;
+  magicResist: number;
+  lifeSteal: number;
+  omnivamp: number;
+  movementSpeed: number;
+}
+
+const TERMINUS_LIGHT_RESIST = [
+  { minLevel: 14, value: 8 },
+  { minLevel: 11, value: 7 },
+  { minLevel: 1, value: 6 },
+] as const;
+
+export const STORMRAZOR_MAX_ENERGIZE = 100;
+export const STORMRAZOR_ATTACK_ENERGIZE = 6;
+export const STORMRAZOR_MOVEMENT_UNITS_PER_STACK = 24;
+
 export const ITEMS: Record<number, ItemMechanic> = {
-  3006: { id: 3006, name: "Berserker's Greaves", goldTotal: 1100, attackSpeed: 0.3, boots: true },
-  // Current 16.18.1 Gluttonous Greaves has no modeled damage stat. Its omnivamp/takedown
-  // stacking is intentionally outside this damage-only prototype, but the observed boot must
-  // remain selectable and costed rather than being silently dropped from the level default.
-  3008: { id: 3008, name: "Gluttonous Greaves", goldTotal: 1000, boots: true },
+  3006: {
+    id: 3006,
+    name: "Berserker's Greaves",
+    goldTotal: 1100,
+    attackSpeed: 0.3,
+    boots: true,
+  },
+  3008: {
+    id: 3008,
+    name: "Gluttonous Greaves",
+    goldTotal: 1000,
+    omnivamp: 0.04,
+    movementSpeed: 45,
+    boots: true,
+    warning:
+      "Gluttonous Greaves omnivamp and takedown stacks have no damage effect in the single-target scenario; the stat and boot are still modeled.",
+  },
   // Data Dragon / CommunityDragon 16.18.1: 50 AD, 45% AS, 0% crit.
   // Practice Makes Lethal and Flurry are modeled in the Yunara plugin because they
   // depend on attack timing and the explicit starting-stack assumption.
@@ -34,7 +117,7 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 2800,
     attackDamage: 55,
     critChance: 0.25,
-    warning: "Hexoptics Magnification's range-based attack damage amp is not modeled.",
+    damage: { hexoptics: { maxRange: 500, maxDamageAmp: 0.1 } },
   },
   3031: {
     id: 3031,
@@ -58,6 +141,8 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 2650,
     attackSpeed: 0.4,
     critChance: 0.25,
+    warning:
+      "Runaan's secondary bolts are intentionally absent: this is a single-target scenario with no nearby secondary targets; its primary attack stats are modeled.",
   },
   3046: {
     id: 3046,
@@ -65,14 +150,18 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 2650,
     attackSpeed: 0.65,
     critChance: 0.25,
-    warning: "Phantom Dancer's Spectral Waltz movement effect is not modeled.",
+    movementSpeed: 0.1,
+    warning:
+      "Phantom Dancer's Ghosted movement effect has no damage effect in the stationary single-target scenario; attack stats are modeled.",
   },
   3072: {
     id: 3072,
     name: "Bloodthirster",
     goldTotal: 3400,
     attackDamage: 80,
-    warning: "Bloodthirster lifesteal and Ichorshield are not modeled.",
+    lifeSteal: 0.15,
+    warning:
+      "Bloodthirster's lifesteal and Ichorshield have no damage effect without attacker-death or healing state; attack damage is modeled.",
   },
   3095: {
     id: 3095,
@@ -81,7 +170,18 @@ export const ITEMS: Record<number, ItemMechanic> = {
     attackDamage: 50,
     attackSpeed: 0.25,
     critChance: 0.25,
-    warning: "Stormrazor's Energized Bolt proc is not modeled.",
+    damage: {
+      stormrazor: {
+        procDamage: 100,
+        bonusMovementSpeed: 0.45,
+        bonusMovementDuration: 1.5,
+        attackStacks: STORMRAZOR_ATTACK_ENERGIZE,
+        movementUnitsPerStack: STORMRAZOR_MOVEMENT_UNITS_PER_STACK,
+        maxStacks: STORMRAZOR_MAX_ENERGIZE,
+      },
+    },
+    warning:
+      "Stormrazor Energize is modeled from the supplied starting stacks (0 by default), six stacks per basic attack, and optional movement; no movement is assumed unless provided.",
   },
   3153: {
     id: 3153,
@@ -89,7 +189,14 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 3200,
     attackDamage: 40,
     attackSpeed: 0.25,
-    warning: "Blade of the Ruined King's current-health on-hit is not modeled.",
+    lifeSteal: 0.1,
+    damage: {
+      bladeOfTheRuinedKing: {
+        rangedCurrentHealthPercent: 0.06,
+        meleeCurrentHealthPercent: 0.09,
+        monsterDamageCap: 100,
+      },
+    },
   },
   3302: {
     id: 3302,
@@ -97,21 +204,39 @@ export const ITEMS: Record<number, ItemMechanic> = {
     goldTotal: 3000,
     attackDamage: 30,
     attackSpeed: 0.35,
-    warning: "Terminus on-hit damage and alternating penetration stacks are not modeled.",
+    damage: {
+      terminus: {
+        onHitBaseDamage: 30,
+        onHitBonusAdRatio: 0.1,
+        onHitApRatio: 0.1,
+        penPerDarkAttack: 0.1,
+        maxDarkStacks: 3,
+        lightResistPerAttackByLevel: TERMINUS_LIGHT_RESIST,
+        maxLightStacks: 3,
+        buffDuration: 5,
+      },
+    },
+    warning:
+      "Terminus alternates Light then Dark attacks; its magic on-hit and five-second penetration/resistance stacks are modeled. Light defensive stacks do not change outgoing damage here.",
   },
   3026: {
     id: 3026,
     name: "Guardian Angel",
     goldTotal: 3200,
     attackDamage: 55,
-    warning: "Guardian Angel's Rebirth effect is defensive and not modeled.",
+    armor: 45,
+    warning:
+      "Guardian Angel's Rebirth is defensive and has no damage effect while the attacker is not killed in this scenario.",
   },
   3139: {
     id: 3139,
     name: "Mercurial Scimitar",
     goldTotal: 3200,
     attackDamage: 50,
-    warning: "Mercurial Scimitar's active and lifesteal are not modeled.",
+    magicResist: 35,
+    lifeSteal: 0.1,
+    warning:
+      "Mercurial Scimitar's Quicksilver active and lifesteal have no damage effect without crowd-control or attacker-survival state; attack damage is modeled.",
   },
   3033: {
     id: 3033,
@@ -120,32 +245,68 @@ export const ITEMS: Record<number, ItemMechanic> = {
     attackDamage: 35,
     critChance: 0.25,
     armorPenPercent: 0.3,
-    warning: "Mortal Reminder's Grievous Wounds is not modeled.",
+    warning:
+      "Mortal Reminder's Grievous Wounds has no damage effect because target healing is outside this single-target damage scope; attack stats and penetration are modeled.",
   },
   2512: {
     id: 2512,
     name: "Fiendhunter Bolts",
     goldTotal: 2650,
     attackSpeed: 0.45,
+    ultimateAbilityHaste: 30,
     critChance: 0.25,
-    warning: "Fiendhunter's post-ultimate guaranteed-crit/true-damage passive is not modeled.",
+    movementSpeed: 0.04,
+    damage: {
+      fiendhunter: {
+        duration: 8,
+        bonusAttackSpeed: 0.5,
+        attacks: 3,
+        critModifier: 0.8,
+        bonusTrueDamage: 0.15,
+        cooldown: 45,
+      },
+    },
   },
   6672: { id: 6672, name: "Kraken Slayer", goldTotal: 3000, attackDamage: 45, attackSpeed: 0.4 },
 };
 
-export function itemStats(itemIds: number[]) {
-  return itemIds.reduce(
+export function itemStats(itemIds: number[]): ItemStats {
+  return itemIds.reduce<ItemStats>(
     (stats, id) => {
       const item = ITEMS[id];
       if (!item) return stats;
       stats.attackDamage += item.attackDamage ?? 0;
       stats.attackSpeed += item.attackSpeed ?? 0;
+      stats.abilityHaste += item.abilityHaste ?? 0;
+      stats.ultimateAbilityHaste += item.ultimateAbilityHaste ?? 0;
       stats.critChance += item.critChance ?? 0;
       stats.critDamage += item.critDamage ?? 0;
       stats.armorPenPercent = Math.max(stats.armorPenPercent, item.armorPenPercent ?? 0);
+      if (item.armorPenPercent !== undefined) {
+        stats.armorPenPercentSources.push(item.armorPenPercent);
+      }
+      stats.armor += item.armor ?? 0;
+      stats.magicResist += item.magicResist ?? 0;
+      stats.lifeSteal += item.lifeSteal ?? 0;
+      stats.omnivamp += item.omnivamp ?? 0;
+      stats.movementSpeed += item.movementSpeed ?? 0;
       return stats;
     },
-    { attackDamage: 0, attackSpeed: 0, critChance: 0, critDamage: 0, armorPenPercent: 0 },
+    {
+      attackDamage: 0,
+      attackSpeed: 0,
+      abilityHaste: 0,
+      ultimateAbilityHaste: 0,
+      critChance: 0,
+      critDamage: 0,
+      armorPenPercent: 0,
+      armorPenPercentSources: [],
+      armor: 0,
+      magicResist: 0,
+      lifeSteal: 0,
+      omnivamp: 0,
+      movementSpeed: 0,
+    },
   );
 }
 

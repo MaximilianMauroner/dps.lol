@@ -26,31 +26,41 @@ export type {
 } from "./types";
 
 /**
- * Trusted coverage is deliberately narrower than the compare editor's item
- * catalog. These items have all material contributions to the modeled
- * single-target Yunara damage objective represented by the simulator. Runaan's
- * bolts are multi-target and therefore outside this objective; its primary
- * attack stats are modeled and remain trusted for this scope.
+ * Every item in the pinned 16.18 catalog is safe for the declared optimizer
+ * scope. Direct attack/proc mechanics are simulated; defensive, healing and
+ * secondary-target effects are recorded as no-effect assumptions where they
+ * cannot change a single-target Yunara damage result.
  */
-export const OPTIMIZER_TRUSTED_ITEM_IDS = [3006, 3031, 3032, 3036, 3085, 6672] as const;
+export const OPTIMIZER_TRUSTED_ITEM_IDS = [
+  2512, 2523, 3006, 3008, 3026, 3031, 3032, 3033, 3036, 3046, 3072, 3085, 3095, 3139, 3153, 3302,
+  6672,
+] as const;
 
 export const OPTIMIZER_ELIGIBLE_ITEM_IDS = [...OPTIMIZER_TRUSTED_ITEM_IDS].sort(
   (left, right) => left - right,
 );
 const OPTIMIZER_TRUSTED_ITEM_SET = new Set<number>(OPTIMIZER_TRUSTED_ITEM_IDS);
 
-const OPTIMIZER_EXCLUSION_REASONS: Record<number, string> = {
-  2512: "Fiendhunter's post-ultimate guaranteed-crit and true-damage passive is not modeled.",
-  2523: "Hexoptics Magnification's range-based attack damage amp is not modeled.",
-  3008: "Gluttonous Greaves omnivamp and takedown stacking are not modeled.",
-  3026: "Guardian Angel's Rebirth effect is not modeled.",
-  3033: "Mortal Reminder's Grievous Wounds effect is not modeled.",
-  3046: "Phantom Dancer's Spectral Waltz movement effect is not modeled.",
-  3072: "Bloodthirster's lifesteal and Ichorshield are not modeled.",
-  3095: "Stormrazor's Energized Bolt proc is not modeled.",
-  3139: "Mercurial Scimitar's active and lifesteal are not modeled.",
-  3153: "Blade of the Ruined King's current-health on-hit is not modeled.",
-  3302: "Terminus on-hit damage and alternating penetration stacks are not modeled.",
+const OPTIMIZER_NO_DAMAGE_EFFECT_IDS = new Set([3008]);
+
+const OPTIMIZER_SCOPE_REASONS: Record<number, string> = {
+  2512: "Stats and Opening Barrage are modeled after each available R cast; Night Vigil is included as 30 ultimate haste.",
+  2523: "Stats and Magnification are modeled; range defaults to 500 because cohorts do not contain positions.",
+  3006: "Attack speed is modeled; movement speed has no damage effect in this scope.",
+  3008: "Omnivamp and takedown stacks have no damage effect without attacker-survival or takedown state.",
+  3026: "Attack damage is modeled; Rebirth is defensive and cannot change an attacker-only damage result.",
+  3031: "Attack damage, critical chance, and critical damage are modeled.",
+  3032: "Attack damage, attack speed, Practice Makes Lethal, and Flurry are modeled.",
+  3033: "Attack stats and armor penetration are modeled; Grievous Wounds cannot change a no-healing target.",
+  3036: "Attack stats, armor penetration, and Giant Slayer are modeled.",
+  3046: "Attack stats are modeled; Ghosted movement has no damage effect in this scope.",
+  3072: "Attack damage is modeled; lifesteal and Ichorshield require attacker-survival state.",
+  3085: "Attack stats are modeled; secondary bolts have no same-target recipient in this scope.",
+  3095: "Stats and the 100 magic-damage Energized Bolt are modeled from explicit Energize/movement state.",
+  3139: "Attack damage is modeled; Quicksilver, magic resistance, and lifesteal have no outgoing-damage effect.",
+  3153: "Stats and ranged 6% current-health Mist's Edge are modeled from pinned 16.18 data.",
+  3302: "Stats, Shadow on-hit, alternating Light/Dark state, and dynamic penetration are modeled.",
+  6672: "Attack stats and ranged Bring It Down are modeled.",
 };
 
 export const OPTIMIZER_COVERAGE: OptimizerCoverageItem[] = Object.keys(ITEMS)
@@ -61,17 +71,23 @@ export const OPTIMIZER_COVERAGE: OptimizerCoverageItem[] = Object.keys(ITEMS)
     return {
       id,
       name: ITEMS[id]!.name,
-      status: trusted ? ("trusted" as const) : ("excluded-partial" as const),
+      status: trusted ? ("trusted" as const) : ("excluded-unsupported" as const),
+      scope: OPTIMIZER_NO_DAMAGE_EFFECT_IDS.has(id)
+        ? ("modeled-no-effect" as const)
+        : ("damage-modeled" as const),
       reason: trusted
-        ? id === 3085
-          ? "Primary attack stats are modeled; multi-target bolts are outside the single-target objective."
-          : "All material contributions in the modeled single-target objective are represented."
-        : (OPTIMIZER_EXCLUSION_REASONS[id] ?? "A material combat mechanic is not modeled."),
+        ? (OPTIMIZER_SCOPE_REASONS[id] ??
+          "All material contributions in the declared scope are represented.")
+        : "The catalog entry is outside the simulator's modeled mechanics.",
     };
   });
 
 export const OPTIMIZER_EXCLUDED_ITEM_IDS = OPTIMIZER_COVERAGE.filter(
-  (item) => item.status === "excluded-partial",
+  (item) => item.status === "excluded-unsupported",
+).map((item) => item.id);
+
+export const OPTIMIZER_MODELED_NO_EFFECT_ITEM_IDS = OPTIMIZER_COVERAGE.filter(
+  (item) => item.scope === "modeled-no-effect",
 ).map((item) => item.id);
 
 export function optimizerCoverageItems(): OptimizerCoverageItem[] {
@@ -168,6 +184,7 @@ export function resolveOptimizerEligibility(
   return {
     eligibleItemIds: [...seen].sort((left, right) => left - right),
     unsupportedItemIds: [...unsupportedItemIds].sort(compareNumbers),
+    excludedUnsupportedItemIds: [...excludedPartialItemIds].sort(compareNumbers),
     excludedPartialItemIds: [...excludedPartialItemIds].sort(compareNumbers),
     duplicateItemIds: [...duplicateItemIds].sort(compareNumbers),
   };

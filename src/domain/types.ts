@@ -25,12 +25,19 @@ export type OptimizerMetric = "dps" | "damage" | "ttk";
 /** The allowed boot policies for a generated full build. */
 export type OptimizerBootRule = "required" | "optional" | "forbidden";
 
-export type OptimizerCoverageStatus = "trusted" | "excluded-partial";
+/**
+ * Coverage is about the declared single-target damage scope, not whether an
+ * item is complete in the game. A trusted item is safe for exhaustive search;
+ * `modeled-no-effect` records mechanics which cannot change this scenario.
+ */
+export type OptimizerCoverageStatus = "trusted" | "excluded-unsupported";
+export type OptimizerCoverageScope = "damage-modeled" | "modeled-no-effect";
 
 export interface OptimizerCoverageItem {
   id: number;
   name: string;
   status: OptimizerCoverageStatus;
+  scope: OptimizerCoverageScope;
   reason: string;
 }
 
@@ -74,6 +81,8 @@ export interface OptimizerCandidate extends Build {
 export interface OptimizerEligibility {
   eligibleItemIds: number[];
   unsupportedItemIds: number[];
+  excludedUnsupportedItemIds: number[];
+  /** @deprecated Use excludedUnsupportedItemIds. */
   excludedPartialItemIds: number[];
   duplicateItemIds: number[];
 }
@@ -173,6 +182,20 @@ export interface SimulationInput {
   yunTalStacks?: number;
   /** Mortal targets are the default. `uncapped` is an explicit training-dummy mode. */
   targetMode?: "mortal" | "uncapped";
+  /** Yunara is ranged; cohorts do not contain positions, so 500 is the default. */
+  attackDistance?: number;
+  /** Energize stacks carried into this window; omitted means an uncharged item. */
+  stormrazorStacks?: number;
+  /** Units travelled per second for Energize generation; omitted means stationary. */
+  movementUnitsPerSecond?: number;
+  /** External haste/buff state, if a caller is modeling a non-item source. */
+  abilityHaste?: number;
+  /** External ultimate-only haste/buff state, if supplied by a caller. */
+  ultimateAbilityHaste?: number;
+  /** Internal performance switch; damage totals and kill state remain identical. */
+  includeEvents?: boolean;
+  /** Internal performance switch for callers that already render coverage assumptions. */
+  includeWarnings?: boolean;
 }
 
 export interface DamageEvent {
@@ -208,6 +231,8 @@ export interface SimulationResult {
   stats: {
     attackDamage: number;
     attackSpeed: number;
+    abilityHaste: number;
+    ultimateAbilityHaste: number;
     critChance: number;
     critDamage: number;
     armorPenPercent: number;
@@ -216,6 +241,13 @@ export interface SimulationResult {
     yunTalCritChanceStart: number;
     yunTalCritChanceEnd: number;
     flurryActivations: number;
+    fiendhunterAttacksStart: number;
+    fiendhunterAttacksEnd: number;
+    stormrazorStacksStart: number;
+    stormrazorStacksEnd: number;
+    stormrazorProcs: number;
+    terminusLightStacksEnd: number;
+    terminusDarkStacksEnd: number;
   };
 }
 

@@ -405,6 +405,108 @@ describe("Yunara fixture and comparisons", () => {
     expect(run(999).stats.yunTalStacksStart).toBe(125);
   });
 
+  test("models every direct single-target item mechanic instead of warning it away", () => {
+    const itemTarget = { ...target, health: 100_000, armor: 100, magicResist: 100 };
+    const input = {
+      level: 13,
+      ranks: { q: 5, w: 3, e: 1, r: 2 },
+      durationSeconds: 10,
+      continueAutos: false,
+      target: itemTarget,
+    } as const;
+
+    const hexAtZero = simulateYunara({
+      ...input,
+      actions: ["AA"],
+      attackDistance: 0,
+      build: { name: "Hexoptics", itemIds: [2523] },
+    });
+    const hexAtMax = simulateYunara({
+      ...input,
+      actions: ["AA"],
+      attackDistance: 500,
+      build: { name: "Hexoptics", itemIds: [2523] },
+    });
+    expect(hexAtMax.totalDamage / hexAtZero.totalDamage).toBeCloseTo(1.1, 2);
+
+    const storm = simulateYunara({
+      ...input,
+      actions: ["AA"],
+      target: { ...itemTarget, magicResist: 0 },
+      stormrazorStacks: 100,
+      build: { name: "Stormrazor", itemIds: [3095] },
+    });
+    expect(storm.events.find((event) => event.source === "Stormrazor — Bolt")?.raw).toBe(100);
+    expect(storm.stats.stormrazorProcs).toBe(1);
+    expect(storm.stats.stormrazorStacksEnd).toBe(6);
+
+    const bork = simulateYunara({
+      ...input,
+      actions: ["AA"],
+      target: { ...itemTarget, health: 1_000, armor: 0 },
+      build: { name: "BORK", itemIds: [3153] },
+    });
+    expect(bork.events.find((event) => event.source.includes("Mist's Edge"))?.raw).toBeCloseTo(
+      60,
+      3,
+    );
+
+    const terminus = simulateYunara({
+      ...input,
+      actions: ["AA", "AA", "AA", "AA"],
+      build: { name: "Terminus", itemIds: [3302] },
+    });
+    const terminusHits = terminus.events.filter((event) => event.source === "Terminus — Shadow");
+    expect(terminusHits.map((event) => event.resistance)).toEqual([100, 100, 90, 90]);
+    expect(terminus.stats.terminusLightStacksEnd).toBe(2);
+    expect(terminus.stats.terminusDarkStacksEnd).toBe(2);
+
+    const fiendhunter = simulateYunara({
+      ...input,
+      actions: ["R", "AA", "AA", "AA"],
+      target: { ...itemTarget, armor: 0, magicResist: 0 },
+      build: { name: "Fiendhunter", itemIds: [2512] },
+    });
+    expect(fiendhunter.stats.abilityHaste).toBe(0);
+    expect(fiendhunter.stats.ultimateAbilityHaste).toBe(30);
+    expect(
+      fiendhunter.events.filter((event) => event.source.includes("Opening Barrage")),
+    ).toHaveLength(3);
+    expect(fiendhunter.stats.fiendhunterAttacksEnd).toBe(0);
+  });
+
+  test("applies generic and ultimate haste to the correct real cooldowns", () => {
+    const withFiendhunter = simulateYunara({
+      level: 13,
+      ranks: { q: 5, w: 3, e: 1, r: 2 },
+      durationSeconds: 12,
+      actions: ["W", "W"],
+      continueAutos: false,
+      build: { name: "Fiendhunter", itemIds: [2512] },
+      target: { ...target, health: 100_000 },
+    });
+    const casts = withFiendhunter.events
+      .filter((event) => event.source === "Arc of Judgment")
+      .map((event) => event.time);
+    expect(casts[0]).toBe(0);
+    expect(casts[1]).toBeCloseTo(10, 2);
+
+    const withGenericHaste = simulateYunara({
+      level: 13,
+      ranks: { q: 5, w: 3, e: 1, r: 2 },
+      durationSeconds: 12,
+      actions: ["W", "W"],
+      continueAutos: false,
+      abilityHaste: 30,
+      build: { name: "empty", itemIds: [] },
+      target: { ...target, health: 100_000 },
+    });
+    const hastedCasts = withGenericHaste.events
+      .filter((event) => event.source === "Arc of Judgment")
+      .map((event) => event.time);
+    expect(hastedCasts[1]).toBeCloseTo(10 * (100 / 130), 2);
+  });
+
   test("activates Flurry on the first attack for six seconds", () => {
     const result = simulateYunara({
       level: 13,

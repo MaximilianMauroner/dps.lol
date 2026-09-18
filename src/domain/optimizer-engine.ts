@@ -20,7 +20,7 @@ import type {
   Target,
 } from "./types";
 
-export const OPTIMIZER_ENGINE_VERSION = "yunara-optimizer-v2-trusted-coverage";
+export const OPTIMIZER_ENGINE_VERSION = "yunara-optimizer-v3-all-modeled-items";
 export const DEFAULT_OPTIMIZER_TOP_N = 10;
 export const OPTIMIZER_TIE_EPSILON = 1e-9;
 
@@ -38,9 +38,17 @@ export interface OptimizerRankingOptions {
 export function optimizerBaseForObjective(
   context: Pick<OptimizerEvaluationContext, "base" | "objective">,
 ): OptimizerEvaluationContext["base"] {
+  const engineBase = {
+    ...context.base,
+    // Optimizer rows need exact totals/kill state, not per-event traces or
+    // repeated assumption strings. Direct Compare remains full-trace by
+    // default; parity tests use this same optimized simulator input.
+    includeEvents: false,
+    includeWarnings: false,
+  };
   if (context.objective === "sustained-dps") {
     return {
-      ...context.base,
+      ...engineBase,
       continueAutos: optimizerContinuationForObjective(
         context.objective,
         context.base.continueAutos,
@@ -49,7 +57,7 @@ export function optimizerBaseForObjective(
   }
   if (context.objective === "burst-damage") {
     return {
-      ...context.base,
+      ...engineBase,
       continueAutos: optimizerContinuationForObjective(
         context.objective,
         context.base.continueAutos,
@@ -61,7 +69,7 @@ export function optimizerBaseForObjective(
       "TTK optimization requires mortal target mode so censored kills are observable.",
     );
   }
-  return { ...context.base };
+  return engineBase;
 }
 
 /** Builds the exact input sent to the existing Yunara simulator for parity tests and callers. */
