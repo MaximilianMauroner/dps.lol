@@ -82,6 +82,25 @@ const uniqueItemIds = z
 const finiteNumberMap = z.record(z.string().min(1), finiteNumber);
 const provenanceMap = z.record(z.string().min(1), ProvenanceSchema);
 
+function addDuplicateIdIssues(
+  ids: readonly string[],
+  path: string,
+  label: string,
+  context: z.RefinementCtx,
+): void {
+  const seen = new Set<string>();
+  for (const [index, id] of ids.entries()) {
+    if (seen.has(id)) {
+      context.addIssue({
+        code: "custom",
+        path: [path, index],
+        message: `${label} IDs must be unique`,
+      });
+    }
+    seen.add(id);
+  }
+}
+
 export const SourceArtifactSchema = z
   .object({
     artifactId: identifier,
@@ -288,6 +307,30 @@ export const EntityStateSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    addDuplicateIdIssues(
+      value.resources.map((resource) => resource.resourceId),
+      "resources",
+      "resource",
+      context,
+    );
+    addDuplicateIdIssues(
+      value.abilities.map((ability) => ability.abilityId),
+      "abilities",
+      "ability",
+      context,
+    );
+    addDuplicateIdIssues(
+      value.buffs.map((buff) => buff.buffId),
+      "buffs",
+      "buff",
+      context,
+    );
+    addDuplicateIdIssues(
+      value.inventory.map((item) => item.instanceId),
+      "inventory",
+      "item instance",
+      context,
+    );
     const statKeys = Object.keys(value.stats).sort();
     const provenanceKeys = Object.keys(value.statProvenance).sort();
     for (const statKey of statKeys) {
@@ -646,7 +689,7 @@ export const SearchConstraintsSchema = z
   });
 export type SearchConstraints = z.infer<typeof SearchConstraintsSchema>;
 
-const replayProvenanceFields = [
+const scenarioInputProvenanceFields = [
   "rulesetManifestHash",
   "modeId",
   "actorEntityId",
@@ -656,6 +699,12 @@ const replayProvenanceFields = [
   "objective",
   "evaluationMode",
   "searchConstraints",
+] as const;
+
+const resolvedProvenanceFields = [
+  ...scenarioInputProvenanceFields,
+  "policyHash",
+  "candidateInputHash",
 ] as const;
 
 const scenarioValueShape = {
@@ -704,6 +753,60 @@ function referencedEntityIds(
   return references;
 }
 
+type ConditionReference =
+  | { kind: "entity"; entityId: string; path: (string | number)[] }
+  | { kind: "ability"; entityId: string; abilityId: string; path: (string | number)[] }
+  | { kind: "resource"; entityId: string; resourceId: string; path: (string | number)[] }
+  | { kind: "buff"; entityId: string; buffId: string; path: (string | number)[] };
+
+function visitCondition(
+  condition: Condition,
+  path: (string | number)[],
+  visit: (reference: ConditionReference) => void,
+): void {
+  switch (condition.kind) {
+    case "always":
+      return;
+    case "all":
+    case "any":
+      for (const [index, clause] of condition.clauses.entries()) {
+        visitCondition(clause, [...path, "clauses", index], visit);
+      }
+      return;
+    case "not":
+      visitCondition(condition.clause, [...path, "clause"], visit);
+      return;
+    case "cooldown-ready":
+      visit({
+        kind: "ability",
+        entityId: condition.entityId,
+        abilityId: condition.abilityId,
+        path: [...path, "abilityId"],
+      });
+      return;
+    case "resource-at-least":
+      visit({
+        kind: "resource",
+        entityId: condition.entityId,
+        resourceId: condition.resourceId,
+        path: [...path, "resourceId"],
+      });
+      return;
+    case "target-alive":
+    case "health-ratio-at-most":
+      visit({ kind: "entity", entityId: condition.entityId, path: [...path, "entityId"] });
+      return;
+    case "buff-stacks-at-least":
+      visit({
+        kind: "buff",
+        entityId: condition.entityId,
+        buffId: condition.buffId,
+        path: [...path, "buffId"],
+      });
+      return;
+  }
+}
+
 function validateScenarioReferences(
   value: {
     actorEntityId: string;
@@ -714,6 +817,7 @@ function validateScenarioReferences(
   context: z.RefinementCtx,
 ): void {
   const entityIds = new Set<string>();
+  const entitiesById = new Map<string, EntityState>();
   for (const [index, entity] of value.entities.entries()) {
     if (entityIds.has(entity.entityId)) {
       addReferenceIssue(
@@ -723,6 +827,7 @@ function validateScenarioReferences(
       );
     }
     entityIds.add(entity.entityId);
+    entitiesById.set(entity.entityId, entity);
   }
   if (!entityIds.has(value.actorEntityId)) {
     addReferenceIssue(
@@ -769,6 +874,80 @@ function validateScenarioReferences(
       );
     }
   }
+  for (const [index, visibleEntityId] of value.policy.visibility.visibleEntityIds.entries()) {
+    if (!entityIds.has(visibleEntityId)) {
+      addReferenceIssue(
+        context,
+        ["policy", "visibility", "visibleEntityIds", index],
+        `policy visibility references unknown entity ${visibleEntityId}`,
+      );
+    }
+  }
+  if (!value.policy.visibility.visibleEntityIds.includes(value.actorEntityId)) {
+    addReferenceIssue(
+      context,
+      ["policy", "visibility", "visibleEntityIds"],
+      "policy visibility must include the actor entity",
+    );
+  }
+  for (const [stepIndex, step] of value.policy.steps.entries()) {
+    const action = step.action;
+    const actor = entitiesById.get(action.actorId);
+    if (actor && action.kind === "ability") {
+      if (!actor.abilities.some((ability) => ability.abilityId === action.abilityId)) {
+        addReferenceIssue(
+          context,
+          ["policy", "steps", stepIndex, "action", "abilityId"],
+          `policy references unknown ability ${action.abilityId} on entity ${action.actorId}`,
+        );
+      }
+    }
+    if (actor && action.kind === "item-active") {
+      if (!actor.inventory.some((item) => item.instanceId === action.itemInstanceId)) {
+        addReferenceIssue(
+          context,
+          ["policy", "steps", stepIndex, "action", "itemInstanceId"],
+          `policy references unknown item instance ${action.itemInstanceId} on entity ${action.actorId}`,
+        );
+      }
+    }
+    visitCondition(step.condition, ["policy", "steps", stepIndex, "condition"], (reference) => {
+      const entity = entitiesById.get(reference.entityId);
+      if (!entity) {
+        addReferenceIssue(
+          context,
+          [...reference.path.slice(0, -1), "entityId"],
+          `condition references unknown entity ${reference.entityId}`,
+        );
+        return;
+      }
+      if (reference.kind === "ability") {
+        if (!entity.abilities.some((ability) => ability.abilityId === reference.abilityId)) {
+          addReferenceIssue(
+            context,
+            reference.path,
+            `condition references unknown ability ${reference.abilityId} on entity ${reference.entityId}`,
+          );
+        }
+      } else if (reference.kind === "resource") {
+        if (!entity.resources.some((resource) => resource.resourceId === reference.resourceId)) {
+          addReferenceIssue(
+            context,
+            reference.path,
+            `condition references unknown resource ${reference.resourceId} on entity ${reference.entityId}`,
+          );
+        }
+      } else if (reference.kind === "buff") {
+        if (!entity.buffs.some((buff) => buff.buffId === reference.buffId)) {
+          addReferenceIssue(
+            context,
+            reference.path,
+            `condition references unknown buff ${reference.buffId} on entity ${reference.entityId}`,
+          );
+        }
+      }
+    });
+  }
 }
 
 export const ScenarioSpecSchema = z
@@ -781,7 +960,7 @@ export const ScenarioSpecSchema = z
   .strict()
   .superRefine((value, context) => {
     validateScenarioReferences(value, context);
-    for (const field of replayProvenanceFields) {
+    for (const field of scenarioInputProvenanceFields) {
       if (!(field in value.inputProvenance)) {
         context.addIssue({
           code: "custom",
@@ -804,12 +983,14 @@ export const ResolvedScenarioSchema = z
     schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
     scenarioId: identifier,
     resolvedScenarioHash: ContentHashSchema,
+    policyHash: ContentHashSchema,
+    candidateInputHash: ContentHashSchema,
     effective: ResolvedScenarioValuesSchema,
     provenance: provenanceMap,
   })
   .strict()
   .superRefine((value, context) => {
-    for (const field of replayProvenanceFields) {
+    for (const field of resolvedProvenanceFields) {
       if (!(field in value.provenance)) {
         context.addIssue({
           code: "custom",
@@ -832,13 +1013,8 @@ export const RunManifestSchema = z
     policyHash: ContentHashSchema,
     searchContextHash: ContentHashSchema,
     candidateInputHash: ContentHashSchema,
-    objective: ObjectiveKindSchema,
-    evaluationMode: z.enum([
-      "analytical-expectation",
-      "average-state-approximation",
-      "seeded-trajectory",
-      "sampled-estimate",
-    ]),
+    objective: ObjectiveSpecSchema,
+    evaluationMode: EvaluationModeSchema,
     random: RandomConfigurationSchema,
     status: z.enum(["planned", "running", "complete", "cancelled", "invalid"]),
     createdAt: timestamp,
@@ -858,6 +1034,20 @@ export const RunManifestSchema = z
         code: "custom",
         path: ["completedAt"],
         message: "complete runs require completedAt",
+      });
+    }
+    if (value.status !== "complete" && value.completedAt !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["completedAt"],
+        message: "incomplete runs cannot carry completedAt",
+      });
+    }
+    if (canonicalJson(value.random) !== canonicalJson(value.evaluationMode.random)) {
+      context.addIssue({
+        code: "custom",
+        path: ["random"],
+        message: "run random configuration must match evaluationMode.random",
       });
     }
   });
@@ -1064,18 +1254,60 @@ export const CombatResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.killed && value.metrics.ttk.status !== "value") {
-      context.addIssue({
-        code: "custom",
-        path: ["metrics", "ttk"],
-        message: "a killed result requires a finite TTK value",
-      });
+    const ttkStatus = value.metrics.ttk.status;
+    if (value.killed) {
+      if (value.status !== "complete") {
+        context.addIssue({
+          code: "custom",
+          path: ["status"],
+          message: "only complete results may report a kill",
+        });
+      }
+      if (ttkStatus !== "value") {
+        context.addIssue({
+          code: "custom",
+          path: ["metrics", "ttk"],
+          message: "a killed result requires a finite TTK value",
+        });
+      }
+      if (value.censoring !== "not-censored") {
+        context.addIssue({
+          code: "custom",
+          path: ["censoring"],
+          message: "a killed result cannot be censored",
+        });
+      }
+      return;
     }
-    if (!value.killed && value.metrics.ttk.status === "value") {
+
+    if (ttkStatus === "value") {
       context.addIssue({
         code: "custom",
         path: ["metrics", "ttk"],
         message: "a non-kill result cannot carry a finite TTK value",
+      });
+    }
+    if (value.censoring === "right-censored") {
+      if (value.status !== "complete" || ttkStatus !== "censored") {
+        context.addIssue({
+          code: "custom",
+          path: ["censoring"],
+          message: "right-censored results must be complete with a censored TTK",
+        });
+      }
+    } else if (value.censoring === "invalid") {
+      if (value.status === "complete" || !["undefined", "not-applicable"].includes(ttkStatus)) {
+        context.addIssue({
+          code: "custom",
+          path: ["censoring"],
+          message: "invalid censoring requires an interrupted/invalid result and undefined TTK",
+        });
+      }
+    } else {
+      context.addIssue({
+        code: "custom",
+        path: ["censoring"],
+        message: "a non-kill result must be right-censored or invalid",
       });
     }
   });
@@ -1102,6 +1334,7 @@ export const EventQueueSnapshotSchema = z
   .strict()
   .superRefine((value, context) => {
     const ids = value.entries.map((entry) => entry.eventId);
+    const sequences = value.entries.map((entry) => entry.sequence);
     if (new Set(ids).size !== ids.length) {
       context.addIssue({
         code: "custom",
@@ -1109,17 +1342,32 @@ export const EventQueueSnapshotSchema = z
         message: "queued event IDs must be unique",
       });
     }
+    if (new Set(sequences).size !== sequences.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["entries"],
+        message: "queued event sequence IDs must be unique",
+      });
+    }
+    const maxSequence = Math.max(0, ...sequences);
+    if (value.nextSequence <= maxSequence) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextSequence"],
+        message: "nextSequence must be greater than every queued event sequence",
+      });
+    }
     for (let index = 1; index < value.entries.length; index += 1) {
       const previous = value.entries[index - 1]!;
       const current = value.entries[index]!;
       if (
         current.timeMs < previous.timeMs ||
-        (current.timeMs === previous.timeMs && current.sequence < previous.sequence)
+        (current.timeMs === previous.timeMs && current.sequence <= previous.sequence)
       ) {
         context.addIssue({
           code: "custom",
           path: ["entries", index],
-          message: "queue entries must be ordered by time then sequence",
+          message: "queue entries must be ordered by time then unique sequence",
         });
       }
     }
@@ -1168,10 +1416,40 @@ export const NumericalBranchStateSchema = z
   })
   .strict();
 
+export const SnapshotInterruptionSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("none"), reason: z.null() }).strict(),
+  z
+    .object({
+      state: z.literal("budget-exhausted"),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal("cancelled"),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal("invalid"),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  z.object({ state: z.literal("completed"), reason: z.null() }).strict(),
+]);
+export type SnapshotInterruption = z.infer<typeof SnapshotInterruptionSchema>;
+
 export const EngineSnapshotSchema = z
   .object({
     schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
     runId: identifier,
+    engineHash: ContentHashSchema,
+    rulesetHash: ContentHashSchema,
+    cohortHash: ContentHashSchema,
+    policyHash: ContentHashSchema,
+    resolvedScenarioHash: ContentHashSchema,
+    candidateInputHash: ContentHashSchema,
     currentTimeMs: nonNegativeInteger,
     queue: EventQueueSnapshotSchema,
     entities: z.array(EntityStateSchema).min(1),
@@ -1181,10 +1459,94 @@ export const EngineSnapshotSchema = z
     rngStreams: z.array(RngStreamSnapshotSchema),
     numericalBranches: z.array(NumericalBranchStateSchema),
     status: z.enum(["running", "complete", "cancelled", "invalid"]),
+    resumability: z.enum(["resumable", "non-resumable"]),
+    interruption: SnapshotInterruptionSchema,
     result: CombatResultSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
+    const entityIds = value.entities.map((entity) => entity.entityId);
+    if (new Set(entityIds).size !== entityIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["entities"],
+        message: "snapshot entity IDs must be unique",
+      });
+    }
+    const knownEntityIds = new Set(entityIds);
+    const entitiesById = new Map(value.entities.map((entity) => [entity.entityId, entity]));
+    for (const [entityIndex, entity] of value.entities.entries()) {
+      for (const [buffIndex, buff] of entity.buffs.entries()) {
+        if (!knownEntityIds.has(buff.sourceEntityId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["entities", entityIndex, "buffs", buffIndex, "sourceEntityId"],
+            message: "snapshot entity buffs must reference known source entities",
+          });
+        }
+      }
+    }
+    for (const [index, buff] of value.buffs.entries()) {
+      if (!knownEntityIds.has(buff.ownerEntityId) || !knownEntityIds.has(buff.sourceEntityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["buffs", index],
+          message: "snapshot buffs must reference known entities",
+        });
+      }
+    }
+    for (const [index, trigger] of value.triggerState.entries()) {
+      if (!knownEntityIds.has(trigger.ownerEntityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["triggerState", index, "ownerEntityId"],
+          message: "snapshot triggers must reference known owner entities",
+        });
+      }
+    }
+    for (const [index, pending] of value.pendingActions.entries()) {
+      const action = pending.command;
+      const actor = entitiesById.get(action.actorId);
+      if (!actor) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingActions", index, "command", "actorId"],
+          message: "pending actions must reference known actor entities",
+        });
+        continue;
+      }
+      if (
+        action.kind === "ability" &&
+        !actor.abilities.some((ability) => ability.abilityId === action.abilityId)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingActions", index, "command", "abilityId"],
+          message: "pending actions must reference known abilities",
+        });
+      }
+      if (
+        action.kind === "item-active" &&
+        !actor.inventory.some((item) => item.instanceId === action.itemInstanceId)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingActions", index, "command", "itemInstanceId"],
+          message: "pending actions must reference known item instances",
+        });
+      }
+      if (action.kind !== "move" && action.kind !== "wait") {
+        const targetId =
+          action.target.kind === "entity" ? action.target.entityId : action.target.actorId;
+        if (!knownEntityIds.has(targetId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["pendingActions", index, "command", "target"],
+            message: "pending actions must reference known target entities",
+          });
+        }
+      }
+    }
     if (value.status === "complete" && value.result === null) {
       context.addIssue({
         code: "custom",
@@ -1198,6 +1560,47 @@ export const EngineSnapshotSchema = z
         path: ["result"],
         message: "only complete snapshots may carry a result",
       });
+    }
+    const expectedResumability = value.status === "running" ? "resumable" : "non-resumable";
+    if (value.resumability !== expectedResumability) {
+      context.addIssue({
+        code: "custom",
+        path: ["resumability"],
+        message: `${value.status} snapshots must be ${expectedResumability}`,
+      });
+    }
+    const expectedInterruption =
+      value.status === "running"
+        ? ["none", "budget-exhausted"]
+        : [value.status === "complete" ? "completed" : value.status];
+    if (!expectedInterruption.includes(value.interruption.state)) {
+      context.addIssue({
+        code: "custom",
+        path: ["interruption", "state"],
+        message: `${value.status} snapshots have an invalid interruption state`,
+      });
+    }
+    if (value.resumability === "non-resumable") {
+      if (value.queue.entries.length > 0 || value.pendingActions.length > 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["queue"],
+          message: "non-resumable snapshots cannot retain queued or pending work",
+        });
+      }
+    }
+    if (value.result !== null) {
+      if (
+        value.result.runId !== value.runId ||
+        value.result.resolvedScenarioHash !== value.resolvedScenarioHash ||
+        value.result.candidateInputHash !== value.candidateInputHash
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["result"],
+          message: "snapshot result identity must match the snapshot",
+        });
+      }
     }
   });
 export type EngineSnapshot = z.infer<typeof EngineSnapshotSchema>;
@@ -1228,15 +1631,145 @@ export const PolicyVisibleReadinessSchema = z
   })
   .strict();
 
+export const PolicyVisibleResourceSchema = z
+  .object({
+    resourceId: identifier,
+    current: nonNegativeNumber,
+    maximum: finiteNumber.positive(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.current > value.maximum) {
+      context.addIssue({
+        code: "custom",
+        path: ["current"],
+        message: "visible current resource cannot exceed maximum resource",
+      });
+    }
+  });
+
+export const PolicyVisibleBuffSchema = z
+  .object({
+    buffId: identifier,
+    stacks: nonNegativeInteger,
+    expiresAtMs: nonNegativeInteger.nullable(),
+  })
+  .strict();
+
+export const PolicyVisibleEntitySchema = z
+  .object({
+    entityId: identifier,
+    team: EntityTeamSchema,
+    kind: EntityKindSchema,
+    alive: z.boolean(),
+    health: HealthStateSchema,
+    resources: z.array(PolicyVisibleResourceSchema),
+    visibleAbilityIds: uniqueIdentifiers,
+    buffs: z.array(PolicyVisibleBuffSchema),
+    position: PositionSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    addDuplicateIdIssues(
+      value.resources.map((resource) => resource.resourceId),
+      "resources",
+      "visible resource",
+      context,
+    );
+    addDuplicateIdIssues(
+      value.buffs.map((buff) => buff.buffId),
+      "buffs",
+      "visible buff",
+      context,
+    );
+  });
+
 export const PolicyVisibleStateSchema = z
   .object({
+    schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
     atTimeMs: nonNegativeInteger,
     actorEntityId: identifier,
-    entities: z.array(EntityStateSchema).min(1),
+    visibility: PolicyVisibilitySchema,
+    entities: z.array(PolicyVisibleEntitySchema).min(1),
     readiness: z.array(PolicyVisibleReadinessSchema),
     visibleResourceIds: uniqueIdentifiers,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const entityIds = value.entities.map((entity) => entity.entityId);
+    const entityIdSet = new Set(entityIds);
+    if (new Set(entityIds).size !== entityIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["entities"],
+        message: "policy-visible entity IDs must be unique",
+      });
+    }
+    if (value.visibility.visibleEntityIds.length !== entityIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["visibility", "visibleEntityIds"],
+        message: "policy visibility must match the entities exposed to the policy",
+      });
+    }
+    for (const visibleEntityId of value.visibility.visibleEntityIds) {
+      if (!entityIdSet.has(visibleEntityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["visibility", "visibleEntityIds"],
+          message: `policy visibility entity ${visibleEntityId} is not exposed`,
+        });
+      }
+    }
+    if (!entityIdSet.has(value.actorEntityId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["actorEntityId"],
+        message: "policy-visible state must expose its actor entity",
+      });
+    }
+    const visibleResources = new Set(value.visibleResourceIds);
+    for (const [entityIndex, entity] of value.entities.entries()) {
+      for (const [resourceIndex, resource] of entity.resources.entries()) {
+        if (!visibleResources.has(resource.resourceId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["entities", entityIndex, "resources", resourceIndex, "resourceId"],
+            message: `resource ${resource.resourceId} is exposed without visibility declaration`,
+          });
+        }
+      }
+    }
+    for (const visibleResourceId of value.visibleResourceIds) {
+      if (
+        !value.entities.some((entity) =>
+          entity.resources.some((resource) => resource.resourceId === visibleResourceId),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["visibleResourceIds"],
+          message: `visible resource ${visibleResourceId} is not present in exposed state`,
+        });
+      }
+    }
+    for (const [index, readiness] of value.readiness.entries()) {
+      const entity = value.entities.find((candidate) => candidate.entityId === readiness.entityId);
+      if (!entity) {
+        context.addIssue({
+          code: "custom",
+          path: ["readiness", index, "entityId"],
+          message: `readiness references hidden entity ${readiness.entityId}`,
+        });
+      } else if (!entity.visibleAbilityIds.includes(readiness.abilityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["readiness", index, "abilityId"],
+          message: `readiness references non-visible ability ${readiness.abilityId}`,
+        });
+      }
+    }
+  });
 export type PolicyVisibleState = z.infer<typeof PolicyVisibleStateSchema>;
 
 export const EngineCommandSchema = z.discriminatedUnion("kind", [
@@ -1301,6 +1834,7 @@ export type EngineEvent = z.infer<typeof EngineEventSchema>;
 
 export const EngineStepResultSchema = z
   .object({
+    schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
     status: z.enum(["progress", "complete", "cancelled", "invalid"]),
     snapshot: EngineSnapshotSchema,
     emittedEvents: z.array(EngineEventSchema),
@@ -1309,6 +1843,14 @@ export const EngineStepResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    const expectedSnapshotStatus = value.status === "progress" ? "running" : value.status;
+    if (value.snapshot.status !== expectedSnapshotStatus) {
+      context.addIssue({
+        code: "custom",
+        path: ["snapshot", "status"],
+        message: `${value.status} step results require a ${expectedSnapshotStatus} snapshot`,
+      });
+    }
     if (value.status === "complete" && value.result === null) {
       context.addIssue({
         code: "custom",
@@ -1323,11 +1865,62 @@ export const EngineStepResultSchema = z
         message: "only complete step results may carry a result",
       });
     }
+    if (value.status === "complete") {
+      if (value.reason !== null || value.snapshot.interruption.state !== "completed") {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "complete step results cannot carry an interruption reason",
+        });
+      }
+      if (
+        value.result !== null &&
+        (value.snapshot.result === null ||
+          value.snapshot.result.resultId !== value.result.resultId ||
+          value.snapshot.result.runId !== value.result.runId)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["result"],
+          message: "complete step result must match the snapshot result",
+        });
+      }
+    } else if (value.status === "cancelled" || value.status === "invalid") {
+      if (
+        value.reason === null ||
+        value.snapshot.interruption.state !== value.status ||
+        value.snapshot.interruption.reason !== value.reason
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: `${value.status} step results require a reason matching the snapshot interruption`,
+        });
+      }
+    } else if (value.status === "progress") {
+      if (value.snapshot.interruption.state === "budget-exhausted") {
+        if (value.reason !== value.snapshot.interruption.reason) {
+          context.addIssue({
+            code: "custom",
+            path: ["reason"],
+            message:
+              "budget-exhausted progress requires a reason matching the snapshot interruption",
+          });
+        }
+      } else if (value.reason !== null) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "progress without interruption cannot carry a reason",
+        });
+      }
+    }
   });
 export type EngineStepResult = z.infer<typeof EngineStepResultSchema>;
 
 export const ExactComparisonTransferSchema = z
   .object({
+    schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
     result: CombatResultSchema,
     resolvedScenario: ResolvedScenarioSchema,
     run: RunManifestSchema,
@@ -1335,6 +1928,20 @@ export const ExactComparisonTransferSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.run.status !== "complete" || value.result.status !== "complete") {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "status"],
+        message: "exact comparison requires a complete run and complete result",
+      });
+    }
+    if (value.run.runId !== value.result.runId) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "runId"],
+        message: "run and result must share run identity",
+      });
+    }
     if (value.run.resolvedScenarioHash !== value.resolvedScenario.resolvedScenarioHash) {
       context.addIssue({
         code: "custom",
@@ -1349,6 +1956,13 @@ export const ExactComparisonTransferSchema = z
         message: "transfer candidate input must match the run manifest",
       });
     }
+    if (value.resolvedScenario.candidateInputHash !== value.candidateInputHash) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidateInputHash"],
+        message: "transfer candidate input must match the resolved scenario provenance",
+      });
+    }
     if (value.result.resolvedScenarioHash !== value.resolvedScenario.resolvedScenarioHash) {
       context.addIssue({
         code: "custom",
@@ -1361,6 +1975,64 @@ export const ExactComparisonTransferSchema = z
         code: "custom",
         path: ["result", "candidateInputHash"],
         message: "result and transfer must reference the same candidate input",
+      });
+    }
+    if (value.run.rulesetHash !== value.resolvedScenario.effective.rulesetManifestHash) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "rulesetHash"],
+        message: "run and scenario must share ruleset provenance",
+      });
+    }
+    if (value.run.cohortHash !== value.resolvedScenario.effective.cohort.contentHash) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "cohortHash"],
+        message: "run and scenario must share cohort provenance",
+      });
+    }
+    if (value.run.policyHash !== value.resolvedScenario.policyHash) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "policyHash"],
+        message: "run and scenario must share policy provenance",
+      });
+    }
+    if (value.run.objective.kind !== value.result.objective) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "objective"],
+        message: "run and result must share objective identity",
+      });
+    }
+    if (
+      value.result.metrics.ttk.status === "censored" &&
+      value.result.metrics.ttk.horizonMs !== value.run.objective.horizonMs
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "metrics", "ttk", "horizonMs"],
+        message: "censored TTK horizon must match the transferred objective horizon",
+      });
+    }
+    if (
+      canonicalJson(value.run.objective) !==
+      canonicalJson(value.resolvedScenario.effective.objective)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "objective"],
+        message: "run and scenario must share objective configuration",
+      });
+    }
+    if (
+      canonicalJson(value.run.evaluationMode) !==
+      canonicalJson(value.resolvedScenario.effective.evaluationMode)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["run", "evaluationMode"],
+        message: "run and scenario must share evaluation configuration",
       });
     }
   });
@@ -1405,6 +2077,9 @@ export const ContractSchemas = {
   MechanicEvidence: MechanicEvidenceSchema,
   Trace: TraceSchema,
   CombatResult: CombatResultSchema,
+  PolicyVisibleState: PolicyVisibleStateSchema,
+  PolicyVisibleEntity: PolicyVisibleEntitySchema,
+  SnapshotInterruption: SnapshotInterruptionSchema,
   EngineSnapshot: EngineSnapshotSchema,
   EngineCommand: EngineCommandSchema,
   EngineEvent: EngineEventSchema,
@@ -1423,10 +2098,31 @@ export class ContractValidationError extends Error {
   }
 }
 
+export class SnapshotNotResumableError extends Error {
+  constructor(status: EngineSnapshot["status"], interruption: SnapshotInterruption["state"]) {
+    super(`snapshot cannot be resumed: status=${status}, interruption=${interruption}`);
+    this.name = "SnapshotNotResumableError";
+  }
+}
+
 export function parseContract<T>(schema: z.ZodType<T>, value: unknown): T {
+  try {
+    canonicalize(value, new Set<object>());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "canonical JSON validation failed";
+    throw new ContractValidationError(new z.ZodError([{ code: "custom", path: [], message }]));
+  }
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new ContractValidationError(parsed.error);
   return parsed.data;
+}
+
+export function assertResumableSnapshot(value: unknown): EngineSnapshot {
+  const snapshot = parseContract(EngineSnapshotSchema, value);
+  if (snapshot.status !== "running" || snapshot.resumability !== "resumable") {
+    throw new SnapshotNotResumableError(snapshot.status, snapshot.interruption.state);
+  }
+  return snapshot;
 }
 
 function canonicalize(value: unknown, stack: Set<object>): string {
@@ -1446,12 +2142,34 @@ function canonicalize(value: unknown, stack: Set<object>): string {
   stack.add(value);
   let result: string;
   if (Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Array.prototype && prototype !== null) {
+      throw new TypeError("canonical JSON accepts ordinary arrays only");
+    }
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === "symbol") {
+        throw new TypeError("canonical JSON cannot contain symbol-keyed properties");
+      }
+      if (key === "length") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable) {
+        throw new TypeError("canonical JSON cannot contain non-enumerable properties");
+      }
+      if ("get" in descriptor || "set" in descriptor) {
+        throw new TypeError("canonical JSON cannot contain accessor properties");
+      }
+      const index = Number(key);
+      if (!Number.isInteger(index) || index < 0 || index >= 2 ** 32 - 1 || String(index) !== key) {
+        throw new TypeError("canonical JSON arrays cannot contain extra properties");
+      }
+    }
     const entries: string[] = [];
     for (let index = 0; index < value.length; index += 1) {
       if (!Object.prototype.hasOwnProperty.call(value, index)) {
         throw new TypeError("canonical JSON cannot contain sparse arrays");
       }
-      entries.push(canonicalize(value[index], stack));
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      entries.push(canonicalize(descriptor?.value, stack));
     }
     result = `[${entries.join(",")}]`;
   } else {
@@ -1459,10 +2177,24 @@ function canonicalize(value: unknown, stack: Set<object>): string {
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError("canonical JSON accepts plain objects only");
     }
-    const object = value as Record<string, unknown>;
-    const entries = Object.keys(object)
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === "symbol") {
+        throw new TypeError("canonical JSON cannot contain symbol-keyed properties");
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable) {
+        throw new TypeError("canonical JSON cannot contain non-enumerable properties");
+      }
+      if ("get" in descriptor || "set" in descriptor) {
+        throw new TypeError("canonical JSON cannot contain accessor properties");
+      }
+    }
+    const entries = Object.keys(value)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalize(object[key], stack)}`);
+      .map((key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return `${JSON.stringify(key)}:${canonicalize(descriptor?.value, stack)}`;
+      });
     result = `{${entries.join(",")}}`;
   }
   stack.delete(value);

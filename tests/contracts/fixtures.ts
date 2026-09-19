@@ -269,6 +269,8 @@ export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
   schemaVersion: 1,
   scenarioId: sampleScenario.scenarioId,
   resolvedScenarioHash: HASH_B,
+  policyHash: HASH_A,
+  candidateInputHash: HASH_C,
   effective: {
     rulesetManifestHash: sampleScenario.rulesetManifestHash,
     modeId: sampleScenario.modeId,
@@ -280,7 +282,11 @@ export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
     evaluationMode: sampleScenario.evaluationMode,
     searchConstraints: sampleScenario.searchConstraints,
   },
-  provenance: sampleScenario.inputProvenance,
+  provenance: {
+    ...sampleScenario.inputProvenance,
+    policyHash: fixtureProvenance,
+    candidateInputHash: fixtureProvenance,
+  },
 });
 
 export const sampleRun = parseContract(RunManifestSchema, {
@@ -293,12 +299,18 @@ export const sampleRun = parseContract(RunManifestSchema, {
   policyHash: HASH_A,
   searchContextHash: HASH_A,
   candidateInputHash: HASH_C,
-  objective: "fixed-window-damage",
-  evaluationMode: "analytical-expectation",
+  objective: sampleObjective,
+  evaluationMode: sampleEvaluationMode,
   random: { kind: "deterministic", algorithm: "none", seed: null, trialCount: 1 },
   status: "complete",
   createdAt: "2026-09-19T00:00:00Z",
   completedAt: "2026-09-19T00:00:01Z",
+});
+
+export const sampleRunningRun = parseContract(RunManifestSchema, {
+  ...sampleRun,
+  status: "running",
+  completedAt: null,
 });
 
 export const censoredResult = parseContract(CombatResultSchema, {
@@ -321,6 +333,7 @@ export const censoredResult = parseContract(CombatResultSchema, {
 });
 
 export const sampleTransfer = parseContract(ExactComparisonTransferSchema, {
+  schemaVersion: 1,
   result: censoredResult,
   resolvedScenario: sampleResolvedScenario,
   run: sampleRun,
@@ -373,6 +386,12 @@ export const sampleTrace = parseContract(TraceSchema, {
 export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
   schemaVersion: 1,
   runId: sampleRun.runId,
+  engineHash: sampleRun.engineHash,
+  rulesetHash: sampleRun.rulesetHash,
+  cohortHash: sampleRun.cohortHash,
+  policyHash: sampleRun.policyHash,
+  resolvedScenarioHash: sampleRun.resolvedScenarioHash,
+  candidateInputHash: sampleRun.candidateInputHash,
   currentTimeMs: 100,
   queue: {
     nextSequence: 4,
@@ -429,6 +448,8 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
     },
   ],
   status: "running",
+  resumability: "resumable",
+  interruption: { state: "budget-exhausted", reason: "step event budget exhausted" },
   result: null,
 });
 

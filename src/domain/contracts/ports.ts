@@ -1,22 +1,27 @@
-import type {
-  CombatResult,
-  DamagePacket,
-  DamageResolution,
-  EngineCommand,
-  EngineEvent,
-  EngineStepResult,
-  EngineSnapshot,
-  EntityState,
-  ExactComparisonTransfer,
-  ItemInstance,
-  PolicyVisibleState,
-  ResolvedScenario,
-  RunManifest,
-  ScheduledEvent,
-  StepBudget,
-  TargetSelector,
-  Trace,
-  TraceEvent,
+import {
+  assertResumableSnapshot,
+  canonicalJson,
+  parseContract,
+  ResolvedScenarioSchema,
+  RunManifestSchema,
+  type CombatResult,
+  type DamagePacket,
+  type DamageResolution,
+  type EngineCommand,
+  type EngineEvent,
+  type EngineStepResult,
+  type EngineSnapshot,
+  type EntityState,
+  type ExactComparisonTransfer,
+  type ItemInstance,
+  type PolicyVisibleState,
+  type ResolvedScenario,
+  type RunManifest,
+  type ScheduledEvent,
+  type StepBudget,
+  type TargetSelector,
+  type Trace,
+  type TraceEvent,
 } from "./schemas";
 
 /**
@@ -203,6 +208,64 @@ export type EngineInput = Readonly<{
   ports: CombatKernelPorts;
 }>;
 
+export class ResumeCompatibilityError extends Error {
+  readonly mismatches: readonly string[];
+
+  constructor(mismatches: readonly string[]) {
+    super(`resume compatibility failed: ${mismatches.join("; ")}`);
+    this.name = "ResumeCompatibilityError";
+    this.mismatches = mismatches;
+  }
+}
+
+/**
+ * Validates the snapshot and all replay-affecting identities before a kernel
+ * is allowed to resume it. Concrete engines must call this guard at their
+ * resumeSession boundary.
+ */
+export function assertResumeCompatible(input: EngineInput, value: unknown): EngineSnapshot {
+  const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
+  const run = parseContract(RunManifestSchema, input.run);
+  const snapshot = assertResumableSnapshot(value);
+  const mismatches: string[] = [];
+
+  if (run.status !== "running") mismatches.push("run must be running to resume");
+  if (run.resolvedScenarioHash !== scenario.resolvedScenarioHash) {
+    mismatches.push("run and scenario resolvedScenarioHash differ");
+  }
+  if (run.rulesetHash !== scenario.effective.rulesetManifestHash) {
+    mismatches.push("run and scenario rulesetHash differ");
+  }
+  if (run.cohortHash !== scenario.effective.cohort.contentHash) {
+    mismatches.push("run and scenario cohortHash differ");
+  }
+  if (run.policyHash !== scenario.policyHash) mismatches.push("run and scenario policyHash differ");
+  if (run.candidateInputHash !== scenario.candidateInputHash) {
+    mismatches.push("run and scenario candidateInputHash differ");
+  }
+  if (canonicalJson(run.objective) !== canonicalJson(scenario.effective.objective)) {
+    mismatches.push("run and scenario objective configuration differ");
+  }
+  if (canonicalJson(run.evaluationMode) !== canonicalJson(scenario.effective.evaluationMode)) {
+    mismatches.push("run and scenario evaluation configuration differ");
+  }
+
+  const identities: ReadonlyArray<[string, string, string]> = [
+    ["runId", snapshot.runId, run.runId],
+    ["engineHash", snapshot.engineHash, run.engineHash],
+    ["rulesetHash", snapshot.rulesetHash, run.rulesetHash],
+    ["cohortHash", snapshot.cohortHash, run.cohortHash],
+    ["policyHash", snapshot.policyHash, run.policyHash],
+    ["resolvedScenarioHash", snapshot.resolvedScenarioHash, run.resolvedScenarioHash],
+    ["candidateInputHash", snapshot.candidateInputHash, run.candidateInputHash],
+  ];
+  for (const [name, actual, expected] of identities) {
+    if (actual !== expected) mismatches.push(`snapshot ${name} differs from run`);
+  }
+  if (mismatches.length > 0) throw new ResumeCompatibilityError(mismatches);
+  return snapshot;
+}
+
 export interface EngineSession {
   /** Advances a bounded number of events without consulting wall-clock time. */
   step(budget: StepBudget): EngineStepResult;
@@ -219,6 +282,7 @@ export type EngineRun = Readonly<{
 
 export interface CombatEngine {
   createSession(input: EngineInput): EngineSession;
+  /** Must call assertResumeCompatible and reject non-resumable snapshots. */
   resumeSession(input: EngineInput, snapshot: EngineSnapshot): EngineSession;
   /** Synchronous convenience entry point over the same session semantics. */
   run(input: EngineInput): EngineRun;
