@@ -1,0 +1,589 @@
+{
+  "schemaVersion": 1,
+  "repository": "MaximilianMauroner/dps.lol",
+  "baselineCommit": "f2747db43ca89d12338982b0e7ed2f700ee2b591",
+  "baselineTree": "c009c80956c8eb844dbbd8e75f6c820b89530d2b",
+  "roadmapIssue": {
+    "number": 3,
+    "url": "https://github.com/MaximilianMauroner/dps.lol/issues/3",
+    "updatedAt": "2026-09-18T20:10:48Z"
+  },
+  "integrationOwner": {
+    "role": "ChatGPT advisor/orchestrator",
+    "reviewer": "ChatGPT advisor/orchestrator",
+    "note": "The role records acceptance and coordination; it is not an external approval service."
+  },
+  "contentWorkOrderTemplate": "docs/implementation/planning/CONTENT-WORK-ORDER.md",
+  "pathStateDefinition": {
+    "existsAtAuditedBaseline": "Whether the declared file/directory scope matches at least one path in the immutable baselineTree. A false value is a declared future scope even if P00 materializes it now. Literal ancestors include tracked descendants; <id> is a generic segment pattern, while named <reserved-...> migration slots remain non-concrete future reservations.",
+    "excludes": "A strictly narrower path scope carved out of an owned scope. Static exclusions are disjoint boundaries; a transferred carve-out also names its recipient with handoffTo and requires that recipient's handoffFrom declaration. The validator requires containment."
+  },
+  "tasks": [
+    {
+      "id": "P00",
+      "issue": 4,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/4",
+      "issueUpdatedAt": "2026-09-18T20:10:12Z",
+      "title": "Pin and characterize the existing application",
+      "ownerLane": "Advisor + baseline worker",
+      "prerequisites": [],
+      "workOrder": "docs/implementation/planning/work-orders/P00.md",
+      "ownedPaths": [
+        { "path": "docs/implementation/baseline.md", "existsAtAuditedBaseline": false },
+        {
+          "path": "tests/regressions/legacy-characterization/**",
+          "existsAtAuditedBaseline": false
+        },
+        { "path": "benchmarks/baseline/**", "existsAtAuditedBaseline": false },
+        {
+          "path": "docs/implementation/planning/**",
+          "existsAtAuditedBaseline": false,
+          "excludes": [
+            "docs/implementation/planning/CONTENT_TASKS.json",
+            "docs/implementation/planning/CONTENT_MANIFEST.json"
+          ],
+          "handoffTo": ["P02"]
+        },
+        { "path": "scripts/check-plan.ts", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Reproducible evidence and planning gate only; no later shared-engine or content implementation."
+    },
+    {
+      "id": "P01",
+      "issue": 5,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/5",
+      "issueUpdatedAt": "2026-09-18T20:10:13Z",
+      "title": "Freeze shared contracts and migration boundaries",
+      "ownerLane": "Contract owner",
+      "prerequisites": ["P00"],
+      "workOrder": "docs/implementation/planning/work-orders/P01.md",
+      "ownedPaths": [
+        { "path": "src/domain/contracts/**", "existsAtAuditedBaseline": false },
+        { "path": "docs/architecture/combat-contracts.md", "existsAtAuditedBaseline": false },
+        { "path": "tests/contracts/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Versioned runtime contracts, provenance, worker messages and migration boundaries."
+    },
+    {
+      "id": "P02",
+      "issue": 6,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/6",
+      "issueUpdatedAt": "2026-09-18T20:10:14Z",
+      "title": "Pin source artifacts and enumerate complete ruleset coverage",
+      "ownerLane": "Ruleset/data-source worker",
+      "prerequisites": ["P01"],
+      "workOrder": "docs/implementation/planning/work-orders/P02.md",
+      "ownedPaths": [
+        {
+          "path": "docs/implementation/planning/CONTENT_TASKS.json",
+          "existsAtAuditedBaseline": false,
+          "handoffFrom": ["P00"]
+        },
+        {
+          "path": "docs/implementation/planning/CONTENT_MANIFEST.json",
+          "existsAtAuditedBaseline": false,
+          "handoffFrom": ["P00"]
+        },
+        { "path": "src/domain/rulesets/**", "existsAtAuditedBaseline": false },
+        { "path": "scripts/sync-static.ts", "existsAtAuditedBaseline": true },
+        { "path": "scripts/rulesets/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/rulesets/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Pinned patch artifacts, full PC content/mode inventory and later content-task/content-manifest generation. P02 receives the two exact planning artifacts from P00; P00 retains the remaining planning envelope."
+    },
+    {
+      "id": "P03",
+      "issue": 7,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/7",
+      "issueUpdatedAt": "2026-09-18T20:10:15Z",
+      "title": "Build independent mechanic validation and observation tooling",
+      "ownerLane": "Validation worker",
+      "prerequisites": ["P01"],
+      "workOrder": "docs/implementation/planning/work-orders/P03.md",
+      "ownedPaths": [
+        { "path": "tests/engine-harness/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/observations/**", "existsAtAuditedBaseline": false },
+        { "path": "scripts/validate-mechanics.ts", "existsAtAuditedBaseline": false },
+        { "path": "docs/validation/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Independent observation records, discrepancy triage and mechanics validation."
+    },
+    {
+      "id": "P04",
+      "issue": 8,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/8",
+      "issueUpdatedAt": "2026-09-18T20:10:16Z",
+      "title": "Implement the deterministic entity and event kernel",
+      "ownerLane": "Engine kernel worker",
+      "prerequisites": ["P01"],
+      "workOrder": "docs/implementation/planning/work-orders/P04.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/kernel/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/kernel/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Monotonic event execution, causal lineage, incremental checkpoints and typed incomplete results."
+    },
+    {
+      "id": "P05",
+      "issue": 9,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/9",
+      "issueUpdatedAt": "2026-09-18T20:10:17Z",
+      "title": "Implement composable stats and damage resolution",
+      "ownerLane": "Stats/damage worker",
+      "prerequisites": ["P02", "P04"],
+      "workOrder": "docs/implementation/planning/work-orders/P05.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/stats/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/engine/damage/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/stats/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/damage/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Versioned stat graph, typed damage packets, mitigation and observed-stat initialization."
+    },
+    {
+      "id": "P06",
+      "issue": 10,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/10",
+      "issueUpdatedAt": "2026-09-18T20:10:18Z",
+      "title": "Implement resources, cooldowns and buff lifecycles",
+      "ownerLane": "Resources/timers worker",
+      "prerequisites": ["P04"],
+      "workOrder": "docs/implementation/planning/work-orders/P06.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/resources/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/engine/cooldowns/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/engine/buffs/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/lifecycles/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Resources, cooldown domains, readiness events and explicit timed-state policies."
+    },
+    {
+      "id": "P07",
+      "issue": 11,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/11",
+      "issueUpdatedAt": "2026-09-18T20:10:19Z",
+      "title": "Implement spatial state, movement, vision and targeting",
+      "ownerLane": "Spatial worker",
+      "prerequisites": ["P02", "P04"],
+      "workOrder": "docs/implementation/planning/work-orders/P07.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/spatial/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/engine/targeting/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/spatial/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Map-aware positions, collision, target validity, movement and projectile delivery."
+    },
+    {
+      "id": "P08",
+      "issue": 12,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/12",
+      "issueUpdatedAt": "2026-09-18T20:10:20Z",
+      "title": "Implement attacks, casts and conditional action policies",
+      "ownerLane": "Action-policy worker",
+      "prerequisites": ["P05", "P06", "P07"],
+      "workOrder": "docs/implementation/planning/work-orders/P08.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/actions/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/scenarios/policies/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/actions/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Chronological action delivery and serializable policies that fill cooldown waits honestly."
+    },
+    {
+      "id": "P09",
+      "issue": 13,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/13",
+      "issueUpdatedAt": "2026-09-18T20:10:22Z",
+      "title": "Implement survival, crowd control, death and revives",
+      "ownerLane": "Survival worker",
+      "prerequisites": ["P05", "P06", "P07"],
+      "workOrder": "docs/implementation/planning/work-orders/P09.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/survival/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/engine/control/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/survival/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Defenses, control, actor lifecycle and explicit first-death/elimination/censoring semantics."
+    },
+    {
+      "id": "P10",
+      "issue": 14,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/14",
+      "issueUpdatedAt": "2026-09-18T20:10:23Z",
+      "title": "Implement shared triggers, proc chains and event lineage",
+      "ownerLane": "Trigger worker",
+      "prerequisites": ["P05", "P06", "P09"],
+      "workOrder": "docs/implementation/planning/work-orders/P10.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/triggers/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/engine/triggers/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Typed triggers, proc ownership, recursion protection, copies and causal event trees."
+    },
+    {
+      "id": "P11",
+      "issue": 15,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/15",
+      "issueUpdatedAt": "2026-09-18T20:10:24Z",
+      "title": "Implement numerical modes and objective evaluation",
+      "ownerLane": "Simulation/statistics worker",
+      "prerequisites": ["P03", "P08", "P09", "P10"],
+      "workOrder": "docs/implementation/planning/work-orders/P11.md",
+      "ownedPaths": [
+        { "path": "src/domain/engine/random/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/scenarios/evaluation/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/evaluation/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Separated exact, approximation, seeded and sampled modes plus objective/censoring semantics."
+    },
+    {
+      "id": "P12",
+      "issue": 16,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/16",
+      "issueUpdatedAt": "2026-09-18T20:10:25Z",
+      "title": "Implement full inventory legality and purchase accounting",
+      "ownerLane": "Inventory worker",
+      "prerequisites": ["P02"],
+      "workOrder": "docs/implementation/planning/work-orders/P12.md",
+      "ownedPaths": [
+        { "path": "src/domain/inventory/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/inventory/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Item instances, recipes, slots, locks, upgrades, sales and incremental purchase accounting."
+    },
+    {
+      "id": "P13",
+      "issue": 17,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/17",
+      "issueUpdatedAt": "2026-09-18T20:10:27Z",
+      "title": "Port the existing 17 items to shared mechanics",
+      "ownerLane": "Initial item worker",
+      "prerequisites": ["P10", "P11", "P12"],
+      "workOrder": "docs/implementation/planning/work-orders/P13.md",
+      "ownedPaths": [
+        { "path": "src/domain/mechanics/items/initial/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/mechanics/items/initial/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Move the currently modeled item set onto shared mechanics with parity fixtures."
+    },
+    {
+      "id": "P14",
+      "issue": 18,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/18",
+      "issueUpdatedAt": "2026-09-18T20:10:28Z",
+      "title": "Complete every remaining item and upgrade",
+      "ownerLane": "Item content coordinator",
+      "prerequisites": ["P07", "P08", "P13"],
+      "workOrder": "docs/implementation/planning/work-orders/P14.md",
+      "ownedPaths": [
+        { "path": "src/domain/mechanics/items/catalog/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/mechanics/items/catalog/**", "existsAtAuditedBaseline": false },
+        { "path": "docs/coverage/items/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "P02-generated item/upgrade child fan-out, including effects beyond stat blocks."
+    },
+    {
+      "id": "P15",
+      "issue": 19,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/19",
+      "issueUpdatedAt": "2026-09-18T20:10:29Z",
+      "title": "Complete runes, summoners and environmental/mode effects",
+      "ownerLane": "Auxiliary content coordinator",
+      "prerequisites": ["P02", "P08", "P09", "P10", "P11"],
+      "workOrder": "docs/implementation/planning/work-orders/P15.md",
+      "ownedPaths": [
+        { "path": "src/domain/mechanics/runes/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/mechanics/summoners/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/mechanics/environment/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/mechanics/auxiliary/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Auxiliary and mode-specific mechanics, with explicit relevance and evidence records."
+    },
+    {
+      "id": "P16",
+      "issue": 20,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/20",
+      "issueUpdatedAt": "2026-09-18T20:10:31Z",
+      "title": "Migrate complete Yunara onto the shared engine",
+      "ownerLane": "Yunara integration worker",
+      "prerequisites": ["P03", "P08", "P13"],
+      "workOrder": "docs/implementation/planning/work-orders/P16.md",
+      "ownedPaths": [
+        { "path": "src/domain/mechanics/champions/804/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/mechanics/champions/804/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/adapters/legacy-yunara.ts", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/engine/create-engine.ts", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "First integrated champion proof; it must use shared services and not become a second engine."
+    },
+    {
+      "id": "P17",
+      "issue": 21,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/21",
+      "issueUpdatedAt": "2026-09-18T20:10:32Z",
+      "title": "Complete every other champion and all forms",
+      "ownerLane": "Champion content coordinator",
+      "prerequisites": ["P02", "P03", "P11", "P16"],
+      "workOrder": "docs/implementation/planning/work-orders/P17.md",
+      "ownedPaths": [
+        {
+          "path": "src/domain/mechanics/champions/<id>/**",
+          "existsAtAuditedBaseline": false,
+          "excludes": ["src/domain/mechanics/champions/804/**"]
+        },
+        {
+          "path": "tests/mechanics/champions/<id>/**",
+          "existsAtAuditedBaseline": false,
+          "excludes": ["tests/mechanics/champions/804/**"]
+        },
+        { "path": "docs/coverage/champions/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "P02-generated champion/form child fan-out, excluding the P16 Yunara subtree."
+    },
+    {
+      "id": "P18",
+      "issue": 22,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/22",
+      "issueUpdatedAt": "2026-09-18T20:10:34Z",
+      "title": "Generalize bounded ingestion and compact storage projections",
+      "ownerLane": "Ingestion/storage worker",
+      "prerequisites": ["P02"],
+      "workOrder": "docs/implementation/planning/work-orders/P18.md",
+      "ownedPaths": [
+        { "path": "src/ingestion/**", "existsAtAuditedBaseline": true },
+        { "path": "scripts/ingest.ts", "existsAtAuditedBaseline": true },
+        { "path": "scripts/rebuild-from-archives.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/db/projections/**", "existsAtAuditedBaseline": false },
+        { "path": "migrations/<reserved-ingestion>_*.sql", "existsAtAuditedBaseline": false },
+        { "path": "tests/ingestion/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Bounded, archive-first ingestion and additive compact projections; no P00 data run."
+    },
+    {
+      "id": "P19",
+      "issue": 23,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/23",
+      "issueUpdatedAt": "2026-09-18T20:10:35Z",
+      "title": "Generalize realistic defaults and joint enemy cohorts",
+      "ownerLane": "Cohort/defaults worker",
+      "prerequisites": ["P18"],
+      "workOrder": "docs/implementation/planning/work-orders/P19.md",
+      "ownedPaths": [
+        { "path": "src/data/progression.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/data/skill-progression.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/data/level-targets.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/data/realistic-targets.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/progression.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/scenarios/defaults/**", "existsAtAuditedBaseline": false },
+        { "path": "src/app/api/cohort/route.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/app/api/progression/route.ts", "existsAtAuditedBaseline": true },
+        { "path": "tests/cohorts/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Generic, match-balanced joint defaults with field-level provenance and no double-counting."
+    },
+    {
+      "id": "P20",
+      "issue": 24,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/24",
+      "issueUpdatedAt": "2026-09-18T20:10:36Z",
+      "title": "Build lazy legal-build and purchase-plan enumeration",
+      "ownerLane": "Candidate-search worker",
+      "prerequisites": ["P12"],
+      "workOrder": "docs/implementation/planning/work-orders/P20.md",
+      "ownedPaths": [
+        { "path": "src/domain/optimization/candidates/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/optimization/candidates/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Lazy complete-state and purchase-transition enumeration with legal, synergy-preserving pruning."
+    },
+    {
+      "id": "P21",
+      "issue": 25,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/25",
+      "issueUpdatedAt": "2026-09-18T20:10:37Z",
+      "title": "Implement full-build objectives and honest search certificates",
+      "ownerLane": "Optimizer worker",
+      "prerequisites": ["P11", "P16", "P19", "P20"],
+      "workOrder": "docs/implementation/planning/work-orders/P21.md",
+      "ownedPaths": [
+        { "path": "src/domain/optimization/evaluate/**", "existsAtAuditedBaseline": false },
+        { "path": "src/domain/optimization/search/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/optimization/evaluate/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/optimization/search/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Shared-engine scoring, streaming top-K, proof/completion status and independent finalist validation."
+    },
+    {
+      "id": "P22",
+      "issue": 26,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/26",
+      "issueUpdatedAt": "2026-09-18T20:10:38Z",
+      "title": "Implement responsive worker execution and bounded caches",
+      "ownerLane": "Worker/runtime worker",
+      "prerequisites": ["P21"],
+      "workOrder": "docs/implementation/planning/work-orders/P22.md",
+      "ownedPaths": [
+        { "path": "src/workers/optimizer-protocol.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/workers/optimizer.worker.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/workers/simulation.worker.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/workers/runtime/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/workers/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Bounded worker slices, stale-result rejection, cancellation, checkpoints and cache safety."
+    },
+    {
+      "id": "P23",
+      "issue": 27,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/27",
+      "issueUpdatedAt": "2026-09-18T20:10:39Z",
+      "title": "Build the generic scenario editor and UI state model",
+      "ownerLane": "Scenario UI worker",
+      "prerequisites": ["P01"],
+      "workOrder": "docs/implementation/planning/work-orders/P23.md",
+      "ownedPaths": [
+        { "path": "src/components/lab/scenario/**", "existsAtAuditedBaseline": false },
+        { "path": "src/components/lab/inventory/**", "existsAtAuditedBaseline": false },
+        { "path": "src/components/lab/state/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/ui/state/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Generic ScenarioSpec editor, provenance-aware defaults and durable local UI state."
+    },
+    {
+      "id": "P24",
+      "issue": 28,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/28",
+      "issueUpdatedAt": "2026-09-18T20:10:40Z",
+      "title": "Wire optimization, results and exact comparison transfer",
+      "ownerLane": "UI integration worker",
+      "prerequisites": ["P16", "P19", "P22", "P23"],
+      "workOrder": "docs/implementation/planning/work-orders/P24.md",
+      "ownedPaths": [
+        {
+          "path": "src/app/page.tsx",
+          "existsAtAuditedBaseline": true,
+          "handoffTo": ["P29"]
+        },
+        { "path": "src/components/lab/optimizer.tsx", "existsAtAuditedBaseline": true },
+        { "path": "src/components/lab/results/**", "existsAtAuditedBaseline": false },
+        { "path": "src/components/lab/compare-adapter/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/ui/flows/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Real adapter workflow, honest result status and atomic selected-result comparison transfer."
+    },
+    {
+      "id": "P25",
+      "issue": 29,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/29",
+      "issueUpdatedAt": "2026-09-18T20:10:41Z",
+      "title": "Implement causal traces, counterfactuals and breakpoints",
+      "ownerLane": "Explanation worker",
+      "prerequisites": ["P11", "P21"],
+      "workOrder": "docs/implementation/planning/work-orders/P25.md",
+      "ownedPaths": [
+        { "path": "src/domain/explanations/**", "existsAtAuditedBaseline": false },
+        { "path": "src/components/lab/explanations/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/explanations/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Lineage-backed explanations, controlled ablations and nonmonotonic sensitivity scans."
+    },
+    {
+      "id": "P26",
+      "issue": 30,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/30",
+      "issueUpdatedAt": "2026-09-18T20:10:42Z",
+      "title": "Add portable replay and bounded large-search execution",
+      "ownerLane": "Replay/operations worker",
+      "prerequisites": ["P02", "P18", "P22"],
+      "workOrder": "docs/implementation/planning/work-orders/P26.md",
+      "ownedPaths": [
+        { "path": "src/domain/reproducibility/**", "existsAtAuditedBaseline": false },
+        { "path": "src/jobs/optimization/**", "existsAtAuditedBaseline": false },
+        { "path": "scripts/optimize.ts", "existsAtAuditedBaseline": false },
+        { "path": "scripts/replay-simulation.ts", "existsAtAuditedBaseline": false },
+        { "path": "src/db/jobs/**", "existsAtAuditedBaseline": false },
+        { "path": "migrations/<reserved-jobs>_*.sql", "existsAtAuditedBaseline": false },
+        { "path": "tests/replay/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/jobs/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Validated replay bundles and bounded offline CLI; remote jobs remain explicitly optional."
+    },
+    {
+      "id": "P27",
+      "issue": 31,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/31",
+      "issueUpdatedAt": "2026-09-18T20:10:43Z",
+      "title": "Close full ruleset content and interaction coverage",
+      "ownerLane": "Independent coverage reviewer",
+      "prerequisites": ["P03", "P11", "P14", "P15", "P17"],
+      "workOrder": "docs/implementation/planning/work-orders/P27.md",
+      "ownedPaths": [
+        { "path": "docs/coverage/release/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/interactions/**", "existsAtAuditedBaseline": false },
+        { "path": "scripts/check-combat-coverage.ts", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Independent full-content/interaction gate; missing mechanics remain release blockers."
+    },
+    {
+      "id": "P28",
+      "issue": 32,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/32",
+      "issueUpdatedAt": "2026-09-18T20:10:45Z",
+      "title": "Meet measured performance and resource budgets",
+      "ownerLane": "Performance worker",
+      "prerequisites": ["P21", "P22", "P26", "P27"],
+      "workOrder": "docs/implementation/planning/work-orders/P28.md",
+      "ownedPaths": [
+        { "path": "scripts/benchmark-optimizer.ts", "existsAtAuditedBaseline": true },
+        { "path": "scripts/benchmarks/**", "existsAtAuditedBaseline": false },
+        { "path": "benchmarks/release/**", "existsAtAuditedBaseline": false },
+        { "path": "tests/performance/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Reference/full-catalog performance, memory, cancellation and operating-budget evidence."
+    },
+    {
+      "id": "P29",
+      "issue": 33,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/33",
+      "issueUpdatedAt": "2026-09-18T20:10:46Z",
+      "title": "Integrate, migrate and validate the whole product",
+      "ownerLane": "Final integrator + independent QA",
+      "prerequisites": ["P19", "P24", "P25", "P26", "P27", "P28"],
+      "workOrder": "docs/implementation/planning/work-orders/P29.md",
+      "ownedPaths": [
+        { "path": "src/domain/simulator.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/types.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/optimizer.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/optimizer-engine.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/champions/yunara.ts", "existsAtAuditedBaseline": true },
+        { "path": "src/domain/items.ts", "existsAtAuditedBaseline": true },
+        {
+          "path": "src/app/page.tsx",
+          "existsAtAuditedBaseline": true,
+          "handoffFrom": ["P24"]
+        },
+        { "path": "tests/e2e/**", "existsAtAuditedBaseline": false },
+        { "path": "docs/implementation/final-validation.md", "existsAtAuditedBaseline": false },
+        { "path": "README.md", "existsAtAuditedBaseline": true },
+        { "path": "docs/PRODUCT.md", "existsAtAuditedBaseline": true },
+        { "path": "docs/mechanics.md", "existsAtAuditedBaseline": true }
+      ],
+      "scope": "Single-engine integration, end-to-end product validation, migration and documentation truth."
+    },
+    {
+      "id": "P30",
+      "issue": 34,
+      "url": "https://github.com/MaximilianMauroner/dps.lol/issues/34",
+      "issueUpdatedAt": "2026-09-18T20:10:47Z",
+      "title": "Approve reproducible release and operational readiness",
+      "ownerLane": "Advisor + operator",
+      "prerequisites": ["P29"],
+      "workOrder": "docs/implementation/planning/work-orders/P30.md",
+      "ownedPaths": [
+        { "path": "docs/release/**", "existsAtAuditedBaseline": false },
+        { "path": "docs/storage-safety.md", "existsAtAuditedBaseline": true },
+        { "path": "docs/operations/**", "existsAtAuditedBaseline": false }
+      ],
+      "scope": "Separate functional, empirical, data and deployment-readiness decisions with real restore/rollback evidence."
+    }
+  ]
+}
