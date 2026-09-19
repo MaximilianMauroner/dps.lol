@@ -34,13 +34,15 @@ default.
 
 `canonicalJson` sorts object keys, preserves array order, normalizes negative
 zero, rejects hidden/accessor/executable values and extra array properties, and
-rejects values that are not JSON-safe. `hashCanonical` hashes that byte
-representation with Web Crypto SHA-256 and returns
+rejects values that are not JSON-safe or structured-clone-safe, including
+proxies and exotic objects. `hashCanonical` hashes that byte representation
+with Web Crypto SHA-256 and returns
 `sha256:<64 lowercase hex characters>`. This is the identity basis for replay
 and cache keys. `parseContract` applies the same canonical-input rejection
-before schema parsing, so a non-enumerable, executable or otherwise ignored
-property cannot disappear at a Zod boundary. Timestamps, labels and UI text
-must not be substituted for a content hash.
+before schema parsing and detaches accepted own data into null-prototype
+objects, so inherited pollution, accessors, executable values or otherwise
+ignored properties cannot satisfy or disappear at a Zod boundary. Timestamps,
+labels and UI text must not be substituted for a content hash.
 
 The following identities are deliberately separate:
 
@@ -112,9 +114,11 @@ semantic extension point for input, windup, impact, periodic, expiry,
 lifecycle and checkpoint events. Insertion order and wall-clock time are not
 ordering inputs.
 
-`Trace` and `EventQueueSnapshot` reject out-of-order entries, duplicate
-`(timeMs, sequence)` tie keys, duplicate sequence IDs and stale `nextSequence`
-values. Every event and command carries stable IDs and causal predecessor IDs.
+`Trace` and `EventQueueSnapshot` reject out-of-order entries, globally
+duplicate trace sequences, duplicate `(timeMs, sequence)` tie keys, duplicate
+queue sequence IDs and stale `nextSequence` values. Snapshot queues also reject
+events earlier than their `currentTimeMs`; a past event cannot be revived by a
+resume. Every event and command carries stable IDs and causal predecessor IDs.
 A future event is only state after it executes; it cannot mutate a current
 snapshot. `StateRead.kind` distinguishes a snapshot read from an impact-time
 read in service requests.
@@ -159,11 +163,13 @@ status with a reason/result state; it is never published as a complete score.
 
 `MetricValue` is tagged as `value`, `censored`, `undefined` or `not-applicable`.
 There is no JSON `Infinity` or `NaN`. A complete killed result must carry a
-finite, uncensored TTK. A complete non-kill result must be right-censored with
-a censored TTK; interrupted/invalid results use invalid censoring with an
-undefined or not-applicable TTK. Contradictory kill/censoring combinations are
-rejected. Objective, horizon, censoring and aggregation remain in the result's
-run context.
+finite, non-negative, uncensored TTK. A complete non-kill result must be
+right-censored with a censored TTK; interrupted/invalid results use invalid
+censoring with an undefined or not-applicable TTK. Contradictory
+kill/censoring combinations are rejected. An exact transfer also rejects a
+complete right-censored non-kill when the objective uses `fail-if-not-killed`.
+Objective, horizon, censoring and aggregation remain in the result's run
+context.
 
 `EngineSnapshot` contains engine/ruleset/cohort/policy/scenario/candidate
 identity, queue IDs/order, current time, entity state, buff state, pending
@@ -171,8 +177,10 @@ actions, trigger state, RNG stream/counters, numerical branch state and typed
 result/status. It explicitly records `resumability` and an interruption state
 (`none`, `budget-exhausted`, `cancelled`, `invalid` or `completed`). Running
 snapshots are resumable; complete/cancelled/invalid snapshots are not and must
-not retain queued or pending work. A snapshot is data only and is safe for
-worker structured clone and JSON replay.
+not retain queued or pending work. Complete snapshots require a complete
+result, and step envelopes require the full result payload to equal the
+snapshot result. A snapshot is data only and is safe for worker structured
+clone and JSON replay.
 
 `ExactComparisonTransferSchema` is itself versioned and carries the selected
 complete `CombatResult`, its `ResolvedScenario`, `RunManifest` and candidate

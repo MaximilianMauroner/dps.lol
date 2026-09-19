@@ -85,6 +85,18 @@ function visiblePolicyStateFixture() {
   };
 }
 
+function completeSnapshotForTest() {
+  const snapshot = clone(sampleSnapshot);
+  snapshot.status = "complete";
+  snapshot.resumability = "non-resumable";
+  snapshot.interruption = { state: "completed", reason: null };
+  snapshot.queue.entries = [];
+  snapshot.pendingActions = [];
+  snapshot.queue.nextSequence = 4;
+  snapshot.result = clone(censoredResult);
+  return snapshot;
+}
+
 describe("P01 versioned contract fixtures", () => {
   test("round-trips through JSON and structured clone without executable values", () => {
     const values = [
@@ -272,6 +284,17 @@ describe("P01 versioned contract fixtures", () => {
     });
   });
 
+  test("rejects trace sequence reuse across different timestamps", () => {
+    const duplicate = clone(sampleTrace);
+    duplicate.events.push({
+      ...duplicate.events[1]!,
+      eventId: "event-003",
+      timeMs: 2000,
+    });
+
+    expect(() => parseContract(TraceSchema, duplicate)).toThrow(/globally unique/);
+  });
+
   test("captures an interrupted long run with queue, actions, triggers, RNG and numerical state", () => {
     expect(sampleSnapshot.status).toBe("running");
     expect(sampleSnapshot.queue.entries[0]?.eventId).toBe("event-003");
@@ -297,6 +320,12 @@ describe("P01 versioned contract fixtures", () => {
     staleSequence.queue.nextSequence = 3;
     expect(() => parseContract(EngineSnapshotSchema, staleSequence)).toThrow(
       /nextSequence must be greater/,
+    );
+
+    const staleEvent = clone(sampleSnapshot);
+    staleEvent.queue.entries[0]!.timeMs = 99;
+    expect(() => parseContract(EngineSnapshotSchema, staleEvent)).toThrow(
+      /cannot precede currentTimeMs/,
     );
 
     const cancelledWithWork = clone(sampleSnapshot);
@@ -326,6 +355,17 @@ describe("P01 versioned contract fixtures", () => {
     cancelled.queue.nextSequence = 4;
     expect(parseContract(EngineSnapshotSchema, cancelled).status).toBe("cancelled");
     expect(() => assertResumableSnapshot(cancelled)).toThrow(SnapshotNotResumableError);
+
+    for (const status of ["cancelled", "incomplete"] as const) {
+      const invalidComplete = completeSnapshotForTest();
+      invalidComplete.result = clone(censoredResult);
+      invalidComplete.result.status = status;
+      invalidComplete.result.censoring = "invalid";
+      invalidComplete.result.metrics.ttk = { status: "undefined", reason: status };
+      expect(() => parseContract(EngineSnapshotSchema, invalidComplete), status).toThrow(
+        /complete snapshots require a complete result/,
+      );
+    }
   });
 
   test("rejects contradictory engine step status and snapshot interruption state", () => {
@@ -393,6 +433,32 @@ describe("P01 versioned contract fixtures", () => {
         reason: "different budget reason",
       }),
     ).toThrow(/matching the snapshot interruption/);
+
+    const completeSnapshot = completeSnapshotForTest();
+    const completeResult = clone(censoredResult);
+    expect(
+      parseContract(EngineStepResultSchema, {
+        schemaVersion: 1,
+        status: "complete",
+        snapshot: completeSnapshot,
+        emittedEvents: [],
+        result: completeResult,
+        reason: null,
+      }).result,
+    ).toEqual(completeResult);
+
+    const alteredResult = clone(completeResult);
+    alteredResult.warnings = ["semantically different"];
+    expect(() =>
+      parseContract(EngineStepResultSchema, {
+        schemaVersion: 1,
+        status: "complete",
+        snapshot: completeSnapshot,
+        emittedEvents: [],
+        result: alteredResult,
+        reason: null,
+      }),
+    ).toThrow(/exactly match the snapshot result/);
   });
 
   test("resume guards reject non-resumable and incompatible snapshots", () => {
@@ -469,6 +535,17 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => parseContract(CombatResultSchema, interruptedAsCensored)).toThrow(
       /right-censored results must be complete/,
     );
+
+    const negativeTtk = {
+      ...censoredResult,
+      killed: true,
+      censoring: "not-censored" as const,
+      metrics: {
+        ...censoredResult.metrics,
+        ttk: { status: "value" as const, value: -1 },
+      },
+    };
+    expect(() => parseContract(CombatResultSchema, negativeTtk)).toThrow(/non-negative TTK/);
   });
 
   test("canonical hashes ignore object insertion order but change with candidate input", async () => {
@@ -536,6 +613,54 @@ describe("P01 versioned contract fixtures", () => {
     );
   });
 
+  test("rejects inherited required fields and proxies at every canonical boundary", async () => {
+    const previousSchemaVersion = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      "schemaVersion",
+    );
+    try {
+      Object.defineProperty(Object.prototype, "schemaVersion", {
+        value: 1,
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+      const polluted = clone(sampleScenario) as Record<string, unknown>;
+      delete polluted.schemaVersion;
+      expect(() => parseContract(ScenarioSpecSchema, polluted)).toThrow(/schemaVersion|expected 1/);
+    } finally {
+      if (previousSchemaVersion) {
+        Object.defineProperty(Object.prototype, "schemaVersion", previousSchemaVersion);
+      } else {
+        Reflect.deleteProperty(Object.prototype, "schemaVersion");
+      }
+    }
+
+    const proxy = new Proxy({ value: 1 }, {});
+    expect(() => canonicalJson(proxy)).toThrow(/structured-clone-safe/);
+
+    let hashError: unknown;
+    try {
+      await hashCanonical(proxy);
+    } catch (error) {
+      hashError = error;
+    }
+    expect(String(hashError)).toMatch(/structured-clone-safe/);
+
+    const proxyContract = new Proxy(visiblePolicyStateFixture(), {});
+    expect(() => parseContract(PolicyVisibleStateSchema, proxyContract)).toThrow(
+      /structured-clone-safe/,
+    );
+
+    const accessorContract = clone(sampleScenario);
+    Object.defineProperty(accessorContract, "schemaVersion", {
+      configurable: true,
+      enumerable: true,
+      get: () => 1,
+    });
+    expect(() => parseContract(ScenarioSpecSchema, accessorContract)).toThrow(/accessor/);
+  });
+
   test("rejects a run that collapses search context and candidate input identity", () => {
     const invalid = { ...sampleRun, candidateInputHash: sampleRun.searchContextHash };
     expect(() => parseContract(RunManifestSchema, invalid)).toThrow(/must remain distinct/);
@@ -567,6 +692,16 @@ describe("P01 versioned contract fixtures", () => {
     expect(message.schemaVersion).toBe(1);
     if (message.direction !== "step") throw new Error("fixture message should be a step");
     expect(message.payload.snapshot.runId).toBe(sampleRun.runId);
+  });
+
+  test("rejects a censored non-kill under fail-if-not-killed exact transfer policy", () => {
+    const invalid = clone(sampleTransfer);
+    invalid.run.objective.censoring = "fail-if-not-killed";
+    invalid.resolvedScenario.effective.objective.censoring = "fail-if-not-killed";
+
+    expect(() => parseContract(ExactComparisonTransferSchema, invalid)).toThrow(
+      /fail-if-not-killed objectives cannot transfer a non-kill result/,
+    );
   });
 
   test("rejects every exact-comparison provenance mismatch and interrupted result", () => {

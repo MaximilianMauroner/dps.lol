@@ -1196,6 +1196,14 @@ export const TraceSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    const sequences = value.events.map((event) => event.sequence);
+    if (new Set(sequences).size !== sequences.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "trace sequence IDs must be globally unique",
+      });
+    }
     for (let index = 1; index < value.events.length; index += 1) {
       const previous = value.events[index - 1]!;
       const current = value.events[index]!;
@@ -1268,6 +1276,12 @@ export const CombatResultSchema = z
           code: "custom",
           path: ["metrics", "ttk"],
           message: "a killed result requires a finite TTK value",
+        });
+      } else if (value.metrics.ttk.value < 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["metrics", "ttk", "value"],
+          message: "a killed result requires a non-negative TTK value",
         });
       }
       if (value.censoring !== "not-censored") {
@@ -1465,6 +1479,15 @@ export const EngineSnapshotSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    for (const [index, entry] of value.queue.entries.entries()) {
+      if (entry.timeMs < value.currentTimeMs) {
+        context.addIssue({
+          code: "custom",
+          path: ["queue", "entries", index, "timeMs"],
+          message: "snapshot queue events cannot precede currentTimeMs",
+        });
+      }
+    }
     const entityIds = value.entities.map((entity) => entity.entityId);
     if (new Set(entityIds).size !== entityIds.length) {
       context.addIssue({
@@ -1547,14 +1570,21 @@ export const EngineSnapshotSchema = z
         }
       }
     }
-    if (value.status === "complete" && value.result === null) {
-      context.addIssue({
-        code: "custom",
-        path: ["result"],
-        message: "complete snapshots require a result",
-      });
-    }
-    if (value.status !== "complete" && value.result !== null) {
+    if (value.status === "complete") {
+      if (value.result === null) {
+        context.addIssue({
+          code: "custom",
+          path: ["result"],
+          message: "complete snapshots require a result",
+        });
+      } else if (value.result.status !== "complete") {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "status"],
+          message: "complete snapshots require a complete result",
+        });
+      }
+    } else if (value.result !== null) {
       context.addIssue({
         code: "custom",
         path: ["result"],
@@ -1876,13 +1906,12 @@ export const EngineStepResultSchema = z
       if (
         value.result !== null &&
         (value.snapshot.result === null ||
-          value.snapshot.result.resultId !== value.result.resultId ||
-          value.snapshot.result.runId !== value.result.runId)
+          canonicalJson(value.snapshot.result) !== canonicalJson(value.result))
       ) {
         context.addIssue({
           code: "custom",
           path: ["result"],
-          message: "complete step result must match the snapshot result",
+          message: "complete step result must exactly match the snapshot result",
         });
       }
     } else if (value.status === "cancelled" || value.status === "invalid") {
@@ -2035,6 +2064,13 @@ export const ExactComparisonTransferSchema = z
         message: "run and scenario must share evaluation configuration",
       });
     }
+    if (!value.result.killed && value.run.objective.censoring === "fail-if-not-killed") {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "censoring"],
+        message: "fail-if-not-killed objectives cannot transfer a non-kill result",
+      });
+    }
   });
 export type ExactComparisonTransfer = z.infer<typeof ExactComparisonTransferSchema>;
 
@@ -2107,12 +2143,12 @@ export class SnapshotNotResumableError extends Error {
 
 export function parseContract<T>(schema: z.ZodType<T>, value: unknown): T {
   try {
-    canonicalize(value, new Set<object>());
+    canonicalJson(value);
   } catch (error) {
     const message = error instanceof Error ? error.message : "canonical JSON validation failed";
     throw new ContractValidationError(new z.ZodError([{ code: "custom", path: [], message }]));
   }
-  const parsed = schema.safeParse(value);
+  const parsed = schema.safeParse(detachCanonicalData(value));
   if (!parsed.success) throw new ContractValidationError(parsed.error);
   return parsed.data;
 }
@@ -2201,9 +2237,38 @@ function canonicalize(value: unknown, stack: Set<object>): string {
   return result;
 }
 
+function detachCanonicalData(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    const detached: unknown[] = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      detached[index] = detachCanonicalData(descriptor?.value);
+    }
+    return detached;
+  }
+
+  const detached = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    detached[key] = detachCanonicalData(descriptor?.value);
+  }
+  return detached;
+}
+
+function assertStructuredCloneSafe(value: unknown): void {
+  try {
+    globalThis.structuredClone(value);
+  } catch {
+    throw new TypeError("canonical JSON requires structured-clone-safe data");
+  }
+}
+
 /** Stable key ordering is shared by hashes, cache identities, and replay files. */
 export function canonicalJson(value: unknown): string {
-  return canonicalize(value, new Set<object>());
+  const serialized = canonicalize(value, new Set<object>());
+  assertStructuredCloneSafe(value);
+  return serialized;
 }
 
 export async function hashCanonical(value: unknown): Promise<ContentHash> {
