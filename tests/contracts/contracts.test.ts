@@ -5,6 +5,7 @@ import {
   assertDamageResolution,
   assertEngineRun,
   assertEngineInputCompatible,
+  assertExactComparisonTransfer,
   assertLifecycleResolution,
   assertMovementResolution,
   assertResolvedScenarioPolicyHash,
@@ -1668,6 +1669,7 @@ describe("P01 versioned contract fixtures", () => {
           selector: { kind: "self", actorId: "actor" },
           visibleState: parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture()),
         },
+        { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["enemy"], rejected: false, reason: null },
       ),
     ).toThrow(/selector semantics/);
@@ -1735,6 +1737,7 @@ describe("P01 versioned contract fixtures", () => {
           selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
           visibleState: parsedVisible,
         },
+        { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["enemy"], rejected: false, reason: null },
       ),
     ).toThrow(/dynamic selector/);
@@ -1745,6 +1748,7 @@ describe("P01 versioned contract fixtures", () => {
           selector: { kind: "all-visible-enemies", actorId: "actor" },
           visibleState: parsedVisible,
         },
+        { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["actor"], rejected: false, reason: null },
       ),
     ).toThrow(/dynamic selector|visible entities/);
@@ -2033,9 +2037,10 @@ describe("P01 versioned contract fixtures", () => {
           selector: { kind: "self", actorId: "enemy" },
           visibleState: parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture()),
         },
+        { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["enemy"], rejected: false, reason: null },
       ),
-    ).toThrow(/actor and selector identities/);
+    ).toThrow(/actor, selector/);
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: 0, reason: "blocked" },
@@ -2296,5 +2301,71 @@ describe("P01 versioned contract fixtures", () => {
         skippedCursor,
       ),
     ).toThrow(/first executable step/);
+  });
+
+  test("closes latest transfer, targeting, and resume findings", async () => {
+    const staleTransfer = clone(sampleTransfer);
+    staleTransfer.resolvedScenario.effective.policy.steps[0]!.priority += 100;
+    await expect(assertExactComparisonTransfer(staleTransfer)).rejects.toThrow(
+      /resolved scenario hashes/,
+    );
+
+    const missingReadiness = visiblePolicyStateFixture();
+    missingReadiness.readiness = [];
+    expect(() => parseContract(PolicyVisibleStateSchema, missingReadiness)).toThrow(
+      /every visible ability requires exactly one readiness record/,
+    );
+
+    const visible = parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture());
+    const targetingRequest = {
+      actor: transformedCopiedAbility,
+      selector: { kind: "self" as const, actorId: "actor" },
+      visibleState: visible,
+    };
+    expect(() =>
+      assertTargetingResolution(
+        targetingRequest,
+        { ...mockPortContext, timeMs: 100 },
+        {
+          targetEntityIds: ["actor"],
+          rejected: true,
+          reason: "blocked",
+        },
+      ),
+    ).toThrow(/return no targets/);
+    expect(() =>
+      assertTargetingResolution(
+        targetingRequest,
+        { ...mockPortContext, timeMs: 99 },
+        {
+          targetEntityIds: ["actor"],
+          rejected: false,
+          reason: null,
+        },
+      ),
+    ).toThrow(/context time/);
+
+    const selfOwned = clone(transformedCopiedAbility);
+    selfOwned.ownerEntityId = selfOwned.entityId;
+    expect(() => parseContract(EntityStateSchema, selfOwned)).toThrow(/cannot own itself/);
+
+    const seededScenario = clone(sampleResolvedScenario);
+    seededScenario.effective.evaluationMode = {
+      kind: "seeded-trajectory",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "expected", trialCount: 1 },
+      approximation: null,
+    };
+    const seededRun = clone(sampleRunningRun);
+    seededRun.evaluationMode = clone(seededScenario.effective.evaluationMode);
+    seededRun.random = clone(seededRun.evaluationMode.random);
+    const missingRng = clone(sampleSnapshot);
+    missingRng.numericalBranches[0]!.mode = "seeded-trajectory";
+    missingRng.rngStreams = [];
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: seededScenario, run: seededRun, ports: createMockPorts() },
+        missingRng,
+      ),
+    ).toThrow(/retained RNG stream state/);
   });
 });

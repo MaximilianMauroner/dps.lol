@@ -259,13 +259,15 @@ export interface TargetingPort {
 
 export function assertTargetingResolution(
   request: TargetingRequest,
+  context: PortContext,
   value: unknown,
 ): TargetingResolution {
   if (
     request.actor.entityId !== request.visibleState.actorEntityId ||
-    ("actorId" in request.selector && request.selector.actorId !== request.actor.entityId)
+    ("actorId" in request.selector && request.selector.actorId !== request.actor.entityId) ||
+    request.visibleState.atTimeMs !== context.timeMs
   ) {
-    throw new TypeError("targeting request actor and selector identities must agree");
+    throw new TypeError("targeting request actor, selector, and context time must agree");
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("targeting resolution must be a strict object");
@@ -288,6 +290,9 @@ export function assertTargetingResolution(
     result.rejected !== (result.reason !== null)
   ) {
     throw new TypeError("targeting resolution rejection and reason must correlate");
+  }
+  if (result.rejected && result.targetEntityIds.length > 0) {
+    throw new TypeError("rejected targeting resolutions must return no targets");
   }
   const visible = new Set(request.visibleState.entities.map((entity) => entity.entityId));
   if (result.targetEntityIds.some((id) => typeof id !== "string" || !visible.has(id))) {
@@ -613,6 +618,12 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
     ) {
       mismatches.push(`snapshot RNG stream ${stream.streamId} differs from evaluation seed`);
     }
+  }
+  if (
+    scenario.effective.evaluationMode.random.kind === "seeded" &&
+    snapshot.rngStreams.length === 0
+  ) {
+    mismatches.push("seeded resume requires retained RNG stream state");
   }
   if (snapshot.currentTimeMs > scenario.effective.objective.horizonMs) {
     mismatches.push("snapshot currentTimeMs exceeds the objective horizon");

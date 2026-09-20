@@ -361,6 +361,13 @@ export const EntityStateSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.ownerEntityId === value.entityId) {
+      context.addIssue({
+        code: "custom",
+        path: ["ownerEntityId"],
+        message: "an entity cannot own itself",
+      });
+    }
     if (value.alive !== value.health.current > 0) {
       context.addIssue({
         code: "custom",
@@ -2494,6 +2501,20 @@ export const PolicyVisibleStateSchema = z
         });
       }
     }
+    const readinessKeys = new Set(
+      value.readiness.map((readiness) => `${readiness.entityId}\u0000${readiness.abilityId}`),
+    );
+    for (const [entityIndex, entity] of value.entities.entries()) {
+      for (const [abilityIndex, abilityId] of entity.visibleAbilityIds.entries()) {
+        if (!readinessKeys.has(`${entity.entityId}\u0000${abilityId}`)) {
+          context.addIssue({
+            code: "custom",
+            path: ["entities", entityIndex, "visibleAbilityIds", abilityIndex],
+            message: "every visible ability requires exactly one readiness record",
+          });
+        }
+      }
+    }
     addDuplicateIdIssues(
       value.readiness.map((readiness) => `${readiness.entityId}\u0000${readiness.abilityId}`),
       "readiness",
@@ -3189,4 +3210,13 @@ export async function assertResolvedScenarioPolicyHash(
     );
   }
   return scenario as HashVerifiedResolvedScenario;
+}
+
+/** Parses an external comparison transfer and verifies its canonical scenario identities. */
+export async function assertExactComparisonTransfer(
+  value: unknown,
+): Promise<ExactComparisonTransfer> {
+  const transfer = parseContract(ExactComparisonTransferSchema, value);
+  await assertResolvedScenarioPolicyHash(transfer.resolvedScenario);
+  return transfer;
 }
