@@ -178,6 +178,7 @@ export const sampleObjective = parseContract(ObjectiveSpecSchema, {
   censoring: "right-censored",
   aggregation: "weighted-mean",
   tiePolicy: "within-tolerance",
+  tieTolerance: 1e-9,
 });
 
 export const sampleEvaluationMode = parseContract(EvaluationModeSchema, {

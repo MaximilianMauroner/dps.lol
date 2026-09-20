@@ -57,8 +57,8 @@ The following identities are deliberately separate:
 | `candidateInputHash`   | one resolved candidate's effective simulation input     | finalist/comparison transfer |
 
 `RunManifest` requires both search and candidate hashes and rejects equality
-between them. A candidate result therefore cannot silently rewrite the frozen
-search context.
+between them. It also requires completion timestamps to follow creation. A
+candidate result therefore cannot silently rewrite the frozen search context.
 
 ## Main data contracts
 
@@ -129,6 +129,8 @@ positions. It carries the policy's `visibleEntityIds`; hidden stats, inventory,
 ability internals, provenance, queue state, RNG internals and future events are
 not representable in the projection. The policy visibility contract hard-codes
 `allowFutureEvents: false` and `allowHiddenOpponentState: false` in v1.
+Step IDs and priorities are unique, selector-relative actor IDs match their
+commands, and tolerant tie policies carry an explicit non-negative tolerance.
 
 ## Ports and failure behavior
 
@@ -140,6 +142,11 @@ an accepted/complete result or an explicit reason. Implementations must not
 read the wall clock, network, mutable UI state or hidden future state.
 
 `EngineCommand` and `EngineEvent` are versioned serializable envelopes. The
+command schema rejects scheduling work before the command's issue time, while
+complete traces require every causal ID to name an earlier event. Damage port
+results reconcile attempted, absorbed, prevented, applied and overkill amounts
+and bind death to zero remaining health. Seeded modes must name a real random
+algorithm rather than the deterministic `none` sentinel. The
 `WorkerMessageSchema` validates command, event and bounded-step envelopes
 before they cross a worker. The engine-facing `CombatEngine` has three paths
 over the same session semantics:
@@ -149,8 +156,9 @@ over the same session semantics:
    `snapshot()` captures resumable state.
 3. `resumeSession(input, snapshot)` continues the exact queue, entity/buff,
    pending-action, trigger, RNG and numerical-branch state. It must call
-   `assertResumeCompatible`, which rejects non-resumable snapshots and any
-   run/scenario/engine identity mismatch. Bounded-step results must preserve
+   `assertResumeCompatible`, which rejects non-resumable snapshots, any
+   run/scenario/engine identity mismatch, or policy progress whose policy ID,
+   revision or exact step IDs differ from the scenario. Bounded-step results must preserve
    the snapshot interruption state and exact reason; a progress result cannot
    claim cancellation or carry an unrelated interruption reason. `run(input)`
    is the synchronous convenience entry point, not a second simulator.
@@ -162,14 +170,15 @@ status with a reason/result state; it is never published as a complete score.
 ## Numeric results and replay
 
 `MetricValue` is tagged as `value`, `censored`, `undefined` or `not-applicable`.
-There is no JSON `Infinity` or `NaN`. A complete killed result must carry a
+There is no JSON `Infinity`, `NaN` or negative combat metric. A complete killed result must carry a
 finite, non-negative, uncensored TTK. A complete non-kill result must be
 right-censored with a censored TTK; interrupted/invalid results use invalid
 censoring with an undefined or not-applicable TTK. Contradictory
 kill/censoring combinations are rejected. Result metrics cover damage, DPS,
 TTK, time to first death and time to final elimination. A complete result must
 carry a value (or valid right-censoring for a time metric) for the objective's
-primary metric. An exact transfer also rejects a
+primary metric. Every censored metric must use the transferred objective's
+horizon. An exact transfer also rejects a
 complete right-censored non-kill when the objective uses `fail-if-not-killed`.
 Objective, horizon, censoring and aggregation remain in the result's run
 context.
@@ -185,6 +194,8 @@ not retain queued or pending work. Every terminal snapshot requires a matching
 typed result, and step envelopes require the full result payload to equal the
 snapshot result. A snapshot is data only and is safe for worker structured
 clone and JSON replay.
+Top-level snapshot buffs must exactly match the canonical entity-owned buff
+state; they cannot disagree on stacks, sources or expiry.
 
 `ExactComparisonTransferSchema` is itself versioned and carries the selected
 complete `CombatResult`, its `ResolvedScenario`, `RunManifest` and candidate

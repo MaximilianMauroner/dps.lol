@@ -9,7 +9,19 @@ import type {
 /** A deterministic, side-effect-free port set for contract consumers. */
 export function createMockPorts(): CombatKernelPorts {
   const eventsByRunId = new Map<string, TraceEvent[]>();
-  const scheduled = new Map<string, import("../../src/domain/contracts").ScheduledEvent>();
+  const scheduledByRunId = new Map<
+    string,
+    Map<string, import("../../src/domain/contracts").ScheduledEvent>
+  >();
+  const resourceValues = new Map<string, number>();
+  const rngDrawCounts = new Map<string, number>();
+  const timersFor = (runId: string) => {
+    const existing = scheduledByRunId.get(runId);
+    if (existing) return existing;
+    const created = new Map<string, import("../../src/domain/contracts").ScheduledEvent>();
+    scheduledByRunId.set(runId, created);
+    return created;
+  };
 
   return {
     stats: {
@@ -35,22 +47,30 @@ export function createMockPorts(): CombatKernelPorts {
       },
     },
     resources: {
-      apply: (mutation) => ({
-        accepted: true,
-        entityId: mutation.entityId,
-        resourceId: mutation.resourceId,
-        previous: 100,
-        current: Math.max(0, 100 + mutation.delta),
-        reason: null,
-      }),
+      apply: (mutation, context) => {
+        const key = `${context.runId}\u0000${mutation.entityId}\u0000${mutation.resourceId}`;
+        const previous = resourceValues.get(key) ?? 100;
+        const current = Math.max(0, previous + mutation.delta);
+        resourceValues.set(key, current);
+        return {
+          accepted: true,
+          entityId: mutation.entityId,
+          resourceId: mutation.resourceId,
+          previous,
+          current,
+          reason: null,
+        };
+      },
     },
     timers: {
-      schedule: ({ event }) => {
+      schedule: ({ event, replacesEventId }, context) => {
+        const scheduled = timersFor(context.runId);
+        if (replacesEventId !== null) scheduled.delete(replacesEventId);
         scheduled.set(event.eventId, event);
       },
-      cancel: (eventId) => scheduled.delete(eventId),
-      peek: () =>
-        [...scheduled.values()].sort(
+      cancel: (eventId, context) => timersFor(context.runId).delete(eventId),
+      peek: (context) =>
+        [...timersFor(context.runId).values()].sort(
           (left, right) => left.timeMs - right.timeMs || left.sequence - right.sequence,
         )[0] ?? null,
     },
@@ -63,18 +83,26 @@ export function createMockPorts(): CombatKernelPorts {
       }),
     },
     targeting: {
-      select: (request: TargetingRequest) => ({
-        targetEntityIds:
+      select: (request: TargetingRequest) => {
+        const enemies = request.visibleState.entities.filter((entity) => entity.team === "enemy");
+        const targetEntityIds =
           request.selector.kind === "entity"
             ? [request.selector.entityId]
             : request.selector.kind === "self"
               ? [request.selector.actorId]
-              : request.visibleState.entities
-                  .filter((entity) => entity.team === "enemy")
-                  .map((entity) => entity.entityId),
-        rejected: false,
-        reason: null,
-      }),
+              : request.selector.kind === "lowest-health-visible-enemy"
+                ? enemies
+                    .sort(
+                      (left, right) =>
+                        left.health.current / left.health.maximum -
+                          right.health.current / right.health.maximum ||
+                        left.entityId.localeCompare(right.entityId),
+                    )
+                    .slice(0, 1)
+                    .map((entity) => entity.entityId)
+                : enemies.map((entity) => entity.entityId);
+        return { targetEntityIds, rejected: false, reason: null };
+      },
     },
     lifecycle: {
       apply: (transition: LifecycleTransition) => ({
@@ -89,11 +117,16 @@ export function createMockPorts(): CombatKernelPorts {
       dispatch: () => ({ accepted: true, emittedCommands: [], reason: null }),
     },
     rng: {
-      draw: ({ streamId, draws }) => ({
-        streamId,
-        values: Array.from({ length: draws }, () => 0.5),
-        nextDrawCount: draws,
-      }),
+      draw: ({ streamId, draws }, context) => {
+        const key = `${context.runId}\u0000${streamId}`;
+        const nextDrawCount = (rngDrawCounts.get(key) ?? 0) + draws;
+        rngDrawCounts.set(key, nextDrawCount);
+        return {
+          streamId,
+          values: Array.from({ length: draws }, () => 0.5),
+          nextDrawCount,
+        };
+      },
     },
     trace: {
       record: (event, context) => {

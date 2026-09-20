@@ -249,6 +249,17 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   if (canonicalJson(run.evaluationMode) !== canonicalJson(scenario.effective.evaluationMode)) {
     mismatches.push("run and scenario evaluation configuration differ");
   }
+  if (snapshot.policyProgress.policyId !== scenario.effective.policy.policyId) {
+    mismatches.push("snapshot policy progress policyId differs from scenario policy");
+  }
+  if (snapshot.policyProgress.revision !== scenario.effective.policy.revision) {
+    mismatches.push("snapshot policy progress revision differs from scenario policy");
+  }
+  const progressStepIds = snapshot.policyProgress.steps.map((step) => step.stepId);
+  const policyStepIds = scenario.effective.policy.steps.map((step) => step.stepId);
+  if (canonicalJson(progressStepIds) !== canonicalJson(policyStepIds)) {
+    mismatches.push("snapshot policy progress step IDs differ from scenario policy");
+  }
 
   const identities: ReadonlyArray<[string, string, string]> = [
     ["runId", snapshot.runId, run.runId],

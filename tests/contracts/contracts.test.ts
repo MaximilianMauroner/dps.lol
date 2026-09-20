@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   ActionPolicySchema,
+  ActionCommandSchema,
   assertResumableSnapshot,
   assertResumeCompatible,
   CombatResultSchema,
   ContractValidationError,
+  DamageResolutionSchema,
   EngineCommandSchema,
   EngineEventSchema,
   EngineStepResultSchema,
@@ -53,7 +55,7 @@ function visiblePolicyStateFixture() {
     schemaVersion: 1,
     atTimeMs: 100,
     actorEntityId: "actor",
-    visibility: samplePolicy.visibility,
+    visibility: clone(samplePolicy.visibility),
     entities: [
       {
         entityId: "actor",
@@ -1074,5 +1076,211 @@ describe("P01 versioned contract fixtures", () => {
     expect(ports.trace.snapshot("run-002").events.map((event) => event.eventId)).toEqual([
       "event-002",
     ]);
+  });
+
+  test("binds unique policy steps and resumable progress to the scenario policy", () => {
+    const duplicateStep = clone(samplePolicy);
+    duplicateStep.steps[1]!.stepId = duplicateStep.steps[0]!.stepId;
+    expect(() => parseContract(ActionPolicySchema, duplicateStep)).toThrow(
+      /action step IDs must be unique/,
+    );
+
+    for (const mutate of [
+      (snapshot: typeof sampleSnapshot) => {
+        snapshot.policyProgress.policyId = "foreign-policy";
+      },
+      (snapshot: typeof sampleSnapshot) => {
+        snapshot.policyProgress.revision += 1;
+      },
+      (snapshot: typeof sampleSnapshot) => {
+        snapshot.policyProgress.nextStepId = "cast-w";
+        snapshot.policyProgress.steps.pop();
+      },
+    ]) {
+      const snapshot = clone(sampleSnapshot);
+      mutate(snapshot);
+      expect(() =>
+        assertResumeCompatible(
+          { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+          snapshot,
+        ),
+      ).toThrow(ResumeCompatibilityError);
+    }
+  });
+
+  test("requires one consistent snapshot buff representation", () => {
+    const conflicting = clone(sampleSnapshot);
+    conflicting.buffs[0]!.stacks += 1;
+    expect(() => parseContract(EngineSnapshotSchema, conflicting)).toThrow(
+      /top-level buffs must exactly match entity buff state/,
+    );
+  });
+
+  test("rejects invalid metric values and mismatched censored time horizons", () => {
+    const negative = clone(censoredResult);
+    negative.metrics.damage = { status: "value", value: -1 };
+    expect(() => parseContract(CombatResultSchema, negative)).toThrow(/expected number to be >=0/);
+
+    const transfer = clone(sampleTransfer);
+    transfer.run.objective.kind = "first-death";
+    transfer.run.objective.primaryMetric = "time-to-first-death";
+    transfer.resolvedScenario.effective.objective = clone(transfer.run.objective);
+    transfer.result.objective = "first-death";
+    transfer.result.metrics.timeToFirstDeath = { status: "censored", horizonMs: 4000 };
+    expect(() => parseContract(ExactComparisonTransferSchema, transfer)).toThrow(
+      /censored metric must match the transferred objective horizon/,
+    );
+  });
+
+  test("requires complete trace causes to reference earlier events", () => {
+    for (const causeEventId of ["missing-event", "event-002"] as const) {
+      const invalid = clone(sampleTrace);
+      invalid.events[0]!.causeEventIds = [causeEventId];
+      expect(() => parseContract(TraceSchema, invalid)).toThrow(
+        /causes must reference an earlier event/,
+      );
+    }
+    const forward = clone(sampleTrace);
+    forward.events[0]!.causeEventIds = ["event-002"];
+    expect(() => parseContract(TraceSchema, forward)).toThrow(/earlier event/);
+  });
+
+  test("makes tie tolerance, selector actors, and seeded algorithms unambiguous", () => {
+    const missingTolerance = clone(sampleScenario);
+    missingTolerance.objective.tieTolerance = null;
+    expect(() => parseContract(ScenarioSpecSchema, missingTolerance)).toThrow(
+      /requires a numeric tolerance/,
+    );
+
+    const exactWithTolerance = clone(sampleScenario);
+    exactWithTolerance.objective.tiePolicy = "exact";
+    expect(() => parseContract(ScenarioSpecSchema, exactWithTolerance)).toThrow(
+      /exact tie policy cannot carry a tolerance/,
+    );
+
+    expect(() =>
+      parseContract(ActionCommandSchema, {
+        kind: "basic-attack",
+        actorId: "actor",
+        target: { kind: "self", actorId: "enemy" },
+      }),
+    ).toThrow(/selector actor must match/);
+
+    const invalidSeeded = clone(sampleScenario);
+    invalidSeeded.evaluationMode = {
+      kind: "seeded-trajectory",
+      random: { kind: "seeded", algorithm: "none", seed: "seed", trialCount: 1 },
+      approximation: null,
+    };
+    expect(() => parseContract(ScenarioSpecSchema, invalidSeeded)).toThrow(
+      /requires a random algorithm/,
+    );
+  });
+
+  test("rejects retroactive commands, reversed run timestamps, and contradictory empty inventory", () => {
+    expect(() =>
+      parseContract(EngineCommandSchema, {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: "retroactive",
+        issuedAtMs: 1000,
+        causeEventIds: [],
+        event: {
+          eventId: "past-event",
+          timeMs: 500,
+          sequence: 1,
+          phase: "impact",
+          kind: "damage",
+          payload: {},
+          causeEventIds: [],
+        },
+      }),
+    ).toThrow(/cannot precede command issue time/);
+
+    const reversed = clone(sampleRun);
+    reversed.completedAt = "2026-09-18T23:59:59Z";
+    expect(() => parseContract(RunManifestSchema, reversed)).toThrow(/cannot precede createdAt/);
+
+    const contradictory = clone(transformedCopiedAbility);
+    contradictory.inventoryOrigin = "empty";
+    expect(() => parseContract(EntityStateSchema, contradictory)).toThrow(
+      /empty inventory origin requires an empty inventory/,
+    );
+  });
+
+  test("reconciles damage totals and death state", () => {
+    expect(() =>
+      parseContract(DamageResolutionSchema, {
+        attempted: 10,
+        absorbed: 0,
+        prevented: 0,
+        applied: 10,
+        overkill: 20,
+        targetHealthAfter: 0,
+        killed: true,
+      }),
+    ).toThrow(/totals must reconcile/);
+    expect(() =>
+      parseContract(DamageResolutionSchema, {
+        attempted: 10,
+        absorbed: 0,
+        prevented: 0,
+        applied: 10,
+        overkill: 0,
+        targetHealthAfter: 10,
+        killed: true,
+      }),
+    ).toThrow(/death state must match/);
+  });
+
+  test("mock ports isolate and accumulate mutable state deterministically", () => {
+    const ports = createMockPorts();
+    const otherRun = { ...mockPortContext, runId: "run-002" };
+    const event = clone(sampleSnapshot.queue.entries[0]!);
+    const replacement = { ...event, eventId: "replacement", timeMs: 500, sequence: 4 };
+    ports.timers.schedule({ event, replacesEventId: null }, mockPortContext);
+    ports.timers.schedule({ event: replacement, replacesEventId: event.eventId }, mockPortContext);
+    ports.timers.schedule({ event, replacesEventId: null }, otherRun);
+    expect(ports.timers.peek(mockPortContext)?.eventId).toBe("replacement");
+    expect(ports.timers.peek(otherRun)?.eventId).toBe(event.eventId);
+    expect(ports.timers.cancel(event.eventId, mockPortContext)).toBe(false);
+
+    expect(ports.rng.draw({ streamId: "combat", draws: 3 }, mockPortContext).nextDrawCount).toBe(3);
+    expect(ports.rng.draw({ streamId: "combat", draws: 2 }, mockPortContext).nextDrawCount).toBe(5);
+    expect(ports.rng.draw({ streamId: "combat", draws: 1 }, otherRun).nextDrawCount).toBe(1);
+
+    const mutation = { entityId: "actor", resourceId: "mana", delta: -60, reason: "cast" };
+    expect(ports.resources.apply(mutation, mockPortContext)).toMatchObject({
+      previous: 100,
+      current: 40,
+    });
+    expect(ports.resources.apply(mutation, mockPortContext)).toMatchObject({
+      previous: 40,
+      current: 0,
+    });
+    expect(ports.resources.apply(mutation, otherRun)).toMatchObject({
+      previous: 100,
+      current: 40,
+    });
+  });
+
+  test("mock lowest-health targeting returns one deterministic enemy", () => {
+    const ports = createMockPorts();
+    const visibleState = visiblePolicyStateFixture();
+    visibleState.entities.push({
+      ...clone(visibleState.entities[1]!),
+      entityId: "enemy-low",
+      health: { current: 100, maximum: 1000, shield: 0 },
+    });
+    visibleState.visibility.visibleEntityIds.push("enemy-low");
+    const result = ports.targeting.select(
+      {
+        actor: transformedCopiedAbility,
+        selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
+        visibleState: parseContract(PolicyVisibleStateSchema, visibleState),
+      },
+      mockPortContext,
+    );
+    expect(result.targetEntityIds).toEqual(["enemy-low"]);
   });
 });

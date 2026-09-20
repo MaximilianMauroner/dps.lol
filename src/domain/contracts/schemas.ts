@@ -342,6 +342,13 @@ export const EntityStateSchema = z
       .filter((item) => item.state === "equipped" && item.slot >= 0)
       .map((item) => String(item.slot));
     addDuplicateIdIssues(equippedSlots, "inventory", "equipped inventory slot", context);
+    if (value.inventoryOrigin === "empty" && value.inventory.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["inventory"],
+        message: "empty inventory origin requires an empty inventory",
+      });
+    }
     const statKeys = Object.keys(value.stats).sort();
     const provenanceKeys = Object.keys(value.statProvenance).sort();
     for (const statKey of statKeys) {
@@ -484,45 +491,59 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
   ]),
 );
 
-export const ActionCommandSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("basic-attack"),
-      actorId: identifier,
-      target: TargetSelectorSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("ability"),
-      actorId: identifier,
-      abilityId: identifier,
-      target: TargetSelectorSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("item-active"),
-      actorId: identifier,
-      itemInstanceId: identifier,
-      target: TargetSelectorSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("move"),
-      actorId: identifier,
-      destination: PositionSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("wait"),
-      actorId: identifier,
-      durationMs: positiveInteger,
-    })
-    .strict(),
-]);
+export const ActionCommandSchema = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("basic-attack"),
+        actorId: identifier,
+        target: TargetSelectorSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("ability"),
+        actorId: identifier,
+        abilityId: identifier,
+        target: TargetSelectorSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("item-active"),
+        actorId: identifier,
+        itemInstanceId: identifier,
+        target: TargetSelectorSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("move"),
+        actorId: identifier,
+        destination: PositionSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("wait"),
+        actorId: identifier,
+        durationMs: positiveInteger,
+      })
+      .strict(),
+  ])
+  .superRefine((value, context) => {
+    if (
+      "target" in value &&
+      value.target.kind !== "entity" &&
+      value.target.actorId !== value.actorId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["target", "actorId"],
+        message: "selector actor must match the command actor",
+      });
+    }
+  });
 export type ActionCommand = z.infer<typeof ActionCommandSchema>;
 
 export const ActionStepSchema = z
@@ -556,6 +577,12 @@ export const ActionPolicySchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    addDuplicateIdIssues(
+      value.steps.map((step) => step.stepId),
+      "steps",
+      "action step",
+      context,
+    );
     const priorities = value.steps.map((step) => step.priority);
     if (new Set(priorities).size !== priorities.length) {
       context.addIssue({
@@ -587,6 +614,7 @@ export const ObjectiveSpecSchema = z
     censoring: z.enum(["right-censored", "fail-if-not-killed"]),
     aggregation: z.enum(["weighted-mean", "median", "coverage-then-ttk"]),
     tiePolicy: z.enum(["exact", "within-tolerance"]),
+    tieTolerance: nonNegativeNumber.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -614,6 +642,20 @@ export const ObjectiveSpecSchema = z
         message: `${value.kind} must use ${expectedMetric}`,
       });
     }
+    if (value.tiePolicy === "within-tolerance" && value.tieTolerance === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["tieTolerance"],
+        message: "within-tolerance tie policy requires a numeric tolerance",
+      });
+    }
+    if (value.tiePolicy === "exact" && value.tieTolerance !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["tieTolerance"],
+        message: "exact tie policy cannot carry a tolerance",
+      });
+    }
   });
 export type ObjectiveSpec = z.infer<typeof ObjectiveSpecSchema>;
 
@@ -629,7 +671,9 @@ export const DeterministicRandomSchema = z
 export const SeededRandomSchema = z
   .object({
     kind: z.literal("seeded"),
-    algorithm: identifier,
+    algorithm: identifier.refine((value) => value !== "none", {
+      message: "seeded random configuration requires a random algorithm",
+    }),
     seed: identifier,
     trialCount: positiveInteger,
   })
@@ -1072,6 +1116,13 @@ export const RunManifestSchema = z
         message: "incomplete runs cannot carry completedAt",
       });
     }
+    if (value.completedAt !== null && Date.parse(value.completedAt) < Date.parse(value.createdAt)) {
+      context.addIssue({
+        code: "custom",
+        path: ["completedAt"],
+        message: "completedAt cannot precede createdAt",
+      });
+    }
     if (canonicalJson(value.random) !== canonicalJson(value.evaluationMode.random)) {
       context.addIssue({
         code: "custom",
@@ -1149,7 +1200,24 @@ export const DamageResolutionSchema = z
     targetHealthAfter: nonNegativeNumber,
     killed: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const accounted = value.absorbed + value.prevented + value.applied + value.overkill;
+    if (Math.abs(value.attempted - accounted) > 1e-9) {
+      context.addIssue({
+        code: "custom",
+        path: ["attempted"],
+        message: "damage resolution totals must reconcile",
+      });
+    }
+    if (value.killed !== (value.targetHealthAfter === 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["killed"],
+        message: "damage death state must match zero target health",
+      });
+    }
+  });
 export type DamageResolution = z.infer<typeof DamageResolutionSchema>;
 
 export const TraceEffectSchema = z.discriminatedUnion("kind", [
@@ -1241,6 +1309,21 @@ export const TraceSchema = z
         message: "trace event IDs must be globally unique",
       });
     }
+    if (!value.truncated) {
+      const eventIndexById = new Map(value.events.map((event, index) => [event.eventId, index]));
+      for (const [index, event] of value.events.entries()) {
+        for (const [causeIndex, causeEventId] of event.causeEventIds.entries()) {
+          const predecessorIndex = eventIndexById.get(causeEventId);
+          if (predecessorIndex === undefined || predecessorIndex >= index) {
+            context.addIssue({
+              code: "custom",
+              path: ["events", index, "causeEventIds", causeIndex],
+              message: "complete trace causes must reference an earlier event",
+            });
+          }
+        }
+      }
+    }
     for (let index = 1; index < value.events.length; index += 1) {
       const previous = value.events[index - 1]!;
       const current = value.events[index]!;
@@ -1273,7 +1356,7 @@ export const TraceSchema = z
 export type Trace = z.infer<typeof TraceSchema>;
 
 export const MetricValueSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("value"), value: finiteNumber }).strict(),
+  z.object({ status: z.literal("value"), value: nonNegativeNumber }).strict(),
   z.object({ status: z.literal("censored"), horizonMs: positiveInteger }).strict(),
   z.object({ status: z.literal("undefined"), reason: z.string().min(1) }).strict(),
   z.object({ status: z.literal("not-applicable"), reason: z.string().min(1) }).strict(),
@@ -1626,6 +1709,20 @@ export const EngineSnapshotSchema = z
         });
       }
     }
+    const nestedBuffs = value.entities.flatMap((entity) => entity.buffs);
+    const sortBuffs = (buffs: BuffState[]) =>
+      [...buffs].sort((left, right) => {
+        const leftKey = `${left.ownerEntityId}\u0000${left.buffId}`;
+        const rightKey = `${right.ownerEntityId}\u0000${right.buffId}`;
+        return leftKey.localeCompare(rightKey);
+      });
+    if (canonicalJson(sortBuffs(value.buffs)) !== canonicalJson(sortBuffs(nestedBuffs))) {
+      context.addIssue({
+        code: "custom",
+        path: ["buffs"],
+        message: "snapshot top-level buffs must exactly match entity buff state",
+      });
+    }
     for (const [index, trigger] of value.triggerState.entries()) {
       if (!knownEntityIds.has(trigger.ownerEntityId)) {
         context.addIssue({
@@ -1930,48 +2027,58 @@ export const PolicyVisibleStateSchema = z
   });
 export type PolicyVisibleState = z.infer<typeof PolicyVisibleStateSchema>;
 
-export const EngineCommandSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
-      kind: z.literal("apply-damage"),
-      commandId: identifier,
-      issuedAtMs: nonNegativeInteger,
-      causeEventIds: uniqueIdentifiers,
-      packet: DamagePacketSchema,
-    })
-    .strict(),
-  z
-    .object({
-      schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
-      kind: z.literal("schedule-event"),
-      commandId: identifier,
-      issuedAtMs: nonNegativeInteger,
-      causeEventIds: uniqueIdentifiers,
-      event: ScheduledEventSchema,
-    })
-    .strict(),
-  z
-    .object({
-      schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
-      kind: z.literal("cancel-event"),
-      commandId: identifier,
-      issuedAtMs: nonNegativeInteger,
-      causeEventIds: uniqueIdentifiers,
-      eventId: identifier,
-    })
-    .strict(),
-  z
-    .object({
-      schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
-      kind: z.literal("trace"),
-      commandId: identifier,
-      issuedAtMs: nonNegativeInteger,
-      causeEventIds: uniqueIdentifiers,
-      event: TraceEventSchema,
-    })
-    .strict(),
-]);
+export const EngineCommandSchema = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
+        kind: z.literal("apply-damage"),
+        commandId: identifier,
+        issuedAtMs: nonNegativeInteger,
+        causeEventIds: uniqueIdentifiers,
+        packet: DamagePacketSchema,
+      })
+      .strict(),
+    z
+      .object({
+        schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
+        kind: z.literal("schedule-event"),
+        commandId: identifier,
+        issuedAtMs: nonNegativeInteger,
+        causeEventIds: uniqueIdentifiers,
+        event: ScheduledEventSchema,
+      })
+      .strict(),
+    z
+      .object({
+        schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
+        kind: z.literal("cancel-event"),
+        commandId: identifier,
+        issuedAtMs: nonNegativeInteger,
+        causeEventIds: uniqueIdentifiers,
+        eventId: identifier,
+      })
+      .strict(),
+    z
+      .object({
+        schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
+        kind: z.literal("trace"),
+        commandId: identifier,
+        issuedAtMs: nonNegativeInteger,
+        causeEventIds: uniqueIdentifiers,
+        event: TraceEventSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((value, context) => {
+    if (value.kind === "schedule-event" && value.event.timeMs < value.issuedAtMs) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "timeMs"],
+        message: "scheduled events cannot precede command issue time",
+      });
+    }
+  });
 export type EngineCommand = z.infer<typeof EngineCommandSchema>;
 
 export const EngineEventSchema = z
@@ -2175,15 +2282,14 @@ export const ExactComparisonTransferSchema = z
         message: "run and result must share objective identity",
       });
     }
-    if (
-      value.result.metrics.ttk.status === "censored" &&
-      value.result.metrics.ttk.horizonMs !== value.run.objective.horizonMs
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["result", "metrics", "ttk", "horizonMs"],
-        message: "censored TTK horizon must match the transferred objective horizon",
-      });
+    for (const [metricName, metric] of Object.entries(value.result.metrics)) {
+      if (metric.status === "censored" && metric.horizonMs !== value.run.objective.horizonMs) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "metrics", metricName, "horizonMs"],
+          message: "censored metric must match the transferred objective horizon",
+        });
+      }
     }
     if (
       canonicalJson(value.run.objective) !==
