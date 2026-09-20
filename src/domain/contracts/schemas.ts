@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { types as nodeUtilTypes } from "node:util";
 
 /**
  * P01 freezes the wire shape, not the complete combat implementation. Later
@@ -227,6 +226,7 @@ export const ResourceStateSchema = z
       });
     }
   });
+export type ResourceState = z.infer<typeof ResourceStateSchema>;
 
 export const BuffStateSchema = z
   .object({
@@ -1749,6 +1749,13 @@ export const CombatResultSchema = z
         message: "a non-kill result cannot carry a finite TTK value",
       });
     }
+    if (value.metrics.timeToElimination.status === "value") {
+      context.addIssue({
+        code: "custom",
+        path: ["metrics", "timeToElimination"],
+        message: "a non-kill result cannot carry a finite time to elimination",
+      });
+    }
     if (value.censoring === "right-censored") {
       if (value.status !== "complete" || ttkStatus !== "censored") {
         context.addIssue({
@@ -1883,6 +1890,7 @@ export const EventQueueSnapshotSchema = z
 export const PendingActionSchema = z
   .object({
     actionId: identifier,
+    continuationEventId: identifier.nullable(),
     command: ActionCommandSchema,
     state: z.enum(["scheduled", "windup", "interrupted", "complete"]),
     startedAtMs: nonNegativeInteger,
@@ -2134,6 +2142,18 @@ export const EngineSnapshotSchema = z
       }
     }
     for (const [index, pending] of value.pendingActions.entries()) {
+      if (["scheduled", "windup"].includes(pending.state)) {
+        if (
+          pending.continuationEventId === null ||
+          !value.queue.entries.some((event) => event.eventId === pending.continuationEventId)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["pendingActions", index, "continuationEventId"],
+            message: "active pending actions require a queued continuation event",
+          });
+        }
+      }
       if (pending.state !== "scheduled" && pending.startedAtMs > value.currentTimeMs) {
         context.addIssue({
           code: "custom",
@@ -2534,6 +2554,16 @@ export const EngineCommandSchema = z
         message: "scheduled events cannot precede command issue time",
       });
     }
+    if (
+      (value.kind === "schedule-event" || value.kind === "trace") &&
+      value.causeEventIds.some((cause) => !value.event.causeEventIds.includes(cause))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "causeEventIds"],
+        message: "nested events must preserve every command cause",
+      });
+    }
   });
 export type EngineCommand = z.infer<typeof EngineCommandSchema>;
 
@@ -2919,6 +2949,7 @@ export const WorkerMessageSchema = z.discriminatedUnion("direction", [
     .object({
       schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
       direction: z.literal("command"),
+      runId: identifier,
       payload: EngineCommandSchema,
     })
     .strict(),
@@ -3108,9 +3139,6 @@ function assertStructuredCloneSafe(value: unknown): void {
 
 function assertAccessorAndProxySafe(value: unknown, seen = new Set<object>()): void {
   if (value === null || typeof value !== "object" || seen.has(value)) return;
-  if (nodeUtilTypes.isProxy(value)) {
-    throw new TypeError("canonical JSON requires structured-clone-safe data");
-  }
   seen.add(value);
   for (const key of Reflect.ownKeys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);

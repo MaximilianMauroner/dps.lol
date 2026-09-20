@@ -420,6 +420,7 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
   pendingActions: [
     {
       actionId: "action-001",
+      continuationEventId: "event-003",
       command: {
         kind: "wait",
         actorId: "actor",

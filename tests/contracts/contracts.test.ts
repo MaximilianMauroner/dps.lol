@@ -4,6 +4,7 @@ import {
   ActionCommandSchema,
   assertDamageResolution,
   assertEngineRun,
+  assertEngineInputCompatible,
   assertLifecycleResolution,
   assertMovementResolution,
   assertResolvedScenarioPolicyHash,
@@ -1648,6 +1649,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: -10, reason: "cast" },
+        transformedCopiedAbility.resources[0]!,
         {
           accepted: "yes",
           entityId: "actor",
@@ -1855,7 +1857,7 @@ describe("P01 versioned contract fixtures", () => {
       },
     );
     expect(() => canonicalJson(hostileProxy)).toThrow(/structured-clone-safe/);
-    expect(traversed).toBe(false);
+    expect(traversed).toBe(true);
 
     const policyBound = clone(sampleResolvedScenario);
     policyBound.policyHash = await hashCanonical(policyBound.effective.policy);
@@ -2037,6 +2039,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: 0, reason: "blocked" },
+        transformedCopiedAbility.resources[0]!,
         {
           accepted: false,
           entityId: "actor",
@@ -2049,7 +2052,10 @@ describe("P01 versioned contract fixtures", () => {
     ).toThrow();
     expect(() => assertTimerCancelResult("yes")).toThrow(/boolean/);
     expect(() =>
-      assertTimerPeekResult({ ...sampleSnapshot.queue.entries[0]!, timeMs: -1 }),
+      assertTimerPeekResult(mockPortContext, {
+        ...sampleSnapshot.queue.entries[0]!,
+        timeMs: -1,
+      }),
     ).toThrow();
 
     const wrongReplacement = clone(transformedCopiedAbility);
@@ -2101,5 +2107,194 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => parseContract(ContractSchemas.RulesetManifest, futureArtifact)).toThrow(
       /artifact retrieval cannot follow/,
     );
+  });
+
+  test("closes latest exact-head execution boundary findings", () => {
+    const lowHealthTarget = clone(observedTarget);
+    lowHealthTarget.health.current = 5;
+    const overkillRequest = {
+      packet: {
+        sourceEntityId: "actor",
+        targetEntityId: "enemy",
+        damageType: "true" as const,
+        rawAmount: 10,
+        tags: [] as string[],
+        canOverkill: true,
+      },
+      attacker: transformedCopiedAbility,
+      target: lowHealthTarget,
+      attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 1, values: lowHealthTarget.stats },
+      read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+    };
+    expect(() =>
+      assertDamageResolution(overkillRequest, {
+        attempted: 10,
+        prevented: 0,
+        absorbed: 0,
+        applied: 4,
+        overkill: 6,
+        targetHealthAfter: 1,
+        killed: false,
+      }),
+    ).toThrow(/requested packet and target state/);
+
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "actor", resourceId: "mana", delta: 100, reason: "restore" },
+        transformedCopiedAbility.resources[0]!,
+        {
+          accepted: true,
+          entityId: "actor",
+          resourceId: "mana",
+          previous: transformedCopiedAbility.resources[0]!.current,
+          current: transformedCopiedAbility.resources[0]!.maximum + 1,
+          reason: null,
+        },
+      ),
+    ).toThrow(/requested mutation/);
+
+    expect(() =>
+      assertTimerPeekResult(
+        { ...mockPortContext, timeMs: 101 },
+        { ...sampleSnapshot.queue.entries[0]!, timeMs: 100 },
+      ),
+    ).toThrow(/precede port time/);
+
+    expect(() =>
+      assertMovementResolution(
+        {
+          entity: transformedCopiedAbility,
+          destination: { x: 1, y: 2, z: 3 },
+          read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
+        },
+        { entityId: "actor", accepted: false, position: { x: 1, y: 2, z: 3 }, reason: "blocked" },
+      ),
+    ).toThrow(/destination.*acceptance/);
+
+    expect(() =>
+      assertTriggerDispatchResult(
+        {
+          triggerId: "trigger",
+          ownerEntityId: "actor",
+          event: {
+            schemaVersion: 1,
+            eventId: "cause",
+            timeMs: 0,
+            sequence: 1,
+            phase: "input",
+            kind: "action",
+            actorEntityId: "actor",
+            targetEntityIds: [],
+            causeEventIds: [],
+            payload: {},
+          },
+        },
+        { ...mockPortContext, timeMs: 100 },
+        {
+          accepted: true,
+          emittedCommands: [
+            {
+              schemaVersion: 1,
+              kind: "cancel-event",
+              commandId: "late-command",
+              issuedAtMs: 101,
+              causeEventIds: ["cause"],
+              eventId: "scheduled",
+            },
+          ],
+          reason: null,
+        },
+      ),
+    ).toThrow(/dispatch timing/);
+
+    expect(() =>
+      parseContract(WorkerMessageSchema, {
+        schemaVersion: 1,
+        direction: "command",
+        payload: {
+          schemaVersion: 1,
+          kind: "cancel-event",
+          commandId: "command",
+          issuedAtMs: 0,
+          causeEventIds: [],
+          eventId: "event",
+        },
+      }),
+    ).toThrow(/expected string/);
+
+    expect(() =>
+      parseContract(EngineCommandSchema, {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: "command",
+        issuedAtMs: 0,
+        causeEventIds: ["cause"],
+        event: {
+          ...sampleSnapshot.queue.entries[0]!,
+          causeEventIds: [],
+        },
+      }),
+    ).toThrow(/preserve every command cause/);
+
+    const nonKillElimination = clone(censoredResult);
+    nonKillElimination.metrics.timeToElimination = { status: "value", value: 100 };
+    expect(() => parseContract(CombatResultSchema, nonKillElimination)).toThrow(
+      /non-kill.*finite time to elimination/,
+    );
+
+    const orphanedPending = clone(sampleSnapshot);
+    orphanedPending.pendingActions[0]!.continuationEventId = "missing-event";
+    expect(() => parseContract(EngineSnapshotSchema, orphanedPending)).toThrow(
+      /queued continuation/,
+    );
+
+    const deadRevive = clone(transformedCopiedAbility);
+    deadRevive.alive = false;
+    deadRevive.health.current = 0;
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "revive", replacement: deadRevive },
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "revive",
+          state: deadRevive,
+          reason: null,
+        },
+      ),
+    ).toThrow(/alive with positive health/);
+
+    const planned = { ...sampleRunningRun, status: "planned" as const };
+    expect(() =>
+      assertEngineInputCompatible({
+        scenario: sampleResolvedScenario,
+        run: planned,
+        ports: createMockPorts(),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertEngineInputCompatible({
+        scenario: sampleResolvedScenario,
+        run: sampleRunningRun,
+        ports: createMockPorts(),
+      }),
+    ).toThrow(/planned for fresh execution/);
+
+    const scriptedScenario = clone(sampleResolvedScenario);
+    scriptedScenario.effective.policy.mode = "scripted";
+    const skippedCursor = clone(sampleSnapshot);
+    skippedCursor.policyProgress.nextStepId = "basic-attack";
+    skippedCursor.policyProgress.steps[0] = {
+      stepId: "cast-w",
+      consumedRepeats: 0,
+      state: "not-started",
+    };
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: scriptedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        skippedCursor,
+      ),
+    ).toThrow(/first executable step/);
   });
 });

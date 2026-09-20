@@ -27,6 +27,7 @@ import {
   type HashVerifiedResolvedScenario,
   type PolicyVisibleState,
   type RunManifest,
+  type ResourceState,
   type RngStreamSnapshot,
   type ScheduledEvent,
   type StepBudget,
@@ -102,16 +103,20 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
     throw new TypeError("damage request identities must agree");
   }
   const resolution = parseContract(DamageResolutionSchema, value);
-  const expectedHealth = Math.max(0, request.target.health.current - resolution.applied);
-  const expectedAbsorbed = Math.min(
-    request.packet.rawAmount - resolution.prevented,
-    request.target.health.shield,
-  );
+  const postMitigation = request.packet.rawAmount - resolution.prevented;
+  const expectedAbsorbed = Math.min(postMitigation, request.target.health.shield);
+  const postShield = postMitigation - expectedAbsorbed;
+  const expectedApplied = Math.min(postShield, request.target.health.current);
+  const expectedOverkill = postShield - expectedApplied;
+  const expectedHealth = request.target.health.current - expectedApplied;
   if (
     resolution.attempted !== request.packet.rawAmount ||
+    postMitigation < 0 ||
     resolution.absorbed !== expectedAbsorbed ||
-    resolution.applied > request.target.health.current ||
-    resolution.targetHealthAfter !== expectedHealth
+    resolution.applied !== expectedApplied ||
+    resolution.overkill !== expectedOverkill ||
+    resolution.targetHealthAfter !== expectedHealth ||
+    resolution.killed !== (expectedHealth === 0)
   ) {
     throw new TypeError("damage resolution must match the requested packet and target state");
   }
@@ -141,15 +146,18 @@ export interface ResourcePort {
 
 export function assertResourceResolution(
   mutation: ResourceMutation,
+  resource: ResourceState,
   value: unknown,
 ): ResourceResolution {
   const result = parseContract(ResourceResolutionSchema, value);
   const expected = result.accepted
-    ? Math.max(0, result.previous + mutation.delta)
-    : result.previous;
+    ? Math.min(resource.maximum, Math.max(0, resource.current + mutation.delta))
+    : resource.current;
   if (
     result.entityId !== mutation.entityId ||
     result.resourceId !== mutation.resourceId ||
+    result.resourceId !== resource.resourceId ||
+    result.previous !== resource.current ||
     result.current !== expected
   )
     throw new TypeError("resource resolution must be finite and match the requested mutation");
@@ -172,8 +180,11 @@ export function assertTimerCancelResult(value: unknown): boolean {
   return value;
 }
 
-export function assertTimerPeekResult(value: unknown): ScheduledEvent | null {
-  return value === null ? null : parseContract(ScheduledEventSchema, value);
+export function assertTimerPeekResult(context: PortContext, value: unknown): ScheduledEvent | null {
+  if (value === null) return null;
+  const event = parseContract(ScheduledEventSchema, value);
+  if (event.timeMs < context.timeMs) throw new TypeError("peeked timer cannot precede port time");
+  return event;
 }
 
 export type MovementRequest = Readonly<{
@@ -216,7 +227,8 @@ export function assertMovementResolution(
     typeof result.accepted !== "boolean" ||
     (result.reason !== null && typeof result.reason !== "string") ||
     result.accepted !== (result.reason === null) ||
-    (result.accepted && canonicalJson(position) !== canonicalJson(request.destination))
+    canonicalJson(position) !==
+      canonicalJson(result.accepted ? request.destination : request.entity.position)
   )
     throw new TypeError(
       "movement resolution must match the requested entity, read, destination, and acceptance",
@@ -347,6 +359,13 @@ export function assertLifecycleResolution(
     throw new TypeError("lifecycle replacement identity must match the transition entity");
   }
   if (
+    transition.transition === "revive" &&
+    transition.replacement !== null &&
+    (!transition.replacement.alive || transition.replacement.health.current <= 0)
+  ) {
+    throw new TypeError("revive replacement must be alive with positive health");
+  }
+  if (
     (["spawn", "revive", "transform"].includes(transition.transition) &&
       transition.replacement === null) ||
     (["despawn", "death"].includes(transition.transition) && transition.replacement !== null)
@@ -411,7 +430,7 @@ export function assertTriggerDispatchResult(
   );
   for (const command of commands) {
     if (
-      command.issuedAtMs < context.timeMs ||
+      command.issuedAtMs !== context.timeMs ||
       !command.causeEventIds.includes(request.event.eventId)
     ) {
       throw new TypeError("trigger commands must preserve dispatch timing and causal identity");
@@ -492,6 +511,36 @@ export class ResumeCompatibilityError extends Error {
   }
 }
 
+function engineInputMismatches(
+  scenario: ReturnType<typeof ResolvedScenarioSchema.parse>,
+  run: RunManifest,
+): string[] {
+  const mismatches: string[] = [];
+  if (run.resolvedScenarioHash !== scenario.resolvedScenarioHash)
+    mismatches.push("run and scenario resolvedScenarioHash differ");
+  if (run.rulesetHash !== scenario.effective.rulesetManifestHash)
+    mismatches.push("run and scenario rulesetHash differ");
+  if (run.cohortHash !== scenario.effective.cohort.contentHash)
+    mismatches.push("run and scenario cohortHash differ");
+  if (run.policyHash !== scenario.policyHash) mismatches.push("run and scenario policyHash differ");
+  if (run.candidateInputHash !== scenario.candidateInputHash)
+    mismatches.push("run and scenario candidateInputHash differ");
+  if (canonicalJson(run.objective) !== canonicalJson(scenario.effective.objective))
+    mismatches.push("run and scenario objective configuration differ");
+  if (canonicalJson(run.evaluationMode) !== canonicalJson(scenario.effective.evaluationMode))
+    mismatches.push("run and scenario evaluation configuration differ");
+  return mismatches;
+}
+
+/** Validates all replay-affecting identities before starting fresh execution. */
+export function assertEngineInputCompatible(input: EngineInput): void {
+  const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
+  const run = parseContract(RunManifestSchema, input.run);
+  const mismatches = engineInputMismatches(scenario, run);
+  if (run.status !== "planned") mismatches.unshift("run must be planned for fresh execution");
+  if (mismatches.length > 0) throw new ResumeCompatibilityError(mismatches);
+}
+
 /**
  * Validates the snapshot and all replay-affecting identities before a kernel
  * is allowed to resume it. Concrete engines must call this guard at their
@@ -504,25 +553,7 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   const mismatches: string[] = [];
 
   if (run.status !== "running") mismatches.push("run must be running to resume");
-  if (run.resolvedScenarioHash !== scenario.resolvedScenarioHash) {
-    mismatches.push("run and scenario resolvedScenarioHash differ");
-  }
-  if (run.rulesetHash !== scenario.effective.rulesetManifestHash) {
-    mismatches.push("run and scenario rulesetHash differ");
-  }
-  if (run.cohortHash !== scenario.effective.cohort.contentHash) {
-    mismatches.push("run and scenario cohortHash differ");
-  }
-  if (run.policyHash !== scenario.policyHash) mismatches.push("run and scenario policyHash differ");
-  if (run.candidateInputHash !== scenario.candidateInputHash) {
-    mismatches.push("run and scenario candidateInputHash differ");
-  }
-  if (canonicalJson(run.objective) !== canonicalJson(scenario.effective.objective)) {
-    mismatches.push("run and scenario objective configuration differ");
-  }
-  if (canonicalJson(run.evaluationMode) !== canonicalJson(scenario.effective.evaluationMode)) {
-    mismatches.push("run and scenario evaluation configuration differ");
-  }
+  mismatches.push(...engineInputMismatches(scenario, run));
   if (snapshot.policyProgress.policyId !== scenario.effective.policy.policyId) {
     mismatches.push("snapshot policy progress policyId differs from scenario policy");
   }
@@ -557,6 +588,14 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
         (step.maxRepeats !== null && progress.consumedRepeats >= step.maxRepeats))
     ) {
       mismatches.push(`snapshot policy step ${step.stepId} is active at its repeat limit`);
+    }
+  }
+  if (scenario.effective.policy.mode === "scripted") {
+    const firstExecutable = snapshot.policyProgress.steps.find((step) =>
+      ["not-started", "active"].includes(step.state),
+    );
+    if (snapshot.policyProgress.nextStepId !== (firstExecutable?.stepId ?? null)) {
+      mismatches.push("scripted policy cursor must reference the first executable step");
     }
   }
   for (const branch of snapshot.numericalBranches) {
@@ -608,10 +647,11 @@ export function assertEngineRun(value: unknown): EngineRun {
 }
 
 export interface CombatEngine {
+  /** Must call assertEngineInputCompatible before starting fresh execution. */
   createSession(input: EngineInput): EngineSession;
   /** Must call assertResumeCompatible and reject non-resumable snapshots. */
   resumeSession(input: EngineInput, snapshot: EngineSnapshot): EngineSession;
-  /** Synchronous convenience entry point over the same session semantics. */
+  /** Must call assertEngineInputCompatible before starting fresh execution. */
   run(input: EngineInput): EngineRun;
 }
 
