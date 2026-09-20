@@ -468,6 +468,32 @@ export const CohortSpecSchema = z
         });
       }
     }
+    if (value.weighting === "uniform-member") {
+      const expectedWeight = value.normalized ? 1 / value.members.length : value.members[0]!.weight;
+      if (value.members.some((member) => Math.abs(member.weight - expectedWeight) > 1e-9)) {
+        context.addIssue({
+          code: "custom",
+          path: ["members"],
+          message: "uniform-member cohorts require equal member weights",
+        });
+      }
+    }
+    if (value.weighting === "match-balanced") {
+      const weightsByMatch = new Map<string, number>();
+      for (const member of value.members)
+        weightsByMatch.set(
+          member.matchKey,
+          (weightsByMatch.get(member.matchKey) ?? 0) + member.weight,
+        );
+      const totals = [...weightsByMatch.values()];
+      if (totals.some((weight) => Math.abs(weight - totals[0]!) > 1e-9)) {
+        context.addIssue({
+          code: "custom",
+          path: ["members"],
+          message: "match-balanced cohorts require equal aggregate weight per match",
+        });
+      }
+    }
   });
 export type CohortSpec = z.infer<typeof CohortSpecSchema>;
 
@@ -1335,6 +1361,33 @@ export const ResourceResolutionSchema = z
       });
     }
   });
+
+export const LifecycleResolutionSchema = z
+  .object({
+    accepted: z.boolean(),
+    entityId: identifier,
+    transition: z.enum(["spawn", "despawn", "death", "revive", "transform"]),
+    state: EntityStateSchema.nullable(),
+    reason: z.string().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.accepted !== (value.reason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "accepted lifecycle responses require no rejection reason",
+      });
+    }
+  });
+
+export const RngResultSchema = z
+  .object({
+    streamId: identifier,
+    values: z.array(finiteNumber.min(0).lt(1)),
+    nextDrawCount: nonNegativeInteger,
+  })
+  .strict();
 
 export const TraceEffectSchema = z.discriminatedUnion("kind", [
   z
@@ -2960,9 +3013,8 @@ function assertStructuredCloneSafe(value: unknown): void {
 
 /** Stable key ordering is shared by hashes, cache identities, and replay files. */
 export function canonicalJson(value: unknown): string {
-  const serialized = canonicalize(value, new Set<object>());
   assertStructuredCloneSafe(value);
-  return serialized;
+  return canonicalize(value, new Set<object>());
 }
 
 export async function hashCanonical(value: unknown): Promise<ContentHash> {
@@ -2972,4 +3024,21 @@ export async function hashCanonical(value: unknown): Promise<ContentHash> {
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
   return `sha256:${hex}`;
+}
+
+export async function assertResolvedScenarioPolicyHash(value: unknown): Promise<ResolvedScenario> {
+  const scenario = parseContract(ResolvedScenarioSchema, value);
+  const actual = await hashCanonical(scenario.effective.policy);
+  if (scenario.policyHash !== actual) {
+    throw new ContractValidationError(
+      new z.ZodError([
+        {
+          code: "custom",
+          path: ["policyHash"],
+          message: "policyHash must match canonical effective policy bytes",
+        },
+      ]),
+    );
+  }
+  return scenario;
 }

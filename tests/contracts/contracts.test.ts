@@ -4,6 +4,8 @@ import {
   ActionCommandSchema,
   assertDamageResolution,
   assertEngineRun,
+  assertLifecycleResolution,
+  assertResolvedScenarioPolicyHash,
   assertRngResult,
   assertResourceResolution,
   assertTargetingResolution,
@@ -594,7 +596,7 @@ describe("P01 versioned contract fixtures", () => {
     Object.defineProperty(hiddenArrayProperty, "hidden", { value: 2, enumerable: false });
     expect(() => canonicalJson(hiddenArrayProperty)).toThrow(/non-enumerable/);
 
-    expect(() => canonicalJson({ executable: () => 1 })).toThrow(/function/);
+    expect(() => canonicalJson({ executable: () => 1 })).toThrow(/structured-clone-safe/);
     expect(() => canonicalJson({ nonfinite: Number.NaN })).toThrow(/non-finite/);
     expect(() => canonicalJson(new Map([["key", 1]]))).toThrow(/plain objects/);
 
@@ -604,7 +606,7 @@ describe("P01 versioned contract fixtures", () => {
       enumerable: true,
     });
     expect(() => parseContract(PolicyVisibleStateSchema, schemaBoundaryExecutable)).toThrow(
-      /function/,
+      /structured-clone-safe/,
     );
 
     const schemaBoundaryHidden = clone(visiblePolicyStateFixture());
@@ -1521,7 +1523,7 @@ describe("P01 versioned contract fixtures", () => {
         values: [0.1, Number.NaN],
         nextDrawCount: 9,
       }),
-    ).toThrow(/RNG result/);
+    ).toThrow(/non-finite/);
 
     const request = {
       packet: {
@@ -1708,5 +1710,152 @@ describe("P01 versioned contract fixtures", () => {
     const subMillisecond = clone(sampleRun);
     subMillisecond.createdAt = "2026-09-19T00:00:00.0009Z";
     expect(() => parseContract(RunManifestSchema, subMillisecond)).toThrow(/explicit timezone/);
+  });
+
+  test("enforces selector, port identity, RNG, and lifecycle boundaries", () => {
+    const visibleState = visiblePolicyStateFixture();
+    visibleState.entities.push({
+      ...clone(visibleState.entities[1]!),
+      entityId: "enemy-low",
+      health: { current: 1, maximum: 100, shield: 0 },
+    });
+    visibleState.visibility.visibleEntityIds.push("enemy-low");
+    const parsedVisible = parseContract(PolicyVisibleStateSchema, visibleState);
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
+          visibleState: parsedVisible,
+        },
+        { targetEntityIds: ["enemy"], rejected: false, reason: null },
+      ),
+    ).toThrow(/dynamic selector/);
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "all-visible-enemies", actorId: "actor" },
+          visibleState: parsedVisible,
+        },
+        { targetEntityIds: ["actor"], rejected: false, reason: null },
+      ),
+    ).toThrow(/dynamic selector|visible entities/);
+
+    const ports = createMockPorts();
+    const command = {
+      packet: {
+        sourceEntityId: "enemy",
+        targetEntityId: "enemy",
+        damageType: "physical" as const,
+        rawAmount: 10,
+        tags: [] as string[],
+        canOverkill: false,
+      },
+      attacker: transformedCopiedAbility,
+      target: observedTarget,
+      attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+      read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+    };
+    expect(() =>
+      assertDamageResolution(command, {
+        attempted: 10,
+        absorbed: 0,
+        prevented: 0,
+        applied: 10,
+        overkill: 0,
+        targetHealthAfter: observedTarget.health.current - 10,
+        killed: false,
+      }),
+    ).toThrow(/identities/);
+
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "enemy", transition: "death", replacement: null },
+        ports.lifecycle.apply(
+          { entityId: "actor", transition: "death", replacement: null },
+          mockPortContext,
+        ),
+      ),
+    ).toThrow(/requested identity/);
+
+    const executableRng = {
+      streamId: "combat",
+      values: [0.5],
+      nextDrawCount: 1,
+      extra: () => 1,
+    };
+    expect(() => assertRngResult({ streamId: "combat", draws: 1 }, 0, executableRng)).toThrow();
+
+    const seededScenario = clone(sampleResolvedScenario);
+    seededScenario.effective.evaluationMode = {
+      kind: "seeded-trajectory",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "expected", trialCount: 1 },
+      approximation: null,
+    };
+    const seededRun = clone(sampleRunningRun);
+    seededRun.evaluationMode = clone(seededScenario.effective.evaluationMode);
+    seededRun.random = clone(seededRun.evaluationMode.random);
+    const seededSnapshot = clone(sampleSnapshot);
+    seededSnapshot.numericalBranches[0]!.mode = "seeded-trajectory";
+    seededSnapshot.rngStreams[0]!.algorithm = "xorshift32";
+    seededSnapshot.rngStreams[0]!.seed = "wrong";
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: seededScenario, run: seededRun, ports: createMockPorts() },
+        seededSnapshot,
+      ),
+    ).toThrow(/evaluation seed/);
+  });
+
+  test("enforces cohort modes, proxy rejection order, and effective policy hashes", async () => {
+    const uniform = clone(sampleScenario);
+    uniform.cohort.weighting = "uniform-member";
+    uniform.cohort.members.push({
+      ...clone(uniform.cohort.members[0]!),
+      memberId: "member-002",
+      weight: 0.25,
+    });
+    uniform.cohort.members[0]!.weight = 0.75;
+    expect(() => parseContract(ScenarioSpecSchema, uniform)).toThrow(/equal member weights/);
+
+    const matchBalanced = clone(sampleScenario);
+    matchBalanced.cohort.weighting = "match-balanced";
+    matchBalanced.cohort.members[0]!.weight = 1 / 3;
+    matchBalanced.cohort.members.push(
+      {
+        ...clone(matchBalanced.cohort.members[0]!),
+        memberId: "member-002",
+        matchKey: "match-001",
+      },
+      {
+        ...clone(matchBalanced.cohort.members[0]!),
+        memberId: "member-003",
+        matchKey: "match-002",
+      },
+    );
+    expect(() => parseContract(ScenarioSpecSchema, matchBalanced)).toThrow(
+      /equal aggregate weight per match/,
+    );
+
+    let traversed = false;
+    const hostileProxy = new Proxy(
+      { value: 1 },
+      {
+        ownKeys() {
+          traversed = true;
+          return ["value"];
+        },
+      },
+    );
+    expect(() => canonicalJson(hostileProxy)).toThrow(/structured-clone-safe/);
+    expect(traversed).toBe(false);
+
+    const policyBound = clone(sampleResolvedScenario);
+    policyBound.policyHash = await hashCanonical(policyBound.effective.policy);
+    await expect(assertResolvedScenarioPolicyHash(policyBound)).resolves.toBeDefined();
+    policyBound.effective.policy.steps[0]!.priority += 100;
+    await expect(assertResolvedScenarioPolicyHash(policyBound)).rejects.toThrow(/policyHash/);
   });
 });

@@ -3,9 +3,11 @@ import {
   canonicalJson,
   DamageResolutionSchema,
   EngineRunSchema,
+  LifecycleResolutionSchema,
   parseContract,
   ResolvedScenarioSchema,
   ResourceResolutionSchema,
+  RngResultSchema,
   RunManifestSchema,
   StatsSnapshotSchema,
   type CombatResult,
@@ -87,6 +89,15 @@ export interface DamagePort {
 }
 
 export function assertDamageResolution(request: DamageRequest, value: unknown): DamageResolution {
+  if (
+    request.packet.sourceEntityId !== request.attacker.entityId ||
+    request.packet.targetEntityId !== request.target.entityId ||
+    request.attackerStats.entityId !== request.attacker.entityId ||
+    request.targetStats.entityId !== request.target.entityId ||
+    request.read.entityId !== request.target.entityId
+  ) {
+    throw new TypeError("damage request identities must agree");
+  }
   const resolution = parseContract(DamageResolutionSchema, value);
   const expectedHealth = Math.max(0, request.target.health.current - resolution.applied);
   const expectedAbsorbed = Math.min(request.packet.rawAmount, request.target.health.shield);
@@ -219,12 +230,36 @@ export function assertTargetingResolution(
       : request.selector.kind === "entity"
         ? request.selector.entityId
         : null;
+  let dynamicExpected: string[] | null = null;
+  const livingEnemies = request.visibleState.entities.filter(
+    (entity) => entity.team === "enemy" && entity.alive,
+  );
+  if (request.selector.kind === "all-visible-enemies") {
+    dynamicExpected = livingEnemies.map((entity) => entity.entityId);
+  } else if (request.selector.kind === "lowest-health-visible-enemy") {
+    dynamicExpected = livingEnemies
+      .sort((left, right) => {
+        const difference =
+          left.health.current / left.health.maximum - right.health.current / right.health.maximum;
+        if (difference !== 0) return difference;
+        return left.entityId < right.entityId ? -1 : left.entityId > right.entityId ? 1 : 0;
+      })
+      .slice(0, 1)
+      .map((entity) => entity.entityId);
+  }
   if (
     !result.rejected &&
     expected !== null &&
     (result.targetEntityIds.length !== 1 || result.targetEntityIds[0] !== expected)
   ) {
     throw new TypeError("targeting selection must match explicit selector semantics");
+  }
+  if (
+    !result.rejected &&
+    dynamicExpected !== null &&
+    canonicalJson(result.targetEntityIds) !== canonicalJson(dynamicExpected)
+  ) {
+    throw new TypeError("targeting selection must match dynamic selector semantics");
   }
   return result as TargetingResolution;
 }
@@ -245,6 +280,23 @@ export type LifecycleResolution = Readonly<{
 
 export interface LifecyclePort {
   apply(transition: LifecycleTransition, context: PortContext): LifecycleResolution;
+}
+
+export function assertLifecycleResolution(
+  transition: LifecycleTransition,
+  value: unknown,
+): LifecycleResolution {
+  const result = parseContract(LifecycleResolutionSchema, value);
+  if (result.entityId !== transition.entityId || result.transition !== transition.transition) {
+    throw new TypeError("lifecycle resolution must match the requested identity and transition");
+  }
+  if (
+    (result.accepted && canonicalJson(result.state) !== canonicalJson(transition.replacement)) ||
+    (!result.accepted && result.state !== null)
+  ) {
+    throw new TypeError("lifecycle resolution state must match the accepted request");
+  }
+  return result;
 }
 
 export type TriggerDispatch = Readonly<{
@@ -279,21 +331,17 @@ export function assertRngResult(
   previousDrawCount: number,
   value: unknown,
 ): RngResult {
-  if (typeof value !== "object" || value === null)
-    throw new TypeError("RNG result must be an object");
-  const result = value as Partial<RngResult>;
+  const result = parseContract(RngResultSchema, value);
   if (
     result.streamId !== request.streamId ||
-    !Array.isArray(result.values) ||
     result.values.length !== request.draws ||
-    result.values.some((draw) => !Number.isFinite(draw) || draw < 0 || draw >= 1) ||
     result.nextDrawCount !== previousDrawCount + request.draws
   ) {
     throw new TypeError(
       "RNG result must match the requested stream, draw count, and cumulative counter",
     );
   }
-  return result as RngResult;
+  return result;
 }
 
 export interface RngPort {
@@ -410,6 +458,12 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   for (const stream of snapshot.rngStreams) {
     if (stream.algorithm !== scenario.effective.evaluationMode.random.algorithm) {
       mismatches.push(`snapshot RNG stream ${stream.streamId} differs from evaluation algorithm`);
+    }
+    if (
+      scenario.effective.evaluationMode.random.kind === "seeded" &&
+      stream.seed !== scenario.effective.evaluationMode.random.seed
+    ) {
+      mismatches.push(`snapshot RNG stream ${stream.streamId} differs from evaluation seed`);
     }
   }
   if (snapshot.currentTimeMs > scenario.effective.objective.horizonMs) {
