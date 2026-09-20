@@ -16,6 +16,7 @@ import {
   parseContract,
   type Provenance,
 } from "../../src/domain/contracts";
+import type { HashVerifiedResolvedScenario } from "../../src/domain/contracts";
 
 export const HASH_A = `sha256:${"a".repeat(64)}`;
 export const HASH_B = `sha256:${"b".repeat(64)}`;
@@ -290,7 +291,7 @@ export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
     policyHash: fixtureProvenance,
     candidateInputHash: fixtureProvenance,
   },
-});
+}) as HashVerifiedResolvedScenario;
 
 export const sampleRun = parseContract(RunManifestSchema, {
   schemaVersion: 1,

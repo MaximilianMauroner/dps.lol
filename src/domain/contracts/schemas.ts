@@ -161,6 +161,15 @@ export const RulesetManifestSchema = z
   .strict()
   .superRefine((value, context) => {
     const artifactIds = value.sourceArtifacts.map((artifact) => artifact.artifactId);
+    for (const [index, artifact] of value.sourceArtifacts.entries()) {
+      if (Date.parse(artifact.retrievedAt) > Date.parse(value.generatedAt)) {
+        context.addIssue({
+          code: "custom",
+          path: ["sourceArtifacts", index, "retrievedAt"],
+          message: "artifact retrieval cannot follow manifest generation",
+        });
+      }
+    }
     if (new Set(artifactIds).size !== artifactIds.length) {
       context.addIssue({
         code: "custom",
@@ -643,7 +652,15 @@ export const ActionStepSchema = z
     repeat: z.boolean(),
     maxRepeats: positiveInteger.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.repeat && value.maxRepeats !== null)
+      context.addIssue({
+        code: "custom",
+        path: ["maxRepeats"],
+        message: "one-shot policy steps require a null repeat limit",
+      });
+  });
 
 export const PolicyVisibilitySchema = z
   .object({
@@ -797,7 +814,9 @@ export const EvaluationModeSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("seeded-trajectory"),
-      random: SeededRandomSchema,
+      random: SeededRandomSchema.refine((random) => random.trialCount === 1, {
+        message: "seeded trajectories require exactly one trial",
+      }),
       approximation: z.null(),
     })
     .strict(),
@@ -1209,6 +1228,10 @@ export const ResolvedScenarioSchema = z
     }
   });
 export type ResolvedScenario = z.infer<typeof ResolvedScenarioSchema>;
+declare const verifiedScenarioHashes: unique symbol;
+export type HashVerifiedResolvedScenario = ResolvedScenario & {
+  readonly [verifiedScenarioHashes]: true;
+};
 
 export const RunManifestSchema = z
   .object({
@@ -1369,8 +1392,8 @@ export const ResourceResolutionSchema = z
     accepted: z.boolean(),
     entityId: identifier,
     resourceId: identifier,
-    previous: finiteNumber,
-    current: finiteNumber,
+    previous: nonNegativeNumber,
+    current: nonNegativeNumber,
     reason: z.string().min(1).nullable(),
   })
   .strict()
@@ -1651,6 +1674,19 @@ export const CombatResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    const firstDeath = value.metrics.timeToFirstDeath;
+    const elimination = value.metrics.timeToElimination;
+    if (
+      firstDeath.status === "value" &&
+      elimination.status === "value" &&
+      firstDeath.value > elimination.value
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["metrics", "timeToFirstDeath"],
+        message: "first death cannot follow final elimination",
+      });
+    }
     if (value.status === "complete") {
       const primaryMetric =
         value.objective === "sustained-dps"
@@ -2211,6 +2247,19 @@ export const EngineSnapshotSchema = z
       }
     }
     if (value.result !== null) {
+      for (const [metricName, metric] of Object.entries(value.result.metrics)) {
+        if (
+          ["ttk", "timeToFirstDeath", "timeToElimination"].includes(metricName) &&
+          metric.status === "value" &&
+          metric.value > value.currentTimeMs
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["result", "metrics", metricName],
+            message: "snapshot result times cannot exceed currentTimeMs",
+          });
+        }
+      }
       if (
         value.result.runId !== value.runId ||
         value.result.resolvedScenarioHash !== value.resolvedScenarioHash ||
@@ -3088,7 +3137,9 @@ export async function hashCanonical(value: unknown): Promise<ContentHash> {
   return `sha256:${hex}`;
 }
 
-export async function assertResolvedScenarioPolicyHash(value: unknown): Promise<ResolvedScenario> {
+export async function assertResolvedScenarioPolicyHash(
+  value: unknown,
+): Promise<HashVerifiedResolvedScenario> {
   const scenario = parseContract(ResolvedScenarioSchema, value);
   const [actualPolicyHash, actualScenarioHash] = await Promise.all([
     hashCanonical(scenario.effective.policy),
@@ -3109,5 +3160,5 @@ export async function assertResolvedScenarioPolicyHash(value: unknown): Promise<
       ]),
     );
   }
-  return scenario;
+  return scenario as HashVerifiedResolvedScenario;
 }

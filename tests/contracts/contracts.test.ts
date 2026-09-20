@@ -10,12 +10,15 @@ import {
   assertRngResult,
   assertResourceResolution,
   assertTargetingResolution,
+  assertTimerCancelResult,
+  assertTimerPeekResult,
   assertTriggerDispatchResult,
   assertStatsSnapshot,
   assertResumableSnapshot,
   assertResumeCompatible,
   CombatResultSchema,
   ContractValidationError,
+  ContractSchemas,
   DamageResolutionSchema,
   EngineCommandSchema,
   EngineEventSchema,
@@ -1988,6 +1991,115 @@ describe("P01 versioned contract fixtures", () => {
     scenarioHash.effective.objective.horizonMs += 1;
     await expect(assertResolvedScenarioPolicyHash(scenarioHash)).rejects.toThrow(
       /resolved scenario hashes/,
+    );
+  });
+
+  test("closes Prometheus exact-head runtime and cross-field findings", () => {
+    const shielded = clone(observedTarget);
+    shielded.health.shield = 80;
+    const damageRequest = {
+      packet: {
+        sourceEntityId: "actor",
+        targetEntityId: "enemy",
+        damageType: "physical" as const,
+        rawAmount: 100,
+        tags: [] as string[],
+        canOverkill: false,
+      },
+      attacker: transformedCopiedAbility,
+      target: shielded,
+      attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 1, values: shielded.stats },
+      read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+    };
+    expect(() =>
+      assertDamageResolution(damageRequest, {
+        attempted: 100,
+        prevented: 50,
+        absorbed: 50,
+        applied: 0,
+        overkill: 0,
+        targetHealthAfter: shielded.health.current,
+        killed: false,
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "self", actorId: "enemy" },
+          visibleState: parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture()),
+        },
+        { targetEntityIds: ["enemy"], rejected: false, reason: null },
+      ),
+    ).toThrow(/actor and selector identities/);
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "actor", resourceId: "mana", delta: 0, reason: "blocked" },
+        {
+          accepted: false,
+          entityId: "actor",
+          resourceId: "mana",
+          previous: -1,
+          current: -1,
+          reason: "blocked",
+        },
+      ),
+    ).toThrow();
+    expect(() => assertTimerCancelResult("yes")).toThrow(/boolean/);
+    expect(() =>
+      assertTimerPeekResult({ ...sampleSnapshot.queue.entries[0]!, timeMs: -1 }),
+    ).toThrow();
+
+    const wrongReplacement = clone(transformedCopiedAbility);
+    wrongReplacement.entityId = "other";
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "transform", replacement: wrongReplacement },
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "transform",
+          state: wrongReplacement,
+          reason: null,
+        },
+      ),
+    ).toThrow(/replacement identity/);
+
+    const seededTrials = clone(sampleScenario);
+    seededTrials.evaluationMode = {
+      kind: "seeded-trajectory",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 2 },
+      approximation: null,
+    };
+    expect(() => parseContract(ScenarioSpecSchema, seededTrials)).toThrow(/exactly one trial/);
+
+    const oneShotLimit = clone(samplePolicy);
+    oneShotLimit.steps[0]!.maxRepeats = 2;
+    expect(() => parseContract(ActionPolicySchema, oneShotLimit)).toThrow(/null repeat limit/);
+
+    const futureResult = completeSnapshotForTest();
+    futureResult.currentTimeMs = 100;
+    futureResult.result = clone(censoredResult);
+    futureResult.result.killed = true;
+    futureResult.result.censoring = "not-censored";
+    futureResult.result.metrics.ttk = { status: "value", value: 500 };
+    expect(() => parseContract(EngineSnapshotSchema, futureResult)).toThrow(
+      /cannot exceed currentTimeMs/,
+    );
+
+    const reversedDeaths = clone(censoredResult);
+    reversedDeaths.metrics.timeToFirstDeath = { status: "value", value: 200 };
+    reversedDeaths.metrics.timeToElimination = { status: "value", value: 100 };
+    expect(() => parseContract(CombatResultSchema, reversedDeaths)).toThrow(
+      /first death cannot follow/,
+    );
+
+    const futureArtifact = clone(sampleRuleset);
+    futureArtifact.generatedAt = "2026-09-18T00:00:00Z";
+    expect(() => parseContract(ContractSchemas.RulesetManifest, futureArtifact)).toThrow(
+      /artifact retrieval cannot follow/,
     );
   });
 });

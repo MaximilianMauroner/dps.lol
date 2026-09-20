@@ -9,6 +9,7 @@ import {
   ResolvedScenarioSchema,
   ResourceResolutionSchema,
   RngResultSchema,
+  ScheduledEventSchema,
   PositionSchema,
   RunManifestSchema,
   StatsSnapshotSchema,
@@ -23,8 +24,8 @@ import {
   type EntityState,
   type ExactComparisonTransfer,
   type ItemInstance,
+  type HashVerifiedResolvedScenario,
   type PolicyVisibleState,
-  type ResolvedScenario,
   type RunManifest,
   type RngStreamSnapshot,
   type ScheduledEvent,
@@ -102,7 +103,10 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
   }
   const resolution = parseContract(DamageResolutionSchema, value);
   const expectedHealth = Math.max(0, request.target.health.current - resolution.applied);
-  const expectedAbsorbed = Math.min(request.packet.rawAmount, request.target.health.shield);
+  const expectedAbsorbed = Math.min(
+    request.packet.rawAmount - resolution.prevented,
+    request.target.health.shield,
+  );
   if (
     resolution.attempted !== request.packet.rawAmount ||
     resolution.absorbed !== expectedAbsorbed ||
@@ -161,6 +165,15 @@ export interface TimerPort {
   schedule(request: TimerSchedule, context: PortContext): void;
   cancel(eventId: string, context: PortContext): boolean;
   peek(context: PortContext): ScheduledEvent | null;
+}
+
+export function assertTimerCancelResult(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new TypeError("timer cancellation result must be boolean");
+  return value;
+}
+
+export function assertTimerPeekResult(value: unknown): ScheduledEvent | null {
+  return value === null ? null : parseContract(ScheduledEventSchema, value);
 }
 
 export type MovementRequest = Readonly<{
@@ -236,6 +249,12 @@ export function assertTargetingResolution(
   request: TargetingRequest,
   value: unknown,
 ): TargetingResolution {
+  if (
+    request.actor.entityId !== request.visibleState.actorEntityId ||
+    ("actorId" in request.selector && request.selector.actorId !== request.actor.entityId)
+  ) {
+    throw new TypeError("targeting request actor and selector identities must agree");
+  }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("targeting resolution must be a strict object");
   }
@@ -324,6 +343,16 @@ export function assertLifecycleResolution(
   transition: LifecycleTransition,
   value: unknown,
 ): LifecycleResolution {
+  if (transition.replacement !== null && transition.replacement.entityId !== transition.entityId) {
+    throw new TypeError("lifecycle replacement identity must match the transition entity");
+  }
+  if (
+    (["spawn", "revive", "transform"].includes(transition.transition) &&
+      transition.replacement === null) ||
+    (["despawn", "death"].includes(transition.transition) && transition.replacement !== null)
+  ) {
+    throw new TypeError("lifecycle replacement must match transition semantics");
+  }
   const result = parseContract(LifecycleResolutionSchema, value);
   if (result.entityId !== transition.entityId || result.transition !== transition.transition) {
     throw new TypeError("lifecycle resolution must match the requested identity and transition");
@@ -448,7 +477,7 @@ export type CombatKernelPorts = Readonly<{
 }>;
 
 export type EngineInput = Readonly<{
-  scenario: ResolvedScenario;
+  scenario: HashVerifiedResolvedScenario;
   run: RunManifest;
   ports: CombatKernelPorts;
 }>;
