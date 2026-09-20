@@ -88,6 +88,7 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
   if (
     resolution.attempted !== request.packet.rawAmount ||
     resolution.absorbed > request.target.health.shield ||
+    resolution.applied > request.target.health.current ||
     resolution.targetHealthAfter !== expectedHealth
   ) {
     throw new TypeError("damage resolution must match the requested packet and target state");
@@ -114,6 +115,27 @@ export type ResourceResolution = Readonly<{
 export interface ResourcePort {
   restore(entity: EntityState, context: PortContext): void;
   apply(mutation: ResourceMutation, context: PortContext): ResourceResolution;
+}
+
+export function assertResourceResolution(
+  mutation: ResourceMutation,
+  value: unknown,
+): ResourceResolution {
+  if (typeof value !== "object" || value === null)
+    throw new TypeError("resource resolution must be an object");
+  const result = value as Partial<ResourceResolution>;
+  const expected = Math.max(0, Number(result.previous) + mutation.delta);
+  if (
+    result.entityId !== mutation.entityId ||
+    result.resourceId !== mutation.resourceId ||
+    typeof result.previous !== "number" ||
+    !Number.isFinite(result.previous) ||
+    typeof result.current !== "number" ||
+    !Number.isFinite(result.current) ||
+    result.current !== expected
+  )
+    throw new TypeError("resource resolution must be finite and match the requested mutation");
+  return result as ResourceResolution;
 }
 
 export type TimerSchedule = Readonly<{
@@ -331,6 +353,11 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   for (const branch of snapshot.numericalBranches) {
     if (branch.mode !== scenario.effective.evaluationMode.kind) {
       mismatches.push(`snapshot numerical branch ${branch.branchId} differs from evaluation mode`);
+    }
+  }
+  for (const stream of snapshot.rngStreams) {
+    if (stream.algorithm !== scenario.effective.evaluationMode.random.algorithm) {
+      mismatches.push(`snapshot RNG stream ${stream.streamId} differs from evaluation algorithm`);
     }
   }
 

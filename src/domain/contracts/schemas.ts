@@ -8,8 +8,8 @@ export const CONTRACT_SCHEMA_VERSION = 1 as const;
 
 const finiteNumber = z.number().finite();
 const nonNegativeNumber = finiteNumber.nonnegative();
-const nonNegativeInteger = z.number().int().nonnegative();
-const positiveInteger = z.number().int().positive();
+const nonNegativeInteger = z.number().int().safe().nonnegative();
+const positiveInteger = z.number().int().safe().positive();
 const identifier = z
   .string()
   .min(1)
@@ -756,7 +756,9 @@ export const EvaluationModeSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("sampled-estimate"),
-      random: SeededRandomSchema,
+      random: SeededRandomSchema.refine((random) => random.trialCount >= 2, {
+        message: "sampled estimates require at least two trials",
+      }),
       approximation: z.null(),
       confidenceLevel: finiteNumber.gt(0).lt(1),
     })
@@ -988,6 +990,22 @@ function validateScenarioReferences(
           `buff references unknown source entity ${buff.sourceEntityId}`,
         );
       }
+    }
+  }
+  for (const [entityIndex, entity] of value.entities.entries()) {
+    const visited = new Set<string>([entity.entityId]);
+    let ownerId = entity.ownerEntityId;
+    while (ownerId !== null) {
+      if (visited.has(ownerId)) {
+        addReferenceIssue(
+          context,
+          ["entities", entityIndex, "ownerEntityId"],
+          "entity ownership cannot contain cycles",
+        );
+        break;
+      }
+      visited.add(ownerId);
+      ownerId = entitiesById.get(ownerId)?.ownerEntityId ?? null;
     }
   }
   for (const reference of referencedEntityIds(value.policy)) {
@@ -1627,6 +1645,13 @@ export const EngineRunSchema = z
         message: "engine run status must match its result status",
       });
     }
+    if (value.trace.runId !== value.result.runId) {
+      context.addIssue({
+        code: "custom",
+        path: ["trace", "runId"],
+        message: "engine run trace must match result run identity",
+      });
+    }
   });
 export type EngineRun = z.infer<typeof EngineRunSchema>;
 
@@ -1941,6 +1966,13 @@ export const EngineSnapshotSchema = z
       }
     }
     for (const [index, pending] of value.pendingActions.entries()) {
+      if (pending.state !== "scheduled" && pending.startedAtMs > value.currentTimeMs) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingActions", index, "startedAtMs"],
+          message: "started pending actions cannot begin after snapshot time",
+        });
+      }
       const action = pending.command;
       const actor = entitiesById.get(action.actorId);
       if (!actor) {
@@ -2202,6 +2234,14 @@ export const PolicyVisibleStateSchema = z
         path: ["actorEntityId"],
         message: "policy-visible state must expose its actor entity",
       });
+    } else if (
+      value.entities.find((entity) => entity.entityId === value.actorEntityId)?.team !== "actor"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["actorEntityId"],
+        message: "policy-visible actor must belong to the actor team",
+      });
     }
     const visibleResources = new Set(value.visibleResourceIds);
     for (const [entityIndex, entity] of value.entities.entries()) {
@@ -2348,6 +2388,19 @@ export const EngineStepResultSchema = z
         code: "custom",
         path: ["emittedEvents"],
         message: "emitted event sequences must be unique",
+      });
+    }
+    const queuedIds = new Set(value.snapshot.queue.entries.map((event) => event.eventId));
+    const queuedSequences = new Set(value.snapshot.queue.entries.map((event) => event.sequence));
+    if (
+      value.emittedEvents.some(
+        (event) => queuedIds.has(event.eventId) || queuedSequences.has(event.sequence),
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["emittedEvents"],
+        message: "emitted event identities cannot remain queued",
       });
     }
     for (let index = 1; index < value.emittedEvents.length; index += 1) {
@@ -2545,6 +2598,20 @@ export const ExactComparisonTransferSchema = z
         message: "coverage-first aggregation requires machine-readable kill coverage",
       });
     }
+    if (value.run.objective.aggregation === "coverage-then-ttk" && value.result.coverage !== null) {
+      const cohort = value.resolvedScenario.effective.cohort;
+      const totalWeight = cohort.members.reduce((sum, member) => sum + member.weight, 0);
+      if (
+        value.result.coverage.totalCount !== cohort.members.length ||
+        Math.abs(value.result.coverage.totalWeight - totalWeight) > 1e-12
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "coverage"],
+          message: "coverage denominator must match the transferred cohort",
+        });
+      }
+    }
     for (const [metricName, metric] of Object.entries(value.result.metrics)) {
       if (metric.status === "censored" && metric.horizonMs !== value.run.objective.horizonMs) {
         context.addIssue({
@@ -2576,6 +2643,19 @@ export const ExactComparisonTransferSchema = z
           code: "custom",
           path: ["result", "uncertainty"],
           message: "sampled estimates require matching machine-readable uncertainty",
+        });
+      }
+      const primaryMetric =
+        value.run.objective.primaryMetric === "time-to-first-death"
+          ? "timeToFirstDeath"
+          : value.run.objective.primaryMetric === "time-to-elimination"
+            ? "timeToElimination"
+            : value.run.objective.primaryMetric;
+      if (uncertainty !== null && !(primaryMetric in uncertainty.standardErrors)) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "uncertainty", "standardErrors"],
+          message: "sampled estimates require a standard error for the primary metric",
         });
       }
     } else if (value.result.uncertainty !== null) {

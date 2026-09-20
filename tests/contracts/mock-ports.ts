@@ -25,9 +25,9 @@ export function createMockPorts(): CombatKernelPorts {
 
   return {
     stats: {
-      resolve: ({ entity }) => ({
+      resolve: ({ entity, read }) => ({
         entityId: entity.entityId,
-        revision: 1,
+        revision: read.stateRevision,
         values: { ...entity.stats },
       }),
     },
@@ -104,15 +104,17 @@ export function createMockPorts(): CombatKernelPorts {
               ? [request.selector.actorId]
               : request.selector.kind === "lowest-health-visible-enemy"
                 ? enemies
-                    .sort((left, right) =>
-                      left.health.current / left.health.maximum -
-                        right.health.current / right.health.maximum ||
-                      left.entityId < right.entityId
+                    .sort((left, right) => {
+                      const healthDifference =
+                        left.health.current / left.health.maximum -
+                        right.health.current / right.health.maximum;
+                      if (healthDifference !== 0) return healthDifference;
+                      return left.entityId < right.entityId
                         ? -1
                         : left.entityId > right.entityId
                           ? 1
-                          : 0,
-                    )
+                          : 0;
+                    })
                     .slice(0, 1)
                     .map((entity) => entity.entityId)
                 : enemies.map((entity) => entity.entityId);
