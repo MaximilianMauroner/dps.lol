@@ -5,6 +5,8 @@ import {
   assertDamageResolution,
   assertEngineRun,
   assertRngResult,
+  assertResourceResolution,
+  assertTargetingResolution,
   assertStatsSnapshot,
   assertResumableSnapshot,
   assertResumeCompatible,
@@ -1633,5 +1635,78 @@ describe("P01 versioned contract fixtures", () => {
         wrongMode,
       ),
     ).toThrow(/numerical branch/);
+  });
+
+  test("enforces latest-head request, snapshot, trace, and time invariants", () => {
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "actor", resourceId: "mana", delta: -10, reason: "cast" },
+        {
+          accepted: "yes",
+          entityId: "actor",
+          resourceId: "mana",
+          previous: 100,
+          current: 90,
+          reason: null,
+        },
+      ),
+    ).toThrow();
+
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "self", actorId: "actor" },
+          visibleState: parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture()),
+        },
+        { targetEntityIds: ["enemy"], rejected: false, reason: null },
+      ),
+    ).toThrow(/selector semantics/);
+
+    expect(() =>
+      assertStatsSnapshot(
+        {
+          entity: transformedCopiedAbility,
+          read: { kind: "snapshot", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+        },
+        { entityId: "actor", revision: 1, values: { attackDamage: 150 } },
+      ),
+    ).toThrow(/stats read entity/);
+
+    const traceMismatch = clone(censoredResult);
+    traceMismatch.traceId = "different-trace";
+    expect(() =>
+      assertEngineRun({ status: "complete", result: traceMismatch, trace: sampleTrace }),
+    ).toThrow(/trace identity/);
+
+    const ownershipCycle = clone(sampleSnapshot);
+    ownershipCycle.entities[0]!.ownerEntityId = "enemy";
+    ownershipCycle.entities[1]!.ownerEntityId = "actor";
+    expect(() => parseContract(EngineSnapshotSchema, ownershipCycle)).toThrow(/ownership.*cycles/);
+
+    const pastHorizon = clone(sampleSnapshot);
+    pastHorizon.currentTimeMs = 5001;
+    pastHorizon.queue.entries[0]!.timeMs = 6000;
+    pastHorizon.buffs[0]!.expiresAtMs = null;
+    pastHorizon.entities[0]!.buffs[0]!.expiresAtMs = null;
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        pastHorizon,
+      ),
+    ).toThrow(/objective horizon/);
+
+    const emptyCompleted = clone(sampleSnapshot);
+    emptyCompleted.policyProgress.steps[0]!.consumedRepeats = 0;
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        emptyCompleted,
+      ),
+    ).toThrow(/exactly one execution/);
+
+    const subMillisecond = clone(sampleRun);
+    subMillisecond.createdAt = "2026-09-19T00:00:00.0009Z";
+    expect(() => parseContract(RunManifestSchema, subMillisecond)).toThrow(/explicit timezone/);
   });
 });

@@ -19,7 +19,7 @@ const itemId = z.number().int().positive();
 const timestamp = z
   .string()
   .regex(
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/,
     "must be an ISO-8601 timestamp with an explicit timezone",
   )
   .refine((value) => Number.isFinite(Date.parse(value)), {
@@ -1316,6 +1316,26 @@ export const DamageResolutionSchema = z
   });
 export type DamageResolution = z.infer<typeof DamageResolutionSchema>;
 
+export const ResourceResolutionSchema = z
+  .object({
+    accepted: z.boolean(),
+    entityId: identifier,
+    resourceId: identifier,
+    previous: finiteNumber,
+    current: finiteNumber,
+    reason: z.string().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.accepted !== (value.reason === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "accepted resource responses require no rejection reason",
+      });
+    }
+  });
+
 export const TraceEffectSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -1652,6 +1672,13 @@ export const EngineRunSchema = z
         message: "engine run trace must match result run identity",
       });
     }
+    if (value.result.traceId !== null && value.result.traceId !== value.trace.traceId) {
+      context.addIssue({
+        code: "custom",
+        path: ["trace", "traceId"],
+        message: "engine run trace identity must match result traceId",
+      });
+    }
   });
 export type EngineRun = z.infer<typeof EngineRunSchema>;
 
@@ -1691,7 +1718,7 @@ export const EventQueueSnapshotSchema = z
         message: "queued event sequence IDs must be unique",
       });
     }
-    const maxSequence = Math.max(0, ...sequences);
+    const maxSequence = sequences.reduce((maximum, sequence) => Math.max(maximum, sequence), 0);
     if (value.nextSequence <= maxSequence) {
       context.addIssue({
         code: "custom",
@@ -1924,6 +1951,22 @@ export const EngineSnapshotSchema = z
             message: "snapshot entity buffs must reference known source entities",
           });
         }
+      }
+    }
+    for (const [entityIndex, entity] of value.entities.entries()) {
+      const visited = new Set<string>([entity.entityId]);
+      let ownerId = entity.ownerEntityId;
+      while (ownerId !== null) {
+        if (visited.has(ownerId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["entities", entityIndex, "ownerEntityId"],
+            message: "snapshot entity ownership cannot contain cycles",
+          });
+          break;
+        }
+        visited.add(ownerId);
+        ownerId = entitiesById.get(ownerId)?.ownerEntityId ?? null;
       }
     }
     for (const [index, buff] of value.buffs.entries()) {
@@ -2403,6 +2446,34 @@ export const EngineStepResultSchema = z
         message: "emitted event identities cannot remain queued",
       });
     }
+    const emittedIndexById = new Map(
+      value.emittedEvents.map((event, index) => [event.eventId, index]),
+    );
+    for (const [index, event] of value.emittedEvents.entries()) {
+      if (
+        event.timeMs > value.snapshot.currentTimeMs ||
+        event.sequence >= value.snapshot.queue.nextSequence
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["emittedEvents", index],
+          message: "emitted events must remain behind the snapshot frontier",
+        });
+      }
+      for (const [causeIndex, causeId] of event.causeEventIds.entries()) {
+        const emittedCauseIndex = emittedIndexById.get(causeId);
+        if (
+          (emittedCauseIndex !== undefined && emittedCauseIndex >= index) ||
+          queuedIds.has(causeId)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["emittedEvents", index, "causeEventIds", causeIndex],
+            message: "emitted causes must reference an already executed event",
+          });
+        }
+      }
+    }
     for (let index = 1; index < value.emittedEvents.length; index += 1) {
       const previous = value.emittedEvents[index - 1]!;
       const current = value.emittedEvents[index]!;
@@ -2637,6 +2708,7 @@ export const ExactComparisonTransferSchema = z
       if (
         uncertainty === null ||
         uncertainty.confidenceLevel !== value.run.evaluationMode.confidenceLevel ||
+        uncertainty.effectiveSampleCount < 2 ||
         uncertainty.effectiveSampleCount > value.run.evaluationMode.random.trialCount
       ) {
         context.addIssue({

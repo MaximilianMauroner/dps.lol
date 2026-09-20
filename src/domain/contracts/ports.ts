@@ -5,6 +5,7 @@ import {
   EngineRunSchema,
   parseContract,
   ResolvedScenarioSchema,
+  ResourceResolutionSchema,
   RunManifestSchema,
   StatsSnapshotSchema,
   type CombatResult,
@@ -55,6 +56,9 @@ export type StatsRequest = Readonly<{
 }>;
 
 export function assertStatsSnapshot(request: StatsRequest, value: unknown): StatsSnapshot {
+  if (request.read.entityId !== request.entity.entityId) {
+    throw new TypeError("stats read entity must match the requested entity");
+  }
   const snapshot = parseContract(StatsSnapshotSchema, value);
   if (
     snapshot.entityId !== request.entity.entityId ||
@@ -85,9 +89,10 @@ export interface DamagePort {
 export function assertDamageResolution(request: DamageRequest, value: unknown): DamageResolution {
   const resolution = parseContract(DamageResolutionSchema, value);
   const expectedHealth = Math.max(0, request.target.health.current - resolution.applied);
+  const expectedAbsorbed = Math.min(request.packet.rawAmount, request.target.health.shield);
   if (
     resolution.attempted !== request.packet.rawAmount ||
-    resolution.absorbed > request.target.health.shield ||
+    resolution.absorbed !== expectedAbsorbed ||
     resolution.applied > request.target.health.current ||
     resolution.targetHealthAfter !== expectedHealth
   ) {
@@ -121,21 +126,17 @@ export function assertResourceResolution(
   mutation: ResourceMutation,
   value: unknown,
 ): ResourceResolution {
-  if (typeof value !== "object" || value === null)
-    throw new TypeError("resource resolution must be an object");
-  const result = value as Partial<ResourceResolution>;
-  const expected = Math.max(0, Number(result.previous) + mutation.delta);
+  const result = parseContract(ResourceResolutionSchema, value);
+  const expected = result.accepted
+    ? Math.max(0, result.previous + mutation.delta)
+    : result.previous;
   if (
     result.entityId !== mutation.entityId ||
     result.resourceId !== mutation.resourceId ||
-    typeof result.previous !== "number" ||
-    !Number.isFinite(result.previous) ||
-    typeof result.current !== "number" ||
-    !Number.isFinite(result.current) ||
     result.current !== expected
   )
     throw new TypeError("resource resolution must be finite and match the requested mutation");
-  return result as ResourceResolution;
+  return result;
 }
 
 export type TimerSchedule = Readonly<{
@@ -180,6 +181,52 @@ export type TargetingResolution = Readonly<{
 
 export interface TargetingPort {
   select(request: TargetingRequest, context: PortContext): TargetingResolution;
+}
+
+export function assertTargetingResolution(
+  request: TargetingRequest,
+  value: unknown,
+): TargetingResolution {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("targeting resolution must be a strict object");
+  }
+  canonicalJson(value);
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 3 ||
+    !keys.includes("targetEntityIds") ||
+    !keys.includes("rejected") ||
+    !keys.includes("reason")
+  ) {
+    throw new TypeError("targeting resolution must contain only declared fields");
+  }
+  const result = value as Partial<TargetingResolution>;
+  if (
+    !Array.isArray(result.targetEntityIds) ||
+    typeof result.rejected !== "boolean" ||
+    (result.reason !== null && typeof result.reason !== "string") ||
+    result.rejected !== (result.reason !== null)
+  ) {
+    throw new TypeError("targeting resolution rejection and reason must correlate");
+  }
+  const visible = new Set(request.visibleState.entities.map((entity) => entity.entityId));
+  if (result.targetEntityIds.some((id) => typeof id !== "string" || !visible.has(id))) {
+    throw new TypeError("targeting selections must reference visible entities");
+  }
+  const expected =
+    request.selector.kind === "self"
+      ? request.selector.actorId
+      : request.selector.kind === "entity"
+        ? request.selector.entityId
+        : null;
+  if (
+    !result.rejected &&
+    expected !== null &&
+    (result.targetEntityIds.length !== 1 || result.targetEntityIds[0] !== expected)
+  ) {
+    throw new TypeError("targeting selection must match explicit selector semantics");
+  }
+  return result as TargetingResolution;
 }
 
 export type LifecycleTransition = Readonly<{
@@ -336,6 +383,11 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
     if (!step.repeat && progress.consumedRepeats > 1) {
       mismatches.push(`snapshot policy step ${step.stepId} exceeds its one-shot count`);
     }
+    if (!step.repeat && progress.state === "completed" && progress.consumedRepeats !== 1) {
+      mismatches.push(
+        `snapshot completed one-shot step ${step.stepId} requires exactly one execution`,
+      );
+    }
     if (step.maxRepeats !== null && progress.consumedRepeats > step.maxRepeats) {
       mismatches.push(`snapshot policy step ${step.stepId} exceeds maxRepeats`);
     }
@@ -359,6 +411,9 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
     if (stream.algorithm !== scenario.effective.evaluationMode.random.algorithm) {
       mismatches.push(`snapshot RNG stream ${stream.streamId} differs from evaluation algorithm`);
     }
+  }
+  if (snapshot.currentTimeMs > scenario.effective.objective.horizonMs) {
+    mismatches.push("snapshot currentTimeMs exceeds the objective horizon");
   }
 
   const identities: ReadonlyArray<[string, string, string]> = [
