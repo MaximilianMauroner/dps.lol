@@ -34,13 +34,15 @@ export function createMockPorts(): CombatKernelPorts {
     damage: {
       resolve: ({ packet, target }) => {
         const attempted = packet.rawAmount;
-        const applied = Math.min(attempted, target.health.current);
+        const absorbed = Math.min(attempted, target.health.shield);
+        const afterShield = attempted - absorbed;
+        const applied = Math.min(afterShield, target.health.current);
         return {
           attempted,
-          absorbed: 0,
+          absorbed,
           prevented: 0,
           applied,
-          overkill: attempted - applied,
+          overkill: afterShield - applied,
           targetHealthAfter: target.health.current - applied,
           killed: target.health.current - applied <= 0,
         };
@@ -84,7 +86,9 @@ export function createMockPorts(): CombatKernelPorts {
     },
     targeting: {
       select: (request: TargetingRequest) => {
-        const enemies = request.visibleState.entities.filter((entity) => entity.team === "enemy");
+        const enemies = request.visibleState.entities.filter(
+          (entity) => entity.team === "enemy" && entity.alive,
+        );
         const targetEntityIds =
           request.selector.kind === "entity"
             ? [request.selector.entityId]
@@ -117,6 +121,9 @@ export function createMockPorts(): CombatKernelPorts {
       dispatch: () => ({ accepted: true, emittedCommands: [], reason: null }),
     },
     rng: {
+      restore: (snapshot, context) => {
+        rngDrawCounts.set(`${context.runId}\u0000${snapshot.streamId}`, snapshot.drawCount);
+      },
       draw: ({ streamId, draws }, context) => {
         const key = `${context.runId}\u0000${streamId}`;
         const nextDrawCount = (rngDrawCounts.get(key) ?? 0) + draws;

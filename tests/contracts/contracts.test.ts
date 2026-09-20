@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ActionPolicySchema,
   ActionCommandSchema,
+  assertStatsSnapshot,
   assertResumableSnapshot,
   assertResumeCompatible,
   CombatResultSchema,
@@ -672,6 +673,17 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => parseContract(RunManifestSchema, invalid)).toThrow(/must remain distinct/);
   });
 
+  test("accepts incomplete manifests and requires timezone-qualified timestamps", () => {
+    const incomplete = clone(sampleRun);
+    incomplete.status = "incomplete";
+    incomplete.completedAt = null;
+    expect(parseContract(RunManifestSchema, incomplete).status).toBe("incomplete");
+
+    const localTime = clone(sampleRun);
+    localTime.createdAt = "2026-09-19T00:00:00";
+    expect(() => parseContract(RunManifestSchema, localTime)).toThrow(/explicit timezone/);
+  });
+
   test("validates exact comparison transfer hashes and versioned worker envelopes", () => {
     expect(parseContract(ExactComparisonTransferSchema, clone(sampleTransfer))).toEqual(
       sampleTransfer,
@@ -988,6 +1000,12 @@ describe("P01 versioned contract fixtures", () => {
       /equipped inventory slot IDs must be unique/,
     );
 
+    const negativeSlot = clone(transformedCopiedAbility);
+    negativeSlot.inventory[0]!.slot = -1;
+    expect(() => parseContract(EntityStateSchema, negativeSlot)).toThrow(
+      /equipped items require a real inventory slot/,
+    );
+
     const missingUpgrade = { ...clone(parsedItemInstance), effectiveItemId: 2002, upgrade: null };
     expect(() => parseContract(ItemInstanceSchema, missingUpgrade)).toThrow(
       /requires upgrade metadata/,
@@ -1106,6 +1124,27 @@ describe("P01 versioned contract fixtures", () => {
         ),
       ).toThrow(ResumeCompatibilityError);
     }
+
+    const impossibleRepeatProgress = clone(sampleSnapshot);
+    impossibleRepeatProgress.policyProgress.steps[0]!.consumedRepeats = 2;
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        impossibleRepeatProgress,
+      ),
+    ).toThrow(/one-shot count/);
+  });
+
+  test("requires unique resumable action, trigger, and numerical branch identities", () => {
+    for (const [collection, duplicate] of [
+      ["pendingActions", { ...sampleSnapshot.pendingActions[0] }],
+      ["triggerState", { ...sampleSnapshot.triggerState[0] }],
+      ["numericalBranches", { ...sampleSnapshot.numericalBranches[0] }],
+    ] as const) {
+      const snapshot = clone(sampleSnapshot);
+      snapshot[collection].push(duplicate as never);
+      expect(() => parseContract(EngineSnapshotSchema, snapshot), collection).toThrow(/unique/);
+    }
   });
 
   test("requires one consistent snapshot buff representation", () => {
@@ -1113,6 +1152,13 @@ describe("P01 versioned contract fixtures", () => {
     conflicting.buffs[0]!.stacks += 1;
     expect(() => parseContract(EngineSnapshotSchema, conflicting)).toThrow(
       /top-level buffs must exactly match entity buff state/,
+    );
+
+    const expired = clone(sampleSnapshot);
+    expired.buffs[0]!.expiresAtMs = 99;
+    expired.entities[0]!.buffs[0]!.expiresAtMs = 99;
+    expect(() => parseContract(EngineSnapshotSchema, expired)).toThrow(
+      /snapshot buffs cannot already be expired/,
     );
   });
 
@@ -1132,17 +1178,68 @@ describe("P01 versioned contract fixtures", () => {
     );
   });
 
-  test("requires complete trace causes to reference earlier events", () => {
+  test("validates coverage-first result metadata and sustained DPS windows", () => {
+    const covered = clone(censoredResult);
+    covered.coverage = { killedCount: 1, totalCount: 4, fraction: 0.25 };
+    expect(parseContract(CombatResultSchema, covered).coverage).toEqual(covered.coverage);
+
+    const contradictory = clone(covered);
+    contradictory.coverage!.fraction = 0.5;
+    expect(() => parseContract(CombatResultSchema, contradictory)).toThrow(
+      /fraction must match its counts/,
+    );
+
+    const transfer = clone(sampleTransfer);
+    transfer.run.objective.aggregation = "coverage-then-ttk";
+    transfer.resolvedScenario.effective.objective = clone(transfer.run.objective);
+    expect(() => parseContract(ExactComparisonTransferSchema, transfer)).toThrow(
+      /machine-readable kill coverage/,
+    );
+
+    const noMeasurementWindow = clone(sampleScenario);
+    noMeasurementWindow.objective.kind = "sustained-dps";
+    noMeasurementWindow.objective.primaryMetric = "dps";
+    noMeasurementWindow.objective.warmupMs = noMeasurementWindow.objective.horizonMs;
+    expect(() => parseContract(ScenarioSpecSchema, noMeasurementWindow)).toThrow(
+      /strictly less than the horizon/,
+    );
+  });
+
+  test("validates stats snapshots and entity ownership at runtime boundaries", () => {
+    expect(
+      assertStatsSnapshot({ entityId: "actor", revision: 1, values: { attackDamage: 150 } }),
+    ).toMatchObject({ entityId: "actor", revision: 1 });
+    expect(() =>
+      assertStatsSnapshot({ entityId: "actor", revision: 1, values: { attackDamage: Infinity } }),
+    ).toThrow(/non-finite/);
+
+    const unknownOwner = clone(sampleScenario);
+    unknownOwner.entities[1]!.ownerEntityId = "missing-owner";
+    expect(() => parseContract(ScenarioSpecSchema, unknownOwner)).toThrow(/unknown entity/);
+
+    const owned = clone(sampleScenario);
+    owned.entities[1]!.ownerEntityId = "actor";
+    expect(parseContract(ScenarioSpecSchema, owned).entities[1]!.ownerEntityId).toBe("actor");
+  });
+
+  test("requires retained trace causes to precede their effects", () => {
     for (const causeEventId of ["missing-event", "event-002"] as const) {
       const invalid = clone(sampleTrace);
       invalid.events[0]!.causeEventIds = [causeEventId];
       expect(() => parseContract(TraceSchema, invalid)).toThrow(
-        /causes must reference an earlier event/,
+        /causes must reference an earlier retained event|complete trace causes must reference a retained event/,
       );
     }
-    const forward = clone(sampleTrace);
-    forward.events[0]!.causeEventIds = ["event-002"];
-    expect(() => parseContract(TraceSchema, forward)).toThrow(/earlier event/);
+
+    const truncatedMissing = clone(sampleTrace);
+    truncatedMissing.truncated = true;
+    truncatedMissing.truncationReason = "retention limit";
+    truncatedMissing.events[0]!.causeEventIds = ["omitted-event"];
+    expect(() => parseContract(TraceSchema, truncatedMissing)).not.toThrow();
+
+    const truncatedForward = clone(truncatedMissing);
+    truncatedForward.events[0]!.causeEventIds = ["event-002"];
+    expect(() => parseContract(TraceSchema, truncatedForward)).toThrow(/earlier retained event/);
   });
 
   test("makes tie tolerance, selector actors, and seeded algorithms unambiguous", () => {
@@ -1175,6 +1272,10 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => parseContract(ScenarioSpecSchema, invalidSeeded)).toThrow(
       /requires a random algorithm/,
     );
+
+    const enemyActor = clone(sampleScenario);
+    enemyActor.actorEntityId = "enemy";
+    expect(() => parseContract(ScenarioSpecSchema, enemyActor)).toThrow(/actor team/);
   });
 
   test("rejects retroactive commands, reversed run timestamps, and contradictory empty inventory", () => {
@@ -1248,6 +1349,11 @@ describe("P01 versioned contract fixtures", () => {
     expect(ports.rng.draw({ streamId: "combat", draws: 3 }, mockPortContext).nextDrawCount).toBe(3);
     expect(ports.rng.draw({ streamId: "combat", draws: 2 }, mockPortContext).nextDrawCount).toBe(5);
     expect(ports.rng.draw({ streamId: "combat", draws: 1 }, otherRun).nextDrawCount).toBe(1);
+    ports.rng.restore(
+      { streamId: "combat", algorithm: "xorshift32", seed: "seed", drawCount: 7, state: [1] },
+      mockPortContext,
+    );
+    expect(ports.rng.draw({ streamId: "combat", draws: 2 }, mockPortContext).nextDrawCount).toBe(9);
 
     const mutation = { entityId: "actor", resourceId: "mana", delta: -60, reason: "cast" };
     expect(ports.resources.apply(mutation, mockPortContext)).toMatchObject({
@@ -1273,6 +1379,7 @@ describe("P01 versioned contract fixtures", () => {
       health: { current: 100, maximum: 1000, shield: 0 },
     });
     visibleState.visibility.visibleEntityIds.push("enemy-low");
+    visibleState.entities[1]!.alive = false;
     const result = ports.targeting.select(
       {
         actor: transformedCopiedAbility,
@@ -1282,5 +1389,49 @@ describe("P01 versioned contract fixtures", () => {
       mockPortContext,
     );
     expect(result.targetEntityIds).toEqual(["enemy-low"]);
+
+    const allEnemies = ports.targeting.select(
+      {
+        actor: transformedCopiedAbility,
+        selector: { kind: "all-visible-enemies", actorId: "actor" },
+        visibleState: parseContract(PolicyVisibleStateSchema, visibleState),
+      },
+      mockPortContext,
+    );
+    expect(allEnemies.targetEntityIds).toEqual(["enemy-low"]);
+  });
+
+  test("mock damage consumes shields before health", () => {
+    const ports = createMockPorts();
+    const shielded = clone(observedTarget);
+    shielded.health.current = 80;
+    shielded.health.maximum = 80;
+    shielded.health.shield = 30;
+    const resolution = ports.damage.resolve(
+      {
+        packet: {
+          sourceEntityId: "actor",
+          targetEntityId: "enemy",
+          damageType: "physical",
+          rawAmount: 100,
+          tags: [],
+          canOverkill: true,
+        },
+        attacker: transformedCopiedAbility,
+        target: shielded,
+        attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+        targetStats: { entityId: "enemy", revision: 1, values: shielded.stats },
+        read: { kind: "impact", entityId: "enemy", atTimeMs: 100, stateRevision: 1 },
+      },
+      mockPortContext,
+    );
+    expect(resolution).toMatchObject({
+      attempted: 100,
+      absorbed: 30,
+      applied: 70,
+      overkill: 0,
+      targetHealthAfter: 10,
+      killed: false,
+    });
   });
 });

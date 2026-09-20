@@ -18,7 +18,10 @@ const identifier = z
 const itemId = z.number().int().positive();
 const timestamp = z
   .string()
-  .min(1)
+  .regex(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "must be an ISO-8601 timestamp with an explicit timezone",
+  )
   .refine((value) => Number.isFinite(Date.parse(value)), {
     message: "must be an ISO-compatible timestamp",
   });
@@ -297,6 +300,7 @@ export const EntityKindSchema = z.enum([
 export const EntityStateSchema = z
   .object({
     entityId: identifier,
+    ownerEntityId: identifier.nullable(),
     team: EntityTeamSchema,
     kind: EntityKindSchema,
     championId: identifier.nullable(),
@@ -348,6 +352,15 @@ export const EntityStateSchema = z
         path: ["inventory"],
         message: "empty inventory origin requires an empty inventory",
       });
+    }
+    for (const [index, item] of value.inventory.entries()) {
+      if (item.state === "equipped" && item.slot < 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["inventory", index, "slot"],
+          message: "equipped items require a real inventory slot",
+        });
+      }
     }
     const statKeys = Object.keys(value.stats).sort();
     const provenanceKeys = Object.keys(value.statProvenance).sort();
@@ -623,6 +636,13 @@ export const ObjectiveSpecSchema = z
         code: "custom",
         path: ["warmupMs"],
         message: "warmup cannot exceed the horizon",
+      });
+    }
+    if (value.kind === "sustained-dps" && value.warmupMs === value.horizonMs) {
+      context.addIssue({
+        code: "custom",
+        path: ["warmupMs"],
+        message: "sustained DPS warmup must be strictly less than the horizon",
       });
     }
     const expectedMetric =
@@ -901,6 +921,12 @@ function validateScenarioReferences(
       ["actorEntityId"],
       "actorEntityId must reference an entity in entities",
     );
+  } else if (entitiesById.get(value.actorEntityId)?.team !== "actor") {
+    addReferenceIssue(
+      context,
+      ["actorEntityId"],
+      "actorEntityId must reference an entity on the actor team",
+    );
   }
   for (const [index, member] of value.cohort.members.entries()) {
     if (!entityIds.has(member.entityId)) {
@@ -912,6 +938,13 @@ function validateScenarioReferences(
     }
   }
   for (const [entityIndex, entity] of value.entities.entries()) {
+    if (entity.ownerEntityId !== null && !entityIds.has(entity.ownerEntityId)) {
+      addReferenceIssue(
+        context,
+        ["entities", entityIndex, "ownerEntityId"],
+        `entity owner references unknown entity ${entity.ownerEntityId}`,
+      );
+    }
     for (const [abilityIndex, ability] of entity.abilities.entries()) {
       if (ability.origin.kind === "copied" && !entityIds.has(ability.origin.sourceEntityId)) {
         addReferenceIssue(
@@ -1089,7 +1122,7 @@ export const RunManifestSchema = z
     objective: ObjectiveSpecSchema,
     evaluationMode: EvaluationModeSchema,
     random: RandomConfigurationSchema,
-    status: z.enum(["planned", "running", "complete", "cancelled", "invalid"]),
+    status: z.enum(["planned", "running", "complete", "incomplete", "cancelled", "invalid"]),
     createdAt: timestamp,
     completedAt: timestamp.nullable(),
   })
@@ -1177,6 +1210,15 @@ export const MechanicEvidenceSchema = z
     }
   });
 export type MechanicEvidence = z.infer<typeof MechanicEvidenceSchema>;
+
+export const StatsSnapshotSchema = z
+  .object({
+    entityId: identifier,
+    revision: positiveInteger,
+    values: finiteNumberMap,
+  })
+  .strict();
+export type StatsSnapshot = z.infer<typeof StatsSnapshotSchema>;
 
 export const DamagePacketSchema = z
   .object({
@@ -1309,18 +1351,22 @@ export const TraceSchema = z
         message: "trace event IDs must be globally unique",
       });
     }
-    if (!value.truncated) {
-      const eventIndexById = new Map(value.events.map((event, index) => [event.eventId, index]));
-      for (const [index, event] of value.events.entries()) {
-        for (const [causeIndex, causeEventId] of event.causeEventIds.entries()) {
-          const predecessorIndex = eventIndexById.get(causeEventId);
-          if (predecessorIndex === undefined || predecessorIndex >= index) {
-            context.addIssue({
-              code: "custom",
-              path: ["events", index, "causeEventIds", causeIndex],
-              message: "complete trace causes must reference an earlier event",
-            });
-          }
+    const eventIndexById = new Map(value.events.map((event, index) => [event.eventId, index]));
+    for (const [index, event] of value.events.entries()) {
+      for (const [causeIndex, causeEventId] of event.causeEventIds.entries()) {
+        const predecessorIndex = eventIndexById.get(causeEventId);
+        if (predecessorIndex !== undefined && predecessorIndex >= index) {
+          context.addIssue({
+            code: "custom",
+            path: ["events", index, "causeEventIds", causeIndex],
+            message: "trace causes must reference an earlier retained event",
+          });
+        } else if (predecessorIndex === undefined && !value.truncated) {
+          context.addIssue({
+            code: "custom",
+            path: ["events", index, "causeEventIds", causeIndex],
+            message: "complete trace causes must reference a retained event",
+          });
         }
       }
     }
@@ -1363,6 +1409,30 @@ export const MetricValueSchema = z.discriminatedUnion("status", [
 ]);
 export type MetricValue = z.infer<typeof MetricValueSchema>;
 
+export const KillCoverageSchema = z
+  .object({
+    killedCount: nonNegativeInteger,
+    totalCount: positiveInteger,
+    fraction: finiteNumber.min(0).max(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.killedCount > value.totalCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["killedCount"],
+        message: "kill coverage cannot exceed its denominator",
+      });
+    }
+    if (Math.abs(value.fraction - value.killedCount / value.totalCount) > 1e-12) {
+      context.addIssue({
+        code: "custom",
+        path: ["fraction"],
+        message: "kill coverage fraction must match its counts",
+      });
+    }
+  });
+
 export const CombatResultSchema = z
   .object({
     schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
@@ -1381,6 +1451,7 @@ export const CombatResultSchema = z
         timeToElimination: MetricValueSchema,
       })
       .strict(),
+    coverage: KillCoverageSchema.nullable(),
     killed: z.boolean(),
     censoring: z.enum(["not-censored", "right-censored", "invalid"]),
     warnings: z.array(z.string()),
@@ -1599,6 +1670,7 @@ export const RngStreamSnapshotSchema = z
     state: z.array(nonNegativeInteger),
   })
   .strict();
+export type RngStreamSnapshot = z.infer<typeof RngStreamSnapshotSchema>;
 
 export const NumericalBranchStateSchema = z
   .object({
@@ -1665,6 +1737,24 @@ export const EngineSnapshotSchema = z
   .strict()
   .superRefine((value, context) => {
     addDuplicateIdIssues(
+      value.pendingActions.map((action) => action.actionId),
+      "pendingActions",
+      "pending action",
+      context,
+    );
+    addDuplicateIdIssues(
+      value.triggerState.map((trigger) => trigger.triggerId),
+      "triggerState",
+      "trigger",
+      context,
+    );
+    addDuplicateIdIssues(
+      value.numericalBranches.map((branch) => branch.branchId),
+      "numericalBranches",
+      "numerical branch",
+      context,
+    );
+    addDuplicateIdIssues(
       value.rngStreams.map((stream) => stream.streamId),
       "rngStreams",
       "RNG stream",
@@ -1690,6 +1780,13 @@ export const EngineSnapshotSchema = z
     const knownEntityIds = new Set(entityIds);
     const entitiesById = new Map(value.entities.map((entity) => [entity.entityId, entity]));
     for (const [entityIndex, entity] of value.entities.entries()) {
+      if (entity.ownerEntityId !== null && !knownEntityIds.has(entity.ownerEntityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["entities", entityIndex, "ownerEntityId"],
+          message: "snapshot entity owners must reference known entities",
+        });
+      }
       for (const [buffIndex, buff] of entity.buffs.entries()) {
         if (!knownEntityIds.has(buff.sourceEntityId)) {
           context.addIssue({
@@ -1706,6 +1803,13 @@ export const EngineSnapshotSchema = z
           code: "custom",
           path: ["buffs", index],
           message: "snapshot buffs must reference known entities",
+        });
+      }
+      if (buff.expiresAtMs !== null && buff.expiresAtMs < value.currentTimeMs) {
+        context.addIssue({
+          code: "custom",
+          path: ["buffs", index, "expiresAtMs"],
+          message: "snapshot buffs cannot already be expired",
         });
       }
     }
@@ -2280,6 +2384,13 @@ export const ExactComparisonTransferSchema = z
         code: "custom",
         path: ["run", "objective"],
         message: "run and result must share objective identity",
+      });
+    }
+    if (value.run.objective.aggregation === "coverage-then-ttk" && value.result.coverage === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "coverage"],
+        message: "coverage-first aggregation requires machine-readable kill coverage",
       });
     }
     for (const [metricName, metric] of Object.entries(value.result.metrics)) {

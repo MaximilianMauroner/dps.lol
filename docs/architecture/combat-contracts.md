@@ -57,7 +57,8 @@ The following identities are deliberately separate:
 | `candidateInputHash`   | one resolved candidate's effective simulation input     | finalist/comparison transfer |
 
 `RunManifest` requires both search and candidate hashes and rejects equality
-between them. It also requires completion timestamps to follow creation. A
+between them. Its status can retain an explicitly `incomplete` run, and all
+timestamps require an ISO-8601 timezone; completion timestamps must follow creation. A
 candidate result therefore cannot silently rewrite the frozen search context.
 
 ## Main data contracts
@@ -66,21 +67,21 @@ The runtime schemas are exported from `src/domain/contracts`. The names below
 are the public minimum; fields are intentionally explicit even when an array
 or map is empty.
 
-| Contract               | Purpose                                                                                                            |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `RulesetManifest`      | patch/data version, retained source artifacts, supported modes and manifest hash                                   |
-| `ScenarioSpec`         | serializable request before resolution, including entities, cohort, policy, objective, mode and search constraints |
-| `ResolvedScenario`     | effective values, policy/candidate provenance identities and provenance for every replay-affecting field           |
-| `EntityState`          | stable entity identity, health/resources/stats, abilities, buffs, inventory, position and origins                  |
-| `ItemInstance`         | instance identity, immutable base item, effective upgraded item, slot, stacks and charges                          |
-| `ActionPolicy`         | scripted or conditional-priority action DSL; no callback or function values                                        |
-| `ObjectiveSpec`        | objective, metric, finite horizon, warm-up, censoring, aggregation and tie policy                                  |
-| `SearchConstraints`    | slot/boot legality and a discriminated incremental-gold or final-inventory budget                                  |
-| `EvaluationMode`       | analytical expectation, average-state approximation, seeded trajectory or sampled estimate                         |
-| `RunManifest`          | engine/ruleset/scenario/cohort/policy/search/candidate hashes plus full objective/evaluation configuration         |
-| `MechanicEvidence`     | patch-scoped source identity, implementation status and unavailable/discrepancy disposition                        |
-| `Trace` / `TraceEvent` | chronological events, causal IDs and typed effects                                                                 |
-| `CombatResult`         | status, tagged metrics, censoring, result hashes and optional trace identity                                       |
+| Contract               | Purpose                                                                                                              |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `RulesetManifest`      | patch/data version, retained source artifacts, supported modes and manifest hash                                     |
+| `ScenarioSpec`         | serializable request before resolution, including entities, cohort, policy, objective, mode and search constraints   |
+| `ResolvedScenario`     | effective values, policy/candidate provenance identities and provenance for every replay-affecting field             |
+| `EntityState`          | stable entity and nullable owner identity, health/resources/stats, abilities, buffs, inventory, position and origins |
+| `ItemInstance`         | instance identity, immutable base item, effective upgraded item, slot, stacks and charges                            |
+| `ActionPolicy`         | scripted or conditional-priority action DSL; no callback or function values                                          |
+| `ObjectiveSpec`        | objective, metric, finite horizon, warm-up, censoring, aggregation and tie policy                                    |
+| `SearchConstraints`    | slot/boot legality and a discriminated incremental-gold or final-inventory budget                                    |
+| `EvaluationMode`       | analytical expectation, average-state approximation, seeded trajectory or sampled estimate                           |
+| `RunManifest`          | engine/ruleset/scenario/cohort/policy/search/candidate hashes plus full objective/evaluation configuration           |
+| `MechanicEvidence`     | patch-scoped source identity, implementation status and unavailable/discrepancy disposition                          |
+| `Trace` / `TraceEvent` | chronological events, causal IDs and typed effects                                                                   |
+| `CombatResult`         | status, tagged metrics, censoring, result hashes and optional trace identity                                         |
 
 ### Provenance and observed state
 
@@ -129,7 +130,8 @@ positions. It carries the policy's `visibleEntityIds`; hidden stats, inventory,
 ability internals, provenance, queue state, RNG internals and future events are
 not representable in the projection. The policy visibility contract hard-codes
 `allowFutureEvents: false` and `allowHiddenOpponentState: false` in v1.
-Step IDs and priorities are unique, selector-relative actor IDs match their
+The designated scenario actor must belong to the actor team. Step IDs and
+priorities are unique, selector-relative actor IDs match their
 commands, and tolerant tie policies carry an explicit non-negative tolerance.
 
 ## Ports and failure behavior
@@ -145,8 +147,10 @@ read the wall clock, network, mutable UI state or hidden future state.
 command schema rejects scheduling work before the command's issue time, while
 complete traces require every causal ID to name an earlier event. Damage port
 results reconcile attempted, absorbed, prevented, applied and overkill amounts
-and bind death to zero remaining health. Seeded modes must name a real random
-algorithm rather than the deterministic `none` sentinel. The
+and bind death to zero remaining health; shields absorb damage before health.
+`StatsSnapshot` is runtime-validated for finite values. Seeded modes must name a real random
+algorithm rather than the deterministic `none` sentinel, and the RNG port restores
+persisted stream counters/state before resumed draws. The
 `WorkerMessageSchema` validates command, event and bounded-step envelopes
 before they cross a worker. The engine-facing `CombatEngine` has three paths
 over the same session semantics:
@@ -158,7 +162,7 @@ over the same session semantics:
    pending-action, trigger, RNG and numerical-branch state. It must call
    `assertResumeCompatible`, which rejects non-resumable snapshots, any
    run/scenario/engine identity mismatch, or policy progress whose policy ID,
-   revision or exact step IDs differ from the scenario. Bounded-step results must preserve
+   revision, exact step IDs, or repeat counters are impossible under the scenario policy. Bounded-step results must preserve
    the snapshot interruption state and exact reason; a progress result cannot
    claim cancellation or carry an unrelated interruption reason. `run(input)`
    is the synchronous convenience entry point, not a second simulator.
@@ -180,13 +184,16 @@ carry a value (or valid right-censoring for a time metric) for the objective's
 primary metric. Every censored metric must use the transferred objective's
 horizon. An exact transfer also rejects a
 complete right-censored non-kill when the objective uses `fail-if-not-killed`.
-Objective, horizon, censoring and aggregation remain in the result's run
-context.
+Coverage-first aggregation additionally carries machine-readable killed/total
+counts with a consistent fraction. Sustained DPS requires a non-empty measurement
+window after warm-up. Objective, horizon, censoring and aggregation remain in the result's run context.
 
 `EngineSnapshot` contains engine/ruleset/cohort/policy/scenario/candidate
 identity, queue IDs/order, current time, entity state, buff state, pending
 actions, per-step policy cursor/repeat progress, trigger state, uniquely named
-RNG stream/counters, numerical branch state and typed result/status. It
+RNG stream/counters, numerical branch state and typed result/status.
+Pending-action, trigger and numerical-branch IDs are unique; owners must resolve;
+and retained buffs may not already be expired at snapshot time. It
 explicitly records `resumability` and an interruption state (`none`,
 `budget-exhausted`, `cancelled`, `invalid` or `completed`). Running snapshots
 are resumable; complete/incomplete/cancelled/invalid snapshots are not and must

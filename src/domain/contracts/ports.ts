@@ -4,6 +4,7 @@ import {
   parseContract,
   ResolvedScenarioSchema,
   RunManifestSchema,
+  StatsSnapshotSchema,
   type CombatResult,
   type DamagePacket,
   type DamageResolution,
@@ -17,8 +18,10 @@ import {
   type PolicyVisibleState,
   type ResolvedScenario,
   type RunManifest,
+  type RngStreamSnapshot,
   type ScheduledEvent,
   type StepBudget,
+  type StatsSnapshot,
   type TargetSelector,
   type Trace,
   type TraceEvent,
@@ -43,11 +46,9 @@ export type StateRead = Readonly<{
   stateRevision: number;
 }>;
 
-export type StatsSnapshot = Readonly<{
-  entityId: string;
-  revision: number;
-  values: Readonly<Record<string, number>>;
-}>;
+export function assertStatsSnapshot(value: unknown): StatsSnapshot {
+  return parseContract(StatsSnapshotSchema, value);
+}
 
 export type StatsRequest = Readonly<{
   entity: EntityState;
@@ -181,6 +182,7 @@ export type RngResult = Readonly<{
 }>;
 
 export interface RngPort {
+  restore(snapshot: RngStreamSnapshot, context: PortContext): void;
   draw(request: RngRequest, context: PortContext): RngResult;
 }
 
@@ -260,6 +262,26 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   if (canonicalJson(progressStepIds) !== canonicalJson(policyStepIds)) {
     mismatches.push("snapshot policy progress step IDs differ from scenario policy");
   }
+  for (const [index, progress] of snapshot.policyProgress.steps.entries()) {
+    const step = scenario.effective.policy.steps[index];
+    if (!step || step.stepId !== progress.stepId) continue;
+    if (!step.repeat && progress.consumedRepeats > 1) {
+      mismatches.push(`snapshot policy step ${step.stepId} exceeds its one-shot count`);
+    }
+    if (step.maxRepeats !== null && progress.consumedRepeats > step.maxRepeats) {
+      mismatches.push(`snapshot policy step ${step.stepId} exceeds maxRepeats`);
+    }
+    if (progress.state === "not-started" && progress.consumedRepeats !== 0) {
+      mismatches.push(`snapshot policy step ${step.stepId} has progress before starting`);
+    }
+    if (
+      progress.state === "active" &&
+      step.maxRepeats !== null &&
+      progress.consumedRepeats >= step.maxRepeats
+    ) {
+      mismatches.push(`snapshot policy step ${step.stepId} is active at its repeat limit`);
+    }
+  }
 
   const identities: ReadonlyArray<[string, string, string]> = [
     ["runId", snapshot.runId, run.runId],
@@ -286,7 +308,7 @@ export interface EngineSession {
 }
 
 export type EngineRun = Readonly<{
-  status: "complete" | "cancelled" | "invalid";
+  status: "complete" | "incomplete" | "cancelled" | "invalid";
   result: CombatResult;
   trace: Trace;
 }>;
@@ -309,6 +331,7 @@ export interface LegacySimulationAdapter<LegacyInput, LegacyOutput> {
 export type SerializablePortValue =
   | EntityState
   | ItemInstance
+  | StatsSnapshot
   | DamageResolution
   | EngineCommand
   | EngineEvent

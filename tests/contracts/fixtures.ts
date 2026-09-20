@@ -41,6 +41,7 @@ const observedProvenance = provenance("observed", "p01-observed-target", HASH_B)
 
 export const transformedCopiedAbility = parseContract(EntityStateSchema, {
   entityId: "actor",
+  ownerEntityId: null,
   team: "actor",
   kind: "champion",
   championId: "804",
@@ -107,6 +108,7 @@ export const transformedCopiedAbility = parseContract(EntityStateSchema, {
 
 export const observedTarget = parseContract(EntityStateSchema, {
   entityId: "enemy",
+  ownerEntityId: null,
   team: "enemy",
   kind: "champion",
   championId: "synthetic-target",
@@ -329,6 +331,7 @@ export const censoredResult = parseContract(CombatResultSchema, {
     timeToFirstDeath: { status: "not-applicable", reason: "not the selected objective" },
     timeToElimination: { status: "not-applicable", reason: "not the selected objective" },
   },
+  coverage: null,
   killed: false,
   censoring: "right-censored",
   warnings: ["target survived the configured horizon"],
