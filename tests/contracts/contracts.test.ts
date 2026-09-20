@@ -353,6 +353,10 @@ describe("P01 versioned contract fixtures", () => {
     cancelled.queue.entries = [];
     cancelled.pendingActions = [];
     cancelled.queue.nextSequence = 4;
+    cancelled.result = clone(censoredResult);
+    cancelled.result.status = "cancelled";
+    cancelled.result.censoring = "invalid";
+    cancelled.result.metrics.ttk = { status: "undefined", reason: "cancelled" };
     expect(parseContract(EngineSnapshotSchema, cancelled).status).toBe("cancelled");
     expect(() => assertResumableSnapshot(cancelled)).toThrow(SnapshotNotResumableError);
 
@@ -936,5 +940,139 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => parseContract(PolicyVisibleStateSchema, hiddenReadiness)).toThrow(
       /non-visible ability/,
     );
+  });
+
+  test("rejects hidden condition entities, duplicate readiness, and duplicate snapshot RNG streams", () => {
+    const hiddenCondition = clone(sampleScenario);
+    hiddenCondition.policy.visibility.visibleEntityIds = ["actor"];
+    expect(() => parseContract(ScenarioSpecSchema, hiddenCondition)).toThrow(
+      /condition references hidden entity/,
+    );
+
+    const duplicateReadiness = visiblePolicyStateFixture();
+    duplicateReadiness.readiness.push({
+      ...duplicateReadiness.readiness[0]!,
+      ready: false,
+      cooldownRemainingMs: 100,
+    });
+    expect(() => parseContract(PolicyVisibleStateSchema, duplicateReadiness)).toThrow(
+      /readiness record IDs must be unique/,
+    );
+
+    const duplicateRng = clone(sampleSnapshot);
+    duplicateRng.rngStreams.push({ ...duplicateRng.rngStreams[0]!, seed: "other" });
+    expect(() => parseContract(EngineSnapshotSchema, duplicateRng)).toThrow(
+      /RNG stream IDs must be unique/,
+    );
+  });
+
+  test("rejects ambiguous trace IDs, inventory slots, and missing item upgrade metadata", () => {
+    const duplicateTraceId = clone(sampleTrace);
+    duplicateTraceId.events.push({
+      ...duplicateTraceId.events[1]!,
+      sequence: 3,
+      timeMs: 200,
+    });
+    expect(() => parseContract(TraceSchema, duplicateTraceId)).toThrow(
+      /trace event IDs must be globally unique/,
+    );
+
+    const duplicateSlot = clone(transformedCopiedAbility);
+    duplicateSlot.inventory.push({
+      ...clone(duplicateSlot.inventory[0]!),
+      instanceId: "item-instance-duplicate-slot",
+    });
+    expect(() => parseContract(EntityStateSchema, duplicateSlot)).toThrow(
+      /equipped inventory slot IDs must be unique/,
+    );
+
+    const missingUpgrade = { ...clone(parsedItemInstance), effectiveItemId: 2002, upgrade: null };
+    expect(() => parseContract(ItemInstanceSchema, missingUpgrade)).toThrow(
+      /requires upgrade metadata/,
+    );
+  });
+
+  test("requires own stat provenance and normalized cohort mass", () => {
+    const inheritedName = clone(transformedCopiedAbility);
+    inheritedName.stats = { constructor: 100 };
+    inheritedName.statProvenance = {};
+    expect(() => parseContract(EntityStateSchema, inheritedName)).toThrow(
+      /every effective stat requires provenance/,
+    );
+
+    const invalidWeights = clone(sampleScenario);
+    invalidWeights.cohort.members.push({
+      ...clone(invalidWeights.cohort.members[0]!),
+      memberId: "member-002",
+    });
+    expect(() => parseContract(ScenarioSpecSchema, invalidWeights)).toThrow(
+      /normalized cohort weights must sum to one/,
+    );
+  });
+
+  test("requires objective-complete metrics including death and elimination time", () => {
+    for (const [objective, metric] of [
+      ["fixed-window-damage", "damage"],
+      ["sustained-dps", "dps"],
+      ["ttk", "ttk"],
+      ["first-death", "timeToFirstDeath"],
+      ["final-elimination", "timeToElimination"],
+    ] as const) {
+      const result = clone(censoredResult);
+      result.objective = objective;
+      result.metrics[metric] = { status: "undefined", reason: "missing" };
+      expect(() => parseContract(CombatResultSchema, result), objective).toThrow(
+        /objective-valid primary metric/,
+      );
+    }
+  });
+
+  test("carries non-success terminal results and policy progress through snapshots", () => {
+    const snapshot = clone(sampleSnapshot);
+    snapshot.status = "incomplete";
+    snapshot.resumability = "non-resumable";
+    snapshot.interruption = { state: "budget-exhausted", reason: "hard event limit" };
+    snapshot.queue.entries = [];
+    snapshot.pendingActions = [];
+    snapshot.result = clone(censoredResult);
+    snapshot.result.status = "incomplete";
+    snapshot.result.censoring = "invalid";
+    snapshot.result.metrics.ttk = { status: "undefined", reason: "hard event limit" };
+
+    const step = parseContract(EngineStepResultSchema, {
+      schemaVersion: 1,
+      status: "incomplete",
+      snapshot,
+      emittedEvents: [],
+      result: snapshot.result,
+      reason: "hard event limit",
+    });
+    expect(step.result?.status).toBe("incomplete");
+    expect(step.snapshot.policyProgress.nextStepId).toBe("basic-attack");
+    expect(step.snapshot.policyProgress.steps[1]?.consumedRepeats).toBe(2);
+
+    const invalidProgress = clone(sampleSnapshot);
+    invalidProgress.policyProgress.nextStepId = "missing-step";
+    expect(() => parseContract(EngineSnapshotSchema, invalidProgress)).toThrow(
+      /next policy step must exist/,
+    );
+  });
+
+  test("mock timers use chronological order and traces remain isolated by run", () => {
+    const ports = createMockPorts();
+    const later = clone(sampleSnapshot.queue.entries[0]!);
+    const earlier = { ...later, eventId: "event-earlier", timeMs: 500, sequence: 4 };
+    ports.timers.schedule({ event: later, replacesEventId: null }, mockPortContext);
+    ports.timers.schedule({ event: earlier, replacesEventId: null }, mockPortContext);
+    expect(ports.timers.peek(mockPortContext)?.eventId).toBe("event-earlier");
+
+    ports.trace.record(sampleTrace.events[0]!, mockPortContext);
+    ports.trace.record(sampleTrace.events[1]!, { ...mockPortContext, runId: "run-002" });
+    expect(
+      ports.trace.snapshot(mockPortContext.runId).events.map((event) => event.eventId),
+    ).toEqual(["event-001"]);
+    expect(ports.trace.snapshot("run-002").events.map((event) => event.eventId)).toEqual([
+      "event-002",
+    ]);
   });
 });

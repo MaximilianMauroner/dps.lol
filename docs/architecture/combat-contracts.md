@@ -166,19 +166,23 @@ There is no JSON `Infinity` or `NaN`. A complete killed result must carry a
 finite, non-negative, uncensored TTK. A complete non-kill result must be
 right-censored with a censored TTK; interrupted/invalid results use invalid
 censoring with an undefined or not-applicable TTK. Contradictory
-kill/censoring combinations are rejected. An exact transfer also rejects a
+kill/censoring combinations are rejected. Result metrics cover damage, DPS,
+TTK, time to first death and time to final elimination. A complete result must
+carry a value (or valid right-censoring for a time metric) for the objective's
+primary metric. An exact transfer also rejects a
 complete right-censored non-kill when the objective uses `fail-if-not-killed`.
 Objective, horizon, censoring and aggregation remain in the result's run
 context.
 
 `EngineSnapshot` contains engine/ruleset/cohort/policy/scenario/candidate
 identity, queue IDs/order, current time, entity state, buff state, pending
-actions, trigger state, RNG stream/counters, numerical branch state and typed
-result/status. It explicitly records `resumability` and an interruption state
-(`none`, `budget-exhausted`, `cancelled`, `invalid` or `completed`). Running
-snapshots are resumable; complete/cancelled/invalid snapshots are not and must
-not retain queued or pending work. Complete snapshots require a complete
-result, and step envelopes require the full result payload to equal the
+actions, per-step policy cursor/repeat progress, trigger state, uniquely named
+RNG stream/counters, numerical branch state and typed result/status. It
+explicitly records `resumability` and an interruption state (`none`,
+`budget-exhausted`, `cancelled`, `invalid` or `completed`). Running snapshots
+are resumable; complete/incomplete/cancelled/invalid snapshots are not and must
+not retain queued or pending work. Every terminal snapshot requires a matching
+typed result, and step envelopes require the full result payload to equal the
 snapshot result. A snapshot is data only and is safe for worker structured
 clone and JSON replay.
 

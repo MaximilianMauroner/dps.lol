@@ -260,6 +260,13 @@ export const ItemInstanceSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.upgrade === null && value.baseItemId !== value.effectiveItemId) {
+      context.addIssue({
+        code: "custom",
+        path: ["upgrade"],
+        message: "changed effective item identity requires upgrade metadata",
+      });
+    }
     if (value.upgrade && value.upgrade.fromItemId !== value.baseItemId) {
       context.addIssue({
         code: "custom",
@@ -331,10 +338,14 @@ export const EntityStateSchema = z
       "item instance",
       context,
     );
+    const equippedSlots = value.inventory
+      .filter((item) => item.state === "equipped" && item.slot >= 0)
+      .map((item) => String(item.slot));
+    addDuplicateIdIssues(equippedSlots, "inventory", "equipped inventory slot", context);
     const statKeys = Object.keys(value.stats).sort();
     const provenanceKeys = Object.keys(value.statProvenance).sort();
     for (const statKey of statKeys) {
-      if (!(statKey in value.statProvenance)) {
+      if (!Object.hasOwn(value.statProvenance, statKey)) {
         context.addIssue({
           code: "custom",
           path: ["statProvenance", statKey],
@@ -343,7 +354,7 @@ export const EntityStateSchema = z
       }
     }
     for (const provenanceKey of provenanceKeys) {
-      if (!(provenanceKey in value.stats)) {
+      if (!Object.hasOwn(value.stats, provenanceKey)) {
         context.addIssue({
           code: "custom",
           path: ["statProvenance", provenanceKey],
@@ -400,6 +411,16 @@ export const CohortSpecSchema = z
         path: ["members"],
         message: "cohort member IDs must be unique",
       });
+    }
+    if (value.normalized) {
+      const totalWeight = value.members.reduce((sum, member) => sum + member.weight, 0);
+      if (Math.abs(totalWeight - 1) > 1e-9) {
+        context.addIssue({
+          code: "custom",
+          path: ["members"],
+          message: "normalized cohort weights must sum to one within 1e-9",
+        });
+      }
     }
   });
 export type CohortSpec = z.infer<typeof CohortSpecSchema>;
@@ -818,6 +839,7 @@ function validateScenarioReferences(
 ): void {
   const entityIds = new Set<string>();
   const entitiesById = new Map<string, EntityState>();
+  const visibleEntityIds = new Set(value.policy.visibility.visibleEntityIds);
   for (const [index, entity] of value.entities.entries()) {
     if (entityIds.has(entity.entityId)) {
       addReferenceIssue(
@@ -920,6 +942,13 @@ function validateScenarioReferences(
           `condition references unknown entity ${reference.entityId}`,
         );
         return;
+      }
+      if (!visibleEntityIds.has(reference.entityId)) {
+        addReferenceIssue(
+          context,
+          [...reference.path.slice(0, -1), "entityId"],
+          `condition references hidden entity ${reference.entityId}`,
+        );
       }
       if (reference.kind === "ability") {
         if (!entity.abilities.some((ability) => ability.abilityId === reference.abilityId)) {
@@ -1204,6 +1233,14 @@ export const TraceSchema = z
         message: "trace sequence IDs must be globally unique",
       });
     }
+    const eventIds = value.events.map((event) => event.eventId);
+    if (new Set(eventIds).size !== eventIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "trace event IDs must be globally unique",
+      });
+    }
     for (let index = 1; index < value.events.length; index += 1) {
       const previous = value.events[index - 1]!;
       const current = value.events[index]!;
@@ -1253,7 +1290,13 @@ export const CombatResultSchema = z
     resolvedScenarioHash: ContentHashSchema,
     candidateInputHash: ContentHashSchema,
     metrics: z
-      .object({ damage: MetricValueSchema, dps: MetricValueSchema, ttk: MetricValueSchema })
+      .object({
+        damage: MetricValueSchema,
+        dps: MetricValueSchema,
+        ttk: MetricValueSchema,
+        timeToFirstDeath: MetricValueSchema,
+        timeToElimination: MetricValueSchema,
+      })
       .strict(),
     killed: z.boolean(),
     censoring: z.enum(["not-censored", "right-censored", "invalid"]),
@@ -1262,6 +1305,29 @@ export const CombatResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.status === "complete") {
+      const primaryMetric =
+        value.objective === "sustained-dps"
+          ? "dps"
+          : value.objective === "ttk"
+            ? "ttk"
+            : value.objective === "first-death"
+              ? "timeToFirstDeath"
+              : value.objective === "final-elimination"
+                ? "timeToElimination"
+                : "damage";
+      const metric = value.metrics[primaryMetric];
+      const acceptsCensoring = ["ttk", "timeToFirstDeath", "timeToElimination"].includes(
+        primaryMetric,
+      );
+      if (metric.status !== "value" && !(acceptsCensoring && metric.status === "censored")) {
+        context.addIssue({
+          code: "custom",
+          path: ["metrics", primaryMetric],
+          message: `complete ${value.objective} results require an objective-valid primary metric`,
+        });
+      }
+    }
     const ttkStatus = value.metrics.ttk.status;
     if (value.killed) {
       if (value.status !== "complete") {
@@ -1396,6 +1462,41 @@ export const PendingActionSchema = z
   })
   .strict();
 
+export const PolicyStepProgressSchema = z
+  .object({
+    stepId: identifier,
+    consumedRepeats: nonNegativeInteger,
+    state: z.enum(["not-started", "active", "completed", "skipped"]),
+  })
+  .strict();
+
+export const PolicyExecutionProgressSchema = z
+  .object({
+    policyId: identifier,
+    revision: positiveInteger,
+    nextStepId: identifier.nullable(),
+    steps: z.array(PolicyStepProgressSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    addDuplicateIdIssues(
+      value.steps.map((step) => step.stepId),
+      "steps",
+      "policy progress step",
+      context,
+    );
+    if (
+      value.nextStepId !== null &&
+      !value.steps.some((step) => step.stepId === value.nextStepId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextStepId"],
+        message: "next policy step must exist in policy execution progress",
+      });
+    }
+  });
+
 export const TriggerStateSchema = z
   .object({
     triggerId: identifier,
@@ -1469,16 +1570,23 @@ export const EngineSnapshotSchema = z
     entities: z.array(EntityStateSchema).min(1),
     buffs: z.array(BuffStateSchema),
     pendingActions: z.array(PendingActionSchema),
+    policyProgress: PolicyExecutionProgressSchema,
     triggerState: z.array(TriggerStateSchema),
     rngStreams: z.array(RngStreamSnapshotSchema),
     numericalBranches: z.array(NumericalBranchStateSchema),
-    status: z.enum(["running", "complete", "cancelled", "invalid"]),
+    status: z.enum(["running", "complete", "incomplete", "cancelled", "invalid"]),
     resumability: z.enum(["resumable", "non-resumable"]),
     interruption: SnapshotInterruptionSchema,
     result: CombatResultSchema.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
+    addDuplicateIdIssues(
+      value.rngStreams.map((stream) => stream.streamId),
+      "rngStreams",
+      "RNG stream",
+      context,
+    );
     for (const [index, entry] of value.queue.entries.entries()) {
       if (entry.timeMs < value.currentTimeMs) {
         context.addIssue({
@@ -1584,11 +1692,19 @@ export const EngineSnapshotSchema = z
           message: "complete snapshots require a complete result",
         });
       }
-    } else if (value.result !== null) {
+    } else if (value.status === "running") {
+      if (value.result !== null) {
+        context.addIssue({
+          code: "custom",
+          path: ["result"],
+          message: "running snapshots cannot carry a terminal result",
+        });
+      }
+    } else if (value.result === null || value.result.status !== value.status) {
       context.addIssue({
         code: "custom",
         path: ["result"],
-        message: "only complete snapshots may carry a result",
+        message: `${value.status} snapshots require a matching terminal result`,
       });
     }
     const expectedResumability = value.status === "running" ? "resumable" : "non-resumable";
@@ -1602,7 +1718,13 @@ export const EngineSnapshotSchema = z
     const expectedInterruption =
       value.status === "running"
         ? ["none", "budget-exhausted"]
-        : [value.status === "complete" ? "completed" : value.status];
+        : [
+            value.status === "complete"
+              ? "completed"
+              : value.status === "incomplete"
+                ? "budget-exhausted"
+                : value.status,
+          ];
     if (!expectedInterruption.includes(value.interruption.state)) {
       context.addIssue({
         code: "custom",
@@ -1799,6 +1921,12 @@ export const PolicyVisibleStateSchema = z
         });
       }
     }
+    addDuplicateIdIssues(
+      value.readiness.map((readiness) => `${readiness.entityId}\u0000${readiness.abilityId}`),
+      "readiness",
+      "policy readiness record",
+      context,
+    );
   });
 export type PolicyVisibleState = z.infer<typeof PolicyVisibleStateSchema>;
 
@@ -1865,7 +1993,7 @@ export type EngineEvent = z.infer<typeof EngineEventSchema>;
 export const EngineStepResultSchema = z
   .object({
     schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
-    status: z.enum(["progress", "complete", "cancelled", "invalid"]),
+    status: z.enum(["progress", "complete", "incomplete", "cancelled", "invalid"]),
     snapshot: EngineSnapshotSchema,
     emittedEvents: z.array(EngineEventSchema),
     result: CombatResultSchema.nullable(),
@@ -1881,18 +2009,18 @@ export const EngineStepResultSchema = z
         message: `${value.status} step results require a ${expectedSnapshotStatus} snapshot`,
       });
     }
-    if (value.status === "complete" && value.result === null) {
+    if (value.status !== "progress" && value.result === null) {
       context.addIssue({
         code: "custom",
         path: ["result"],
-        message: "complete step results require a result",
+        message: "terminal step results require a result",
       });
     }
-    if (value.status !== "complete" && value.result !== null) {
+    if (value.status === "progress" && value.result !== null) {
       context.addIssue({
         code: "custom",
         path: ["result"],
-        message: "only complete step results may carry a result",
+        message: "progress step results cannot carry a terminal result",
       });
     }
     if (value.status === "complete") {
@@ -1914,16 +2042,29 @@ export const EngineStepResultSchema = z
           message: "complete step result must exactly match the snapshot result",
         });
       }
-    } else if (value.status === "cancelled" || value.status === "invalid") {
+    } else if (["incomplete", "cancelled", "invalid"].includes(value.status)) {
+      const interruptionState = value.status === "incomplete" ? "budget-exhausted" : value.status;
       if (
         value.reason === null ||
-        value.snapshot.interruption.state !== value.status ||
+        value.snapshot.interruption.state !== interruptionState ||
         value.snapshot.interruption.reason !== value.reason
       ) {
         context.addIssue({
           code: "custom",
           path: ["reason"],
           message: `${value.status} step results require a reason matching the snapshot interruption`,
+        });
+      }
+      if (
+        value.result !== null &&
+        (value.result.status !== value.status ||
+          value.snapshot.result === null ||
+          canonicalJson(value.snapshot.result) !== canonicalJson(value.result))
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["result"],
+          message: `${value.status} step result must exactly match the snapshot terminal result`,
         });
       }
     } else if (value.status === "progress") {

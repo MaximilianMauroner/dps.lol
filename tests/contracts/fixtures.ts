@@ -325,6 +325,8 @@ export const censoredResult = parseContract(CombatResultSchema, {
     damage: { status: "value", value: 1234.5 },
     dps: { status: "value", value: 246.9 },
     ttk: { status: "censored", horizonMs: 5000 },
+    timeToFirstDeath: { status: "not-applicable", reason: "not the selected objective" },
+    timeToElimination: { status: "not-applicable", reason: "not the selected objective" },
   },
   killed: false,
   censoring: "right-censored",
@@ -421,6 +423,15 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
       startedAtMs: 100,
     },
   ],
+  policyProgress: {
+    policyId: samplePolicy.policyId,
+    revision: samplePolicy.revision,
+    nextStepId: "basic-attack",
+    steps: [
+      { stepId: "cast-w", consumedRepeats: 1, state: "completed" },
+      { stepId: "basic-attack", consumedRepeats: 2, state: "active" },
+    ],
+  },
   triggerState: [
     {
       triggerId: "trigger-001",

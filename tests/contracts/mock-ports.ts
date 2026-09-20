@@ -8,7 +8,7 @@ import type {
 
 /** A deterministic, side-effect-free port set for contract consumers. */
 export function createMockPorts(): CombatKernelPorts {
-  const events: TraceEvent[] = [];
+  const eventsByRunId = new Map<string, TraceEvent[]>();
   const scheduled = new Map<string, import("../../src/domain/contracts").ScheduledEvent>();
 
   return {
@@ -50,7 +50,9 @@ export function createMockPorts(): CombatKernelPorts {
       },
       cancel: (eventId) => scheduled.delete(eventId),
       peek: () =>
-        [...scheduled.values()].sort((left, right) => left.sequence - right.sequence)[0] ?? null,
+        [...scheduled.values()].sort(
+          (left, right) => left.timeMs - right.timeMs || left.sequence - right.sequence,
+        )[0] ?? null,
     },
     movement: {
       move: ({ entity, destination }) => ({
@@ -94,12 +96,16 @@ export function createMockPorts(): CombatKernelPorts {
       }),
     },
     trace: {
-      record: (event) => events.push(event),
+      record: (event, context) => {
+        const events = eventsByRunId.get(context.runId) ?? [];
+        events.push(event);
+        eventsByRunId.set(context.runId, events);
+      },
       snapshot: (runId) => ({
         schemaVersion: 1,
         traceId: `trace-${runId}`,
         runId,
-        events: [...events],
+        events: [...(eventsByRunId.get(runId) ?? [])],
         truncated: false,
         truncationReason: null,
       }),
