@@ -4,7 +4,7 @@
 
 ## World
 
-Rift Delta is a desktop damage-lab instrument in the register of modern LoL
+dps.lol is a desktop damage-lab instrument in the register of modern LoL
 stat products (dpm.lol token system, user-pinned): soft dark surfaces, rounded
 everything, one chemtech-teal decision accent, Inter with tabular numerals.
 The answer leads, the setup stays reachable beside it, and provenance and

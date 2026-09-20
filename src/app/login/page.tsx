@@ -31,7 +31,7 @@ export default function LoginPage() {
   return (
     <main className="login-shell">
       <form className="login-card" onSubmit={submit}>
-        <h1>Rift Delta</h1>
+        <h1>dps.lol</h1>
         <p>
           Private test prototype. Enter the access password to inspect the patch-pinned simulator.
         </p>

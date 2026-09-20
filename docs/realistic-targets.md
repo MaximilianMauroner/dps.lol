@@ -1,6 +1,6 @@
 # Realistic target snapshots
 
-Synthetic “2,000 HP / 100 armor” targets are useful for a unit test but poor answers to a build question. Rift Delta therefore stores the observations exposed by Match-V5 timelines and lets a simulation run across the resulting distribution.
+Synthetic “2,000 HP / 100 armor” targets are useful for a unit test but poor answers to a build question. dps.lol therefore stores the observations exposed by Match-V5 timelines and lets a simulation run across the resulting distribution.
 
 ## What is persisted
 

@@ -728,7 +728,7 @@ export default function Home() {
           <span className="logo" aria-hidden>
             Δ
           </span>
-          <strong>Rift Delta</strong>
+          <strong>dps.lol</strong>
           <div className="top-right">
             <span className="pill pill-gold">
               Patch {PATCH} · {DATA_VERSION}
@@ -938,7 +938,7 @@ export default function Home() {
       </div>
 
       <footer>
-        Rift Delta is an independent project and is not endorsed by Riot Games or anyone officially
+        dps.lol is an independent project and is not endorsed by Riot Games or anyone officially
         involved in producing or managing League of Legends. League of Legends and Riot Games are
         trademarks or registered trademarks of Riot Games, Inc.
       </footer>

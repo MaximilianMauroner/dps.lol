@@ -1,4 +1,4 @@
-# Rift Delta implementation roadmap snapshot
+# dps.lol implementation roadmap snapshot
 
 This is the P00-local planning snapshot of the reviewed GitHub requirements. The current issue
 bodies are authoritative; linked HTML microplans are historical and cannot override them.
@@ -15,7 +15,7 @@ bodies are authoritative; linked HTML microplans are historical and cannot overr
 
 ## Product goal retained by the roadmap
 
-Rift Delta is a complete, patch-versioned League theorycrafting system, not a curated Yunara
+dps.lol is a complete, patch-versioned League theorycrafting system, not a curated Yunara
 calculator. The final product must model combat-relevant champion, ability, passive, item, rune,
 summoner, buff, debuff, defensive, utility, environmental and mode mechanics and their
 interactions. It must support realistic match-derived scenarios, legal complete item-combination
