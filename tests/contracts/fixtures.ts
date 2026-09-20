@@ -332,6 +332,7 @@ export const censoredResult = parseContract(CombatResultSchema, {
     timeToElimination: { status: "not-applicable", reason: "not the selected objective" },
   },
   coverage: null,
+  uncertainty: null,
   killed: false,
   censoring: "right-censored",
   warnings: ["target survived the configured horizon"],

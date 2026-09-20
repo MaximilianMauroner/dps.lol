@@ -49,6 +49,14 @@ export function createMockPorts(): CombatKernelPorts {
       },
     },
     resources: {
+      restore: (entity, context) => {
+        for (const resource of entity.resources) {
+          resourceValues.set(
+            `${context.runId}\u0000${entity.entityId}\u0000${resource.resourceId}`,
+            resource.current,
+          );
+        }
+      },
       apply: (mutation, context) => {
         const key = `${context.runId}\u0000${mutation.entityId}\u0000${mutation.resourceId}`;
         const previous = resourceValues.get(key) ?? 100;
@@ -96,11 +104,14 @@ export function createMockPorts(): CombatKernelPorts {
               ? [request.selector.actorId]
               : request.selector.kind === "lowest-health-visible-enemy"
                 ? enemies
-                    .sort(
-                      (left, right) =>
-                        left.health.current / left.health.maximum -
-                          right.health.current / right.health.maximum ||
-                        left.entityId.localeCompare(right.entityId),
+                    .sort((left, right) =>
+                      left.health.current / left.health.maximum -
+                        right.health.current / right.health.maximum ||
+                      left.entityId < right.entityId
+                        ? -1
+                        : left.entityId > right.entityId
+                          ? 1
+                          : 0,
                     )
                     .slice(0, 1)
                     .map((entity) => entity.entityId)

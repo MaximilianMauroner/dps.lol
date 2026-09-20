@@ -148,9 +148,10 @@ command schema rejects scheduling work before the command's issue time, while
 complete traces require every causal ID to name an earlier event. Damage port
 results reconcile attempted, absorbed, prevented, applied and overkill amounts
 and bind death to zero remaining health; shields absorb damage before health.
-`StatsSnapshot` is runtime-validated for finite values. Seeded modes must name a real random
-algorithm rather than the deterministic `none` sentinel, and the RNG port restores
-persisted stream counters/state before resumed draws. The
+`StatsSnapshot` and damage responses are runtime-validated against their requests.
+RNG results validate value range, draw count and cumulative position. Seeded modes
+must name a real random algorithm rather than the deterministic `none` sentinel,
+and resource/RNG ports restore persisted state before resumed mutations or draws. The
 `WorkerMessageSchema` validates command, event and bounded-step envelopes
 before they cross a worker. The engine-facing `CombatEngine` has three paths
 over the same session semantics:
@@ -185,8 +186,11 @@ primary metric. Every censored metric must use the transferred objective's
 horizon. An exact transfer also rejects a
 complete right-censored non-kill when the objective uses `fail-if-not-killed`.
 Coverage-first aggregation additionally carries machine-readable killed/total
-counts with a consistent fraction. Sustained DPS requires a non-empty measurement
-window after warm-up. Objective, horizon, censoring and aggregation remain in the result's run context.
+counts and weights with a weight-consistent fraction. Sampled estimates carry
+effective sample count, confidence and standard errors. Uncensored elapsed-time
+metrics cannot exceed the objective horizon. Sustained DPS requires a non-empty
+measurement window after warm-up. Objective, horizon, censoring and aggregation
+remain in the result's run context.
 
 `EngineSnapshot` contains engine/ruleset/cohort/policy/scenario/candidate
 identity, queue IDs/order, current time, entity state, buff state, pending

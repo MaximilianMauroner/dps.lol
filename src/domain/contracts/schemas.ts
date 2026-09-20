@@ -24,7 +24,26 @@ const timestamp = z
   )
   .refine((value) => Number.isFinite(Date.parse(value)), {
     message: "must be an ISO-compatible timestamp",
-  });
+  })
+  .refine(
+    (value) => {
+      const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(value);
+      if (!match) return false;
+      const [, year, month, day, hour, minute, second] = match.map(Number);
+      const candidate = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+      return (
+        candidate.getUTCFullYear() === year &&
+        candidate.getUTCMonth() === month - 1 &&
+        candidate.getUTCDate() === day &&
+        candidate.getUTCHours() === hour &&
+        candidate.getUTCMinutes() === minute &&
+        candidate.getUTCSeconds() === second
+      );
+    },
+    {
+      message: "must contain a real calendar date and time",
+    },
+  );
 
 export type JsonValue =
   string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -318,6 +337,13 @@ export const EntityStateSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.alive !== value.health.current > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["alive"],
+        message: "entity alive state must match positive current health",
+      });
+    }
     addDuplicateIdIssues(
       value.resources.map((resource) => resource.resourceId),
       "resources",
@@ -992,6 +1018,24 @@ function validateScenarioReferences(
   for (const [stepIndex, step] of value.policy.steps.entries()) {
     const action = step.action;
     const actor = entitiesById.get(action.actorId);
+    if (!visibleEntityIds.has(action.actorId)) {
+      addReferenceIssue(
+        context,
+        ["policy", "steps", stepIndex, "action", "actorId"],
+        `policy action references hidden actor ${action.actorId}`,
+      );
+    }
+    if (
+      "target" in action &&
+      action.target.kind === "entity" &&
+      !visibleEntityIds.has(action.target.entityId)
+    ) {
+      addReferenceIssue(
+        context,
+        ["policy", "steps", stepIndex, "action", "target", "entityId"],
+        `policy action targets hidden entity ${action.target.entityId}`,
+      );
+    }
     if (actor && action.kind === "ability") {
       if (!actor.abilities.some((ability) => ability.abilityId === action.abilityId)) {
         addReferenceIssue(
@@ -1041,14 +1085,6 @@ function validateScenarioReferences(
             context,
             reference.path,
             `condition references unknown resource ${reference.resourceId} on entity ${reference.entityId}`,
-          );
-        }
-      } else if (reference.kind === "buff") {
-        if (!entity.buffs.some((buff) => buff.buffId === reference.buffId)) {
-          addReferenceIssue(
-            context,
-            reference.path,
-            `condition references unknown buff ${reference.buffId} on entity ${reference.entityId}`,
           );
         }
       }
@@ -1413,6 +1449,8 @@ export const KillCoverageSchema = z
   .object({
     killedCount: nonNegativeInteger,
     totalCount: positiveInteger,
+    killedWeight: nonNegativeNumber,
+    totalWeight: finiteNumber.positive(),
     fraction: finiteNumber.min(0).max(1),
   })
   .strict()
@@ -1424,12 +1462,38 @@ export const KillCoverageSchema = z
         message: "kill coverage cannot exceed its denominator",
       });
     }
-    if (Math.abs(value.fraction - value.killedCount / value.totalCount) > 1e-12) {
+    if (value.killedWeight > value.totalWeight) {
+      context.addIssue({
+        code: "custom",
+        path: ["killedWeight"],
+        message: "killed coverage weight cannot exceed total weight",
+      });
+    }
+    if (Math.abs(value.fraction - value.killedWeight / value.totalWeight) > 1e-12) {
       context.addIssue({
         code: "custom",
         path: ["fraction"],
-        message: "kill coverage fraction must match its counts",
+        message: "kill coverage fraction must match its weights",
       });
+    }
+  });
+
+export const SampleUncertaintySchema = z
+  .object({
+    effectiveSampleCount: positiveInteger,
+    confidenceLevel: finiteNumber.gt(0).lt(1),
+    standardErrors: finiteNumberMap,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    for (const [metric, standardError] of Object.entries(value.standardErrors)) {
+      if (standardError < 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["standardErrors", metric],
+          message: "metric standard errors cannot be negative",
+        });
+      }
     }
   });
 
@@ -1452,6 +1516,7 @@ export const CombatResultSchema = z
       })
       .strict(),
     coverage: KillCoverageSchema.nullable(),
+    uncertainty: SampleUncertaintySchema.nullable(),
     killed: z.boolean(),
     censoring: z.enum(["not-censored", "right-censored", "invalid"]),
     warnings: z.array(z.string()),
@@ -1547,6 +1612,24 @@ export const CombatResultSchema = z
   });
 export type CombatResult = z.infer<typeof CombatResultSchema>;
 
+export const EngineRunSchema = z
+  .object({
+    status: z.enum(["complete", "incomplete", "cancelled", "invalid"]),
+    result: CombatResultSchema,
+    trace: TraceSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.status !== value.result.status) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "status"],
+        message: "engine run status must match its result status",
+      });
+    }
+  });
+export type EngineRun = z.infer<typeof EngineRunSchema>;
+
 export const ScheduledEventSchema = z
   .object({
     eventId: identifier,
@@ -1605,6 +1688,19 @@ export const EventQueueSnapshotSchema = z
         });
       }
     }
+    const eventIndexById = new Map(value.entries.map((event, index) => [event.eventId, index]));
+    for (const [index, event] of value.entries.entries()) {
+      for (const [causeIndex, causeEventId] of event.causeEventIds.entries()) {
+        const causeIndexInQueue = eventIndexById.get(causeEventId);
+        if (causeIndexInQueue !== undefined && causeIndexInQueue >= index) {
+          context.addIssue({
+            code: "custom",
+            path: ["entries", index, "causeEventIds", causeIndex],
+            message: "queued causes must reference an earlier retained event",
+          });
+        }
+      }
+    }
   });
 
 export const PendingActionSchema = z
@@ -1647,6 +1743,14 @@ export const PolicyExecutionProgressSchema = z
         code: "custom",
         path: ["nextStepId"],
         message: "next policy step must exist in policy execution progress",
+      });
+    }
+    const next = value.steps.find((step) => step.stepId === value.nextStepId);
+    if (next && !["not-started", "active"].includes(next.state)) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextStepId"],
+        message: "next policy step must reference executable progress",
       });
     }
   });
@@ -2023,6 +2127,13 @@ export const PolicyVisibleEntitySchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.alive !== value.health.current > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["alive"],
+        message: "visible alive state must match positive current health",
+      });
+    }
     addDuplicateIdIssues(
       value.resources.map((resource) => resource.resourceId),
       "resources",
@@ -2057,6 +2168,17 @@ export const PolicyVisibleStateSchema = z
         path: ["entities"],
         message: "policy-visible entity IDs must be unique",
       });
+    }
+    for (const [entityIndex, entity] of value.entities.entries()) {
+      for (const [buffIndex, buff] of entity.buffs.entries()) {
+        if (buff.expiresAtMs !== null && buff.expiresAtMs < value.atTimeMs) {
+          context.addIssue({
+            code: "custom",
+            path: ["entities", entityIndex, "buffs", buffIndex, "expiresAtMs"],
+            message: "policy-visible buffs cannot already be expired",
+          });
+        }
+      }
     }
     if (value.visibility.visibleEntityIds.length !== entityIds.length) {
       context.addIssue({
@@ -2212,6 +2334,36 @@ export const EngineStepResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    const emittedIds = value.emittedEvents.map((event) => event.eventId);
+    const emittedSequences = value.emittedEvents.map((event) => event.sequence);
+    if (new Set(emittedIds).size !== emittedIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["emittedEvents"],
+        message: "emitted event IDs must be unique",
+      });
+    }
+    if (new Set(emittedSequences).size !== emittedSequences.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["emittedEvents"],
+        message: "emitted event sequences must be unique",
+      });
+    }
+    for (let index = 1; index < value.emittedEvents.length; index += 1) {
+      const previous = value.emittedEvents[index - 1]!;
+      const current = value.emittedEvents[index]!;
+      if (
+        current.timeMs < previous.timeMs ||
+        (current.timeMs === previous.timeMs && current.sequence <= previous.sequence)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["emittedEvents", index],
+          message: "emitted events must be ordered by time then sequence",
+        });
+      }
+    }
     const expectedSnapshotStatus = value.status === "progress" ? "running" : value.status;
     if (value.snapshot.status !== expectedSnapshotStatus) {
       context.addIssue({
@@ -2401,6 +2553,37 @@ export const ExactComparisonTransferSchema = z
           message: "censored metric must match the transferred objective horizon",
         });
       }
+      if (
+        ["ttk", "timeToFirstDeath", "timeToElimination"].includes(metricName) &&
+        metric.status === "value" &&
+        metric.value > value.run.objective.horizonMs
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "metrics", metricName, "value"],
+          message: "elapsed-time metric cannot exceed the transferred objective horizon",
+        });
+      }
+    }
+    if (value.run.evaluationMode.kind === "sampled-estimate") {
+      const uncertainty = value.result.uncertainty;
+      if (
+        uncertainty === null ||
+        uncertainty.confidenceLevel !== value.run.evaluationMode.confidenceLevel ||
+        uncertainty.effectiveSampleCount > value.run.evaluationMode.random.trialCount
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "uncertainty"],
+          message: "sampled estimates require matching machine-readable uncertainty",
+        });
+      }
+    } else if (value.result.uncertainty !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "uncertainty"],
+        message: "non-sampled results cannot carry sampling uncertainty",
+      });
     }
     if (
       canonicalJson(value.run.objective) !==
@@ -2596,6 +2779,7 @@ function canonicalize(value: unknown, stack: Set<object>): string {
 }
 
 function detachCanonicalData(value: unknown): unknown {
+  if (typeof value === "number" && Object.is(value, -0)) return 0;
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {
     const detached: unknown[] = new Array(value.length);

@@ -1,6 +1,8 @@
 import {
   assertResumableSnapshot,
   canonicalJson,
+  DamageResolutionSchema,
+  EngineRunSchema,
   parseContract,
   ResolvedScenarioSchema,
   RunManifestSchema,
@@ -12,6 +14,7 @@ import {
   type EngineEvent,
   type EngineStepResult,
   type EngineSnapshot,
+  type EngineRun,
   type EntityState,
   type ExactComparisonTransfer,
   type ItemInstance,
@@ -46,14 +49,21 @@ export type StateRead = Readonly<{
   stateRevision: number;
 }>;
 
-export function assertStatsSnapshot(value: unknown): StatsSnapshot {
-  return parseContract(StatsSnapshotSchema, value);
-}
-
 export type StatsRequest = Readonly<{
   entity: EntityState;
   read: StateRead;
 }>;
+
+export function assertStatsSnapshot(request: StatsRequest, value: unknown): StatsSnapshot {
+  const snapshot = parseContract(StatsSnapshotSchema, value);
+  if (
+    snapshot.entityId !== request.entity.entityId ||
+    snapshot.revision !== request.read.stateRevision
+  ) {
+    throw new TypeError("stats snapshot must match the requested entity and state revision");
+  }
+  return snapshot;
+}
 
 export interface StatsPort {
   resolve(request: StatsRequest, context: PortContext): StatsSnapshot;
@@ -70,6 +80,19 @@ export type DamageRequest = Readonly<{
 
 export interface DamagePort {
   resolve(request: DamageRequest, context: PortContext): DamageResolution;
+}
+
+export function assertDamageResolution(request: DamageRequest, value: unknown): DamageResolution {
+  const resolution = parseContract(DamageResolutionSchema, value);
+  const expectedHealth = Math.max(0, request.target.health.current - resolution.applied);
+  if (
+    resolution.attempted !== request.packet.rawAmount ||
+    resolution.absorbed > request.target.health.shield ||
+    resolution.targetHealthAfter !== expectedHealth
+  ) {
+    throw new TypeError("damage resolution must match the requested packet and target state");
+  }
+  return resolution;
 }
 
 export type ResourceMutation = Readonly<{
@@ -89,6 +112,7 @@ export type ResourceResolution = Readonly<{
 }>;
 
 export interface ResourcePort {
+  restore(entity: EntityState, context: PortContext): void;
   apply(mutation: ResourceMutation, context: PortContext): ResourceResolution;
 }
 
@@ -180,6 +204,28 @@ export type RngResult = Readonly<{
   values: readonly number[];
   nextDrawCount: number;
 }>;
+
+export function assertRngResult(
+  request: RngRequest,
+  previousDrawCount: number,
+  value: unknown,
+): RngResult {
+  if (typeof value !== "object" || value === null)
+    throw new TypeError("RNG result must be an object");
+  const result = value as Partial<RngResult>;
+  if (
+    result.streamId !== request.streamId ||
+    !Array.isArray(result.values) ||
+    result.values.length !== request.draws ||
+    result.values.some((draw) => !Number.isFinite(draw) || draw < 0 || draw >= 1) ||
+    result.nextDrawCount !== previousDrawCount + request.draws
+  ) {
+    throw new TypeError(
+      "RNG result must match the requested stream, draw count, and cumulative counter",
+    );
+  }
+  return result as RngResult;
+}
 
 export interface RngPort {
   restore(snapshot: RngStreamSnapshot, context: PortContext): void;
@@ -282,6 +328,11 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
       mismatches.push(`snapshot policy step ${step.stepId} is active at its repeat limit`);
     }
   }
+  for (const branch of snapshot.numericalBranches) {
+    if (branch.mode !== scenario.effective.evaluationMode.kind) {
+      mismatches.push(`snapshot numerical branch ${branch.branchId} differs from evaluation mode`);
+    }
+  }
 
   const identities: ReadonlyArray<[string, string, string]> = [
     ["runId", snapshot.runId, run.runId],
@@ -307,11 +358,9 @@ export interface EngineSession {
   policyView(): PolicyVisibleState;
 }
 
-export type EngineRun = Readonly<{
-  status: "complete" | "incomplete" | "cancelled" | "invalid";
-  result: CombatResult;
-  trace: Trace;
-}>;
+export function assertEngineRun(value: unknown): EngineRun {
+  return parseContract(EngineRunSchema, value);
+}
 
 export interface CombatEngine {
   createSession(input: EngineInput): EngineSession;
