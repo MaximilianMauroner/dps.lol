@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { types as nodeUtilTypes } from "node:util";
 
 /**
  * P01 freezes the wire shape, not the complete combat implementation. Later
@@ -289,6 +290,20 @@ export const ItemInstanceSchema = z
         message: "changed effective item identity requires upgrade metadata",
       });
     }
+    if (value.upgrade !== null && value.baseItemId === value.effectiveItemId) {
+      context.addIssue({
+        code: "custom",
+        path: ["upgrade"],
+        message: "unchanged item identity cannot carry upgrade metadata",
+      });
+    }
+    if (value.upgrade !== null && value.upgrade.fromItemId === value.upgrade.toItemId) {
+      context.addIssue({
+        code: "custom",
+        path: ["upgrade", "toItemId"],
+        message: "item upgrades require a real identity change",
+      });
+    }
     if (value.upgrade && value.upgrade.fromItemId !== value.baseItemId) {
       context.addIssue({
         code: "custom",
@@ -458,8 +473,15 @@ export const CohortSpecSchema = z
         message: "cohort member IDs must be unique",
       });
     }
+    const totalWeight = value.members.reduce((sum, member) => sum + member.weight, 0);
+    if (!Number.isFinite(totalWeight)) {
+      context.addIssue({
+        code: "custom",
+        path: ["members"],
+        message: "aggregate cohort weight must be finite",
+      });
+    }
     if (value.normalized) {
-      const totalWeight = value.members.reduce((sum, member) => sum + member.weight, 0);
       if (Math.abs(totalWeight - 1) > 1e-9) {
         context.addIssue({
           code: "custom",
@@ -1560,6 +1582,20 @@ export const KillCoverageSchema = z
         message: "killed coverage weight cannot exceed total weight",
       });
     }
+    if ((value.killedCount === 0) !== (value.killedWeight === 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["killedWeight"],
+        message: "zero kill count and weight must agree",
+      });
+    }
+    if ((value.killedCount === value.totalCount) !== (value.killedWeight === value.totalWeight)) {
+      context.addIssue({
+        code: "custom",
+        path: ["killedWeight"],
+        message: "full kill count and weight must agree",
+      });
+    }
     if (Math.abs(value.fraction - value.killedWeight / value.totalWeight) > 1e-12) {
       context.addIssue({
         code: "custom",
@@ -2214,7 +2250,16 @@ export const PolicyVisibleReadinessSchema = z
     ready: z.boolean(),
     cooldownRemainingMs: nonNegativeInteger,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.ready && value.cooldownRemainingMs !== 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["cooldownRemainingMs"],
+        message: "ready abilities require zero remaining cooldown",
+      });
+    }
+  });
 
 export const PolicyVisibleResourceSchema = z
   .object({
@@ -2832,6 +2877,7 @@ export const WorkerMessageSchema = z.discriminatedUnion("direction", [
     .object({
       schemaVersion: z.literal(CONTRACT_SCHEMA_VERSION),
       direction: z.literal("event"),
+      runId: identifier,
       payload: EngineEventSchema,
     })
     .strict(),
@@ -3011,8 +3057,24 @@ function assertStructuredCloneSafe(value: unknown): void {
   }
 }
 
+function assertAccessorAndProxySafe(value: unknown, seen = new Set<object>()): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  if (nodeUtilTypes.isProxy(value)) {
+    throw new TypeError("canonical JSON requires structured-clone-safe data");
+  }
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && ("get" in descriptor || "set" in descriptor)) {
+      throw new TypeError("canonical JSON cannot contain accessor properties");
+    }
+    if (descriptor && "value" in descriptor) assertAccessorAndProxySafe(descriptor.value, seen);
+  }
+}
+
 /** Stable key ordering is shared by hashes, cache identities, and replay files. */
 export function canonicalJson(value: unknown): string {
+  assertAccessorAndProxySafe(value);
   assertStructuredCloneSafe(value);
   return canonicalize(value, new Set<object>());
 }
@@ -3028,14 +3090,21 @@ export async function hashCanonical(value: unknown): Promise<ContentHash> {
 
 export async function assertResolvedScenarioPolicyHash(value: unknown): Promise<ResolvedScenario> {
   const scenario = parseContract(ResolvedScenarioSchema, value);
-  const actual = await hashCanonical(scenario.effective.policy);
-  if (scenario.policyHash !== actual) {
+  const [actualPolicyHash, actualScenarioHash] = await Promise.all([
+    hashCanonical(scenario.effective.policy),
+    hashCanonical(scenario.effective),
+  ]);
+  if (
+    scenario.policyHash !== actualPolicyHash ||
+    scenario.resolvedScenarioHash !== actualScenarioHash
+  ) {
     throw new ContractValidationError(
       new z.ZodError([
         {
           code: "custom",
-          path: ["policyHash"],
-          message: "policyHash must match canonical effective policy bytes",
+          path:
+            scenario.policyHash !== actualPolicyHash ? ["policyHash"] : ["resolvedScenarioHash"],
+          message: "resolved scenario hashes must match canonical effective bytes",
         },
       ]),
     );

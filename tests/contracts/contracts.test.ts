@@ -5,10 +5,12 @@ import {
   assertDamageResolution,
   assertEngineRun,
   assertLifecycleResolution,
+  assertMovementResolution,
   assertResolvedScenarioPolicyHash,
   assertRngResult,
   assertResourceResolution,
   assertTargetingResolution,
+  assertTriggerDispatchResult,
   assertStatsSnapshot,
   assertResumableSnapshot,
   assertResumeCompatible,
@@ -1854,8 +1856,138 @@ describe("P01 versioned contract fixtures", () => {
 
     const policyBound = clone(sampleResolvedScenario);
     policyBound.policyHash = await hashCanonical(policyBound.effective.policy);
+    policyBound.resolvedScenarioHash = await hashCanonical(policyBound.effective);
     await expect(assertResolvedScenarioPolicyHash(policyBound)).resolves.toBeDefined();
     policyBound.effective.policy.steps[0]!.priority += 100;
-    await expect(assertResolvedScenarioPolicyHash(policyBound)).rejects.toThrow(/policyHash/);
+    await expect(assertResolvedScenarioPolicyHash(policyBound)).rejects.toThrow(
+      /resolved scenario hashes/,
+    );
+  });
+
+  test("closes paginated findings for worker, adapter, and aggregate boundaries", async () => {
+    const noOpUpgrade = {
+      ...clone(parsedItemInstance),
+      effectiveItemId: parsedItemInstance.baseItemId,
+      upgrade: {
+        upgradeId: "noop",
+        fromItemId: parsedItemInstance.baseItemId,
+        toItemId: parsedItemInstance.baseItemId,
+      },
+    };
+    expect(() => parseContract(ItemInstanceSchema, noOpUpgrade)).toThrow(
+      /unchanged item identity|real identity change/,
+    );
+
+    expect(() =>
+      parseContract(WorkerMessageSchema, {
+        schemaVersion: 1,
+        direction: "event",
+        payload: {
+          schemaVersion: 1,
+          eventId: "event-worker",
+          timeMs: 0,
+          sequence: 1,
+          phase: "input",
+          kind: "action",
+          actorEntityId: "actor",
+          targetEntityIds: [],
+          causeEventIds: [],
+          payload: {},
+        },
+      }),
+    ).toThrow(/expected string/);
+
+    const activeOneShot = clone(sampleSnapshot);
+    activeOneShot.policyProgress.steps[0]!.state = "active";
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        activeOneShot,
+      ),
+    ).toThrow(/repeat limit/);
+
+    expect(() =>
+      assertMovementResolution(
+        {
+          entity: transformedCopiedAbility,
+          destination: { x: 1, y: 2, z: 3 },
+          read: { kind: "snapshot", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+        },
+        { entityId: "actor", accepted: true, position: { x: 1, y: 2, z: 3 }, reason: null },
+      ),
+    ).toThrow(/requested entity/);
+
+    expect(() =>
+      assertTriggerDispatchResult(
+        {
+          triggerId: "trigger",
+          ownerEntityId: "actor",
+          event: {
+            schemaVersion: 1,
+            eventId: "cause",
+            timeMs: 0,
+            sequence: 1,
+            phase: "input",
+            kind: "action",
+            actorEntityId: "actor",
+            targetEntityIds: [],
+            causeEventIds: [],
+            payload: {},
+          },
+        },
+        mockPortContext,
+        { accepted: false, emittedCommands: [{ schemaVersion: 1 }], reason: "rejected" },
+      ),
+    ).toThrow(/commands must correlate/);
+
+    const impossibleCoverage = clone(censoredResult);
+    impossibleCoverage.coverage = {
+      killedCount: 0,
+      totalCount: 1,
+      killedWeight: 1,
+      totalWeight: 1,
+      fraction: 1,
+    };
+    expect(() => parseContract(CombatResultSchema, impossibleCoverage)).toThrow(
+      /kill count and weight/,
+    );
+
+    const contradictoryReadiness = visiblePolicyStateFixture();
+    contradictoryReadiness.readiness[0]!.cooldownRemainingMs = 1;
+    expect(() => parseContract(PolicyVisibleStateSchema, contradictoryReadiness)).toThrow(
+      /zero remaining cooldown/,
+    );
+
+    const infiniteAggregate = clone(sampleScenario);
+    infiniteAggregate.cohort.normalized = false;
+    infiniteAggregate.cohort.weighting = "declared-mass";
+    infiniteAggregate.cohort.members[0]!.weight = 1e308;
+    infiniteAggregate.cohort.members.push({
+      ...clone(infiniteAggregate.cohort.members[0]!),
+      memberId: "member-large",
+    });
+    expect(() => parseContract(ScenarioSpecSchema, infiniteAggregate)).toThrow(
+      /aggregate cohort weight must be finite/,
+    );
+
+    let getterRan = false;
+    const accessor = {};
+    Object.defineProperty(accessor, "value", {
+      enumerable: true,
+      get: () => {
+        getterRan = true;
+        return 1;
+      },
+    });
+    expect(() => canonicalJson(accessor)).toThrow(/accessor/);
+    expect(getterRan).toBe(false);
+
+    const scenarioHash = clone(sampleResolvedScenario);
+    scenarioHash.policyHash = await hashCanonical(scenarioHash.effective.policy);
+    scenarioHash.resolvedScenarioHash = await hashCanonical(scenarioHash.effective);
+    scenarioHash.effective.objective.horizonMs += 1;
+    await expect(assertResolvedScenarioPolicyHash(scenarioHash)).rejects.toThrow(
+      /resolved scenario hashes/,
+    );
   });
 });

@@ -3,11 +3,13 @@ import {
   canonicalJson,
   DamageResolutionSchema,
   EngineRunSchema,
+  EngineCommandSchema,
   LifecycleResolutionSchema,
   parseContract,
   ResolvedScenarioSchema,
   ResourceResolutionSchema,
   RngResultSchema,
+  PositionSchema,
   RunManifestSchema,
   StatsSnapshotSchema,
   type CombatResult,
@@ -178,6 +180,42 @@ export interface MovementPort {
   move(request: MovementRequest, context: PortContext): MovementResolution;
 }
 
+export function assertMovementResolution(
+  request: MovementRequest,
+  value: unknown,
+): MovementResolution {
+  canonicalJson(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new TypeError("movement resolution must be a strict object");
+  const result = value as Partial<MovementResolution>;
+  if (
+    Object.keys(value).length !== 4 ||
+    !Object.hasOwn(value, "entityId") ||
+    !Object.hasOwn(value, "accepted") ||
+    !Object.hasOwn(value, "position") ||
+    !Object.hasOwn(value, "reason")
+  )
+    throw new TypeError("movement resolution must contain only declared fields");
+  const position = parseContract(PositionSchema, result.position);
+  if (
+    request.read.entityId !== request.entity.entityId ||
+    result.entityId !== request.entity.entityId ||
+    typeof result.accepted !== "boolean" ||
+    (result.reason !== null && typeof result.reason !== "string") ||
+    result.accepted !== (result.reason === null) ||
+    (result.accepted && canonicalJson(position) !== canonicalJson(request.destination))
+  )
+    throw new TypeError(
+      "movement resolution must match the requested entity, read, destination, and acceptance",
+    );
+  return {
+    entityId: result.entityId,
+    accepted: result.accepted,
+    position,
+    reason: result.reason,
+  } as MovementResolution;
+}
+
 export type TargetingRequest = Readonly<{
   actor: EntityState;
   selector: TargetSelector;
@@ -315,6 +353,48 @@ export interface TriggerPort {
   dispatch(request: TriggerDispatch, context: PortContext): TriggerDispatchResult;
 }
 
+export function assertTriggerDispatchResult(
+  request: TriggerDispatch,
+  context: PortContext,
+  value: unknown,
+): TriggerDispatchResult {
+  canonicalJson(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new TypeError("trigger result must be a strict object");
+  const result = value as Partial<TriggerDispatchResult>;
+  if (
+    Object.keys(value).length !== 3 ||
+    !Object.hasOwn(value, "accepted") ||
+    !Object.hasOwn(value, "emittedCommands") ||
+    !Object.hasOwn(value, "reason")
+  )
+    throw new TypeError("trigger result must contain only declared fields");
+  if (
+    !Array.isArray(result.emittedCommands) ||
+    typeof result.accepted !== "boolean" ||
+    (result.reason !== null && typeof result.reason !== "string") ||
+    result.accepted !== (result.reason === null) ||
+    (!result.accepted && result.emittedCommands.length > 0)
+  )
+    throw new TypeError("trigger result acceptance, reason, and commands must correlate");
+  const commands = result.emittedCommands.map((command) =>
+    parseContract(EngineCommandSchema, command),
+  );
+  for (const command of commands) {
+    if (
+      command.issuedAtMs < context.timeMs ||
+      !command.causeEventIds.includes(request.event.eventId)
+    ) {
+      throw new TypeError("trigger commands must preserve dispatch timing and causal identity");
+    }
+  }
+  return {
+    accepted: result.accepted,
+    emittedCommands: commands,
+    reason: result.reason,
+  } as TriggerDispatchResult;
+}
+
 export type RngRequest = Readonly<{
   streamId: string;
   draws: number;
@@ -444,8 +524,8 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
     }
     if (
       progress.state === "active" &&
-      step.maxRepeats !== null &&
-      progress.consumedRepeats >= step.maxRepeats
+      ((!step.repeat && progress.consumedRepeats >= 1) ||
+        (step.maxRepeats !== null && progress.consumedRepeats >= step.maxRepeats))
     ) {
       mismatches.push(`snapshot policy step ${step.stepId} is active at its repeat limit`);
     }
