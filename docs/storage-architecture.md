@@ -3,7 +3,7 @@
 **Date:** 2026-09-17  
 **Status:** accepted as the minimal direction; implementation is deliberately deferred to a
 follow-up change  
-**Scope:** the existing `rift-delta` Railway project, patch-pinned Riot ingestion, and the
+**Scope:** the existing `dps.lol` Railway project, patch-pinned Riot ingestion, and the
 interactive target-distribution simulator
 
 ## Decision
@@ -73,7 +73,7 @@ slider path.
 
 ## Verified Railway state (read-only)
 
-The Railway CLI is linked to project `rift-delta`, workspace `Lab4Code`, environment `production`.
+The Railway CLI is linked to project `dps.lol`, workspace `Lab4Code`, environment `production`.
 Current metadata shows:
 
 - one persistent Postgres deployment, currently running, plus one lean `web` service;

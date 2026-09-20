@@ -15,7 +15,7 @@ tool; dense data tables are fine. Mobile is not a priority.
 
 ## Product Purpose
 
-Rift Delta is a patch-pinned League of Legends damage lab. It answers "which
+dps.lol is a patch-pinned League of Legends damage lab. It answers "which
 build outputs the most DPS" with an inspectable expected-value simulator plus
 observed target cohorts from real matches. Starting focus: DPS within 20s (long
 teamfights) and within 3s and 5s (quick trades). Success is a high-elo ADC
@@ -27,7 +27,7 @@ snapshot.
 A transparent lab, not an opinion guide: every number traces to a published
 formula or an observed match snapshot, pinned to one patch, with limitations
 surfaced in the UI instead of hidden. Neighboring build guides give
-recommendations; Rift Delta shows its work.
+recommendations; dps.lol shows its work.
 
 ## Operating Context
 
@@ -58,7 +58,7 @@ with small changes; cached cohorts and fast local recompute matter.
 
 ## Brand Commitments
 
-Name "Rift Delta" stays. No binding visual identity, palette, or typeface; the
+The product name is "dps.lol" (renamed from Rift Delta on 2026-09-20). No binding visual identity, palette, or typeface; the
 incumbent dark lab look is evidence only and may be replaced. Riot trademark
 disclaimer footer must stay.
 

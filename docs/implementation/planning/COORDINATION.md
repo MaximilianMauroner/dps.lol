@@ -1,4 +1,4 @@
-# Rift Delta coordination rules
+# dps.lol coordination rules
 
 ## Integration ownership
 

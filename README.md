@@ -1,6 +1,6 @@
-# Rift Delta
+# dps.lol
 
-Rift Delta is an independent, patch-pinned League of Legends damage lab. It answers questions such
+dps.lol is an independent, patch-pinned League of Legends damage lab. It answers questions such
 as “Yunara’s third item: Infinity Edge or Lord Dominik’s Regards?” with an inspectable expected-value
 simulator and observed target cohorts. The engine is a pure TypeScript library; the Next.js UI,
 Riot ingestion, Postgres adapter, and private Railway archive are separate layers.
@@ -43,7 +43,7 @@ bun run db:migrate
 bun run data:sync
 ```
 
-The existing prototype uses Railway project `rift-delta` / workspace `Lab4Code` / `production`, one
+The existing prototype uses Railway project `dps.lol` / workspace `Lab4Code` / `production`, one
 persistent Postgres, one private Railway bucket, and one lean `web` service. Postgres is deliberately
 kept warm; no database sleep or scale-to-zero setting was changed. The web pool is capped at three
 connections with a 30-second idle timeout and telemetry is disabled. Ingestion is a bounded command,
@@ -151,5 +151,5 @@ whose HP/armor/bonus HP are recorded, and compare the trace’s first-crossing/o
 the same target and opener, record whether it dies within the window, and treat any discrepancy as a
 mechanics-model issue rather than evidence that a tiny cohort is representative.
 
-Rift Delta is not endorsed by Riot Games. League of Legends and Riot Games are trademarks or
+dps.lol is not endorsed by Riot Games. League of Legends and Riot Games are trademarks or
 registered trademarks of Riot Games, Inc.
