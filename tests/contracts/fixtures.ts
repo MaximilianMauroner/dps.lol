@@ -274,6 +274,7 @@ export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
   scenarioId: sampleScenario.scenarioId,
   resolvedScenarioHash: HASH_B,
   policyHash: HASH_A,
+  candidateInput: { candidateId: "fixture-candidate", itemIds: ["3031"] },
   candidateInputHash: HASH_C,
   effective: {
     rulesetManifestHash: sampleScenario.rulesetManifestHash,
@@ -289,6 +290,7 @@ export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
   provenance: {
     ...sampleScenario.inputProvenance,
     policyHash: fixtureProvenance,
+    candidateInput: fixtureProvenance,
     candidateInputHash: fixtureProvenance,
   },
 }) as HashVerifiedResolvedScenario;

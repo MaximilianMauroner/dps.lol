@@ -4,6 +4,7 @@ import {
   DamageResolutionSchema,
   EngineRunSchema,
   EngineCommandSchema,
+  EngineStepResultSchema,
   LifecycleResolutionSchema,
   parseContract,
   ResolvedScenarioSchema,
@@ -117,6 +118,7 @@ export function assertDamageResolution(
     request.packet.targetEntityId !== request.target.entityId ||
     request.attackerStats.entityId !== request.attacker.entityId ||
     request.targetStats.entityId !== request.target.entityId ||
+    request.targetStats.revision !== request.read.stateRevision ||
     request.read.entityId !== request.target.entityId ||
     request.read.atTimeMs !== context.timeMs
   ) {
@@ -131,6 +133,7 @@ export function assertDamageResolution(
   const postShield = postMitigation - expectedAbsorbed;
   const expectedApplied = Math.min(postShield, request.target.health.current);
   const expectedOverkill = request.packet.canOverkill ? postShield - expectedApplied : 0;
+  const expectedDiscarded = request.packet.canOverkill ? 0 : postShield - expectedApplied;
   const expectedHealth = request.target.health.current - expectedApplied;
   if (
     resolution.attempted !== request.packet.rawAmount ||
@@ -138,6 +141,7 @@ export function assertDamageResolution(
     !close(resolution.absorbed, expectedAbsorbed) ||
     !close(resolution.applied, expectedApplied) ||
     !close(resolution.overkill, expectedOverkill) ||
+    !close(resolution.discarded, expectedDiscarded) ||
     !close(resolution.targetHealthAfter, expectedHealth) ||
     resolution.killed !== (expectedHealth === 0)
   ) {
@@ -406,6 +410,13 @@ export function assertLifecycleResolution(
   entities: readonly EntityState[],
   value: unknown,
 ): LifecycleResolution {
+  const entityExists = entities.some((entity) => entity.entityId === transition.entityId);
+  if (
+    (transition.transition === "spawn" && entityExists) ||
+    (transition.transition !== "spawn" && !entityExists)
+  ) {
+    throw new TypeError("lifecycle transition must match authoritative entity existence");
+  }
   if (transition.replacement !== null && transition.replacement.entityId !== transition.entityId) {
     throw new TypeError("lifecycle replacement identity must match the transition entity");
   }
@@ -479,8 +490,13 @@ export function assertTriggerDispatchResult(
   context: PortContext,
   value: unknown,
 ): TriggerDispatchResult {
-  if (request.event.timeMs !== context.timeMs || request.event.sequence !== context.sequence)
-    throw new TypeError("trigger event time and sequence must match the port context");
+  if (
+    request.event.timeMs !== context.timeMs ||
+    request.event.sequence !== context.sequence ||
+    canonicalJson([...request.event.causeEventIds].sort()) !==
+      canonicalJson([...context.causeEventIds].sort())
+  )
+    throw new TypeError("trigger event time, sequence, and causes must match the port context");
   canonicalJson(value);
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new TypeError("trigger result must be a strict object");
@@ -508,7 +524,10 @@ export function assertTriggerDispatchResult(
   for (const command of commands) {
     if (
       command.issuedAtMs !== context.timeMs ||
-      !command.causeEventIds.includes(request.event.eventId)
+      !command.causeEventIds.includes(request.event.eventId) ||
+      (command.kind === "schedule-event" &&
+        command.event.timeMs === context.timeMs &&
+        command.event.sequence <= context.sequence)
     ) {
       throw new TypeError("trigger commands must preserve dispatch timing and causal identity");
     }
@@ -583,6 +602,13 @@ declare const validatedEngineInput: unique symbol;
 /** Frozen input returned only after replay-affecting identities are validated. */
 export type ValidatedEngineInput = EngineInput & Readonly<{ [validatedEngineInput]: true }>;
 
+declare const validatedResume: unique symbol;
+export type ValidatedResume = Readonly<{
+  input: ValidatedEngineInput;
+  snapshot: EngineSnapshot;
+  [validatedResume]: true;
+}>;
+
 export class ResumeCompatibilityError extends Error {
   readonly mismatches: readonly string[];
 
@@ -631,7 +657,7 @@ export function assertEngineInputCompatible(input: EngineInput): ValidatedEngine
  * is allowed to resume it. Concrete engines must call this guard at their
  * resumeSession boundary.
  */
-export function assertResumeCompatible(input: EngineInput, value: unknown): EngineSnapshot {
+export function assertResumeCompatible(input: EngineInput, value: unknown): ValidatedResume {
   const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
   const run = parseContract(RunManifestSchema, input.run);
   const snapshot = assertResumableSnapshot(value);
@@ -739,7 +765,17 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
     if (actual !== expected) mismatches.push(`snapshot ${name} differs from run`);
   }
   if (mismatches.length > 0) throw new ResumeCompatibilityError(mismatches);
-  return snapshot;
+  const validatedInput = {
+    scenario: input.scenario,
+    run,
+    ports: input.ports,
+  } as ValidatedEngineInput;
+  deepFreezeRun(validatedInput.run);
+  deepFreezeRun(snapshot);
+  return Object.freeze({
+    input: Object.freeze(validatedInput),
+    snapshot,
+  }) as ValidatedResume;
 }
 
 export interface EngineSession {
@@ -750,24 +786,29 @@ export interface EngineSession {
   policyView(): PolicyVisibleState;
 }
 
-export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
-  const run = parseContract(EngineRunSchema, value);
+function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult): void {
   if (
-    run.result.runId !== input.run.runId ||
-    run.result.resolvedScenarioHash !== input.run.resolvedScenarioHash ||
-    run.result.candidateInputHash !== input.run.candidateInputHash
+    result.runId !== input.run.runId ||
+    result.resolvedScenarioHash !== input.run.resolvedScenarioHash ||
+    result.candidateInputHash !== input.run.candidateInputHash
   )
     throw new TypeError("engine output must match the requested run identities");
-  if (run.result.objective !== input.run.objective.kind)
+  if (result.objective !== input.run.objective.kind)
     throw new TypeError("engine output must match the requested objective");
-  for (const metric of Object.values(run.result.metrics)) {
+  for (const [metricName, metric] of Object.entries(result.metrics)) {
     if (metric.status === "censored" && metric.horizonMs !== input.run.objective.horizonMs)
       throw new TypeError("engine output censoring must match the requested objective horizon");
+    if (
+      ["ttk", "timeToFirstDeath", "timeToElimination"].includes(metricName) &&
+      metric.status === "value" &&
+      metric.value > input.run.objective.horizonMs
+    )
+      throw new TypeError("engine output elapsed-time metrics cannot exceed the objective horizon");
   }
-  if ((input.run.evaluationMode.kind === "sampled-estimate") !== (run.result.uncertainty !== null))
+  if ((input.run.evaluationMode.kind === "sampled-estimate") !== (result.uncertainty !== null))
     throw new TypeError("engine output uncertainty must match the requested evaluation mode");
   if (input.run.evaluationMode.kind === "sampled-estimate") {
-    const uncertainty = run.result.uncertainty!;
+    const uncertainty = result.uncertainty!;
     const primaryMetric =
       input.run.objective.primaryMetric === "time-to-first-death"
         ? "timeToFirstDeath"
@@ -776,13 +817,33 @@ export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
           : input.run.objective.primaryMetric;
     if (
       uncertainty.confidenceLevel !== input.run.evaluationMode.confidenceLevel ||
+      uncertainty.effectiveSampleCount < 2 ||
+      uncertainty.effectiveSampleCount > input.run.evaluationMode.random.trialCount ||
       !(primaryMetric in uncertainty.standardErrors)
     )
       throw new TypeError("engine output uncertainty must match requested confidence and metric");
   }
-  if (!run.result.killed && input.run.objective.censoring === "fail-if-not-killed")
+  if (!result.killed && input.run.objective.censoring === "fail-if-not-killed")
     throw new TypeError("engine output violates fail-if-not-killed policy");
+}
+
+export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
+  const run = parseContract(EngineRunSchema, value);
+  assertCombatResultMatchesInput(input, run.result);
   return run;
+}
+
+/** Validates bounded-step output against the session configuration before consumption. */
+export function assertEngineStepResult(input: EngineInput, value: unknown): EngineStepResult {
+  const step = parseContract(EngineStepResultSchema, value);
+  if (
+    step.snapshot.runId !== input.run.runId ||
+    step.snapshot.resolvedScenarioHash !== input.run.resolvedScenarioHash ||
+    step.snapshot.candidateInputHash !== input.run.candidateInputHash
+  )
+    throw new TypeError("engine step output must match the requested run identities");
+  if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
+  return step;
 }
 
 function deepFreezeRun(value: unknown): void {
@@ -795,7 +856,7 @@ export interface CombatEngine {
   /** Retains the frozen value returned by assertEngineInputCompatible. */
   createSession(input: ValidatedEngineInput): EngineSession;
   /** Must call assertResumeCompatible and reject non-resumable snapshots. */
-  resumeSession(input: EngineInput, snapshot: EngineSnapshot): EngineSession;
+  resumeSession(resume: ValidatedResume): EngineSession;
   /** Must call assertEngineInputCompatible before starting fresh execution. */
   run(input: EngineInput): EngineRun;
 }

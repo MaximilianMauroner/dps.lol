@@ -59,7 +59,10 @@ The following identities are deliberately separate:
 `RunManifest` requires both search and candidate hashes and rejects equality
 between them. Its status can retain an explicitly `incomplete` run, and all
 timestamps require an ISO-8601 timezone; completion timestamps must follow creation. A
-candidate result therefore cannot silently rewrite the frozen search context.
+candidate result therefore cannot silently rewrite the frozen search context. The
+resolved scenario retains the canonical candidate-input payload so
+`assertResolvedScenarioPolicyHash` can verify its declared hash. Ruleset manifests
+similarly cross a hash-verification boundary before their hash is treated as pinned.
 
 ## Main data contracts
 
@@ -146,7 +149,8 @@ read the wall clock, network, mutable UI state or hidden future state.
 `EngineCommand` and `EngineEvent` are versioned serializable envelopes. The
 command schema rejects scheduling work before the command's issue time, while
 complete traces require every causal ID to name an earlier event. Damage port
-results reconcile attempted, absorbed, prevented, applied and overkill amounts
+results reconcile attempted, absorbed, prevented, applied, overkill and explicitly
+discarded capped amounts
 and bind death to zero remaining health; shields absorb damage before health.
 `StatsSnapshot` and damage responses are runtime-validated against their requests.
 RNG results validate value range, draw count and cumulative position. Seeded modes
@@ -156,15 +160,17 @@ and resource/RNG ports restore persisted state before resumed mutations or draws
 before they cross a worker. The engine-facing `CombatEngine` has three paths
 over the same session semantics:
 
-1. `createSession(input)` starts a run.
+1. `createSession(assertEngineInputCompatible(input))` starts a run from the frozen,
+   validated input.
 2. `EngineSession.step({ maxEvents, untilTimeMs })` advances bounded work;
    `snapshot()` captures resumable state.
-3. `resumeSession(input, snapshot)` continues the exact queue, entity/buff,
+3. `resumeSession(assertResumeCompatible(input, snapshot))` continues the exact queue, entity/buff,
    pending-action, trigger, RNG and numerical-branch state. It must call
-   `assertResumeCompatible`, which rejects non-resumable snapshots, any
+   `assertResumeCompatible` returns the frozen validated input and detached snapshot after rejecting non-resumable snapshots, any
    run/scenario/engine identity mismatch, or policy progress whose policy ID,
    revision, exact step IDs, or repeat counters are impossible under the scenario policy. Bounded-step results must preserve
-   the snapshot interruption state and exact reason; a progress result cannot
+   the snapshot interruption state and exact reason; `assertEngineStepResult`
+   binds terminal results to the session objective and evaluation configuration. A progress result cannot
    claim cancellation or carry an unrelated interruption reason. `run(input)`
    is the synchronous convenience entry point, not a second simulator.
 

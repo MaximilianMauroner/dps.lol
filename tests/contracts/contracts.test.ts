@@ -3,12 +3,14 @@ import {
   ActionPolicySchema,
   ActionCommandSchema,
   assertDamageResolution,
+  assertEngineStepResult,
   assertEngineRun,
   assertEngineInputCompatible,
   assertExactComparisonTransfer,
   assertLifecycleResolution,
   assertMovementResolution,
   assertResolvedScenarioPolicyHash,
+  assertRulesetManifestHash,
   assertRngResult,
   assertResourceResolution,
   assertTargetingResolution,
@@ -36,6 +38,7 @@ import {
   SnapshotNotResumableError,
   ScenarioSpecSchema,
   TraceSchema,
+  TraceEventSchema,
   WorkerMessageSchema,
   canonicalJson,
   hashCanonical,
@@ -73,6 +76,7 @@ async function bindScenarioHashes<T extends typeof sampleResolvedScenario>(
   );
   scenario.effective.cohort.contentHash = await hashCanonical(cohortBytes);
   scenario.policyHash = await hashCanonical(scenario.effective.policy);
+  scenario.candidateInputHash = await hashCanonical(scenario.candidateInput);
   scenario.resolvedScenarioHash = await hashCanonical(scenario.effective);
   return scenario;
 }
@@ -1375,6 +1379,7 @@ describe("P01 versioned contract fixtures", () => {
         prevented: 0,
         applied: 10,
         overkill: 20,
+        discarded: 0,
         targetHealthAfter: 0,
         killed: true,
       }),
@@ -1386,6 +1391,7 @@ describe("P01 versioned contract fixtures", () => {
         prevented: 0,
         applied: 10,
         overkill: 0,
+        discarded: 0,
         targetHealthAfter: 10,
         killed: true,
       }),
@@ -1582,6 +1588,7 @@ describe("P01 versioned contract fixtures", () => {
         prevented: 0,
         applied: 10,
         overkill: 0,
+        discarded: 0,
         targetHealthAfter: 0,
         killed: true,
       }),
@@ -1815,6 +1822,7 @@ describe("P01 versioned contract fixtures", () => {
         prevented: 0,
         applied: 10,
         overkill: 0,
+        discarded: 0,
         targetHealthAfter: observedTarget.health.current - 10,
         killed: false,
       }),
@@ -2064,6 +2072,7 @@ describe("P01 versioned contract fixtures", () => {
         absorbed: 50,
         applied: 0,
         overkill: 0,
+        discarded: 0,
         targetHealthAfter: shielded.health.current,
         killed: false,
       }),
@@ -2180,6 +2189,7 @@ describe("P01 versioned contract fixtures", () => {
         absorbed: 0,
         applied: 4,
         overkill: 6,
+        discarded: 0,
         targetHealthAfter: 1,
         killed: false,
       }),
@@ -2469,6 +2479,7 @@ describe("P01 versioned contract fixtures", () => {
           absorbed: 0.2,
           applied: 0,
           overkill: 0,
+          discarded: 0,
           targetHealthAfter: 1,
           killed: false,
         },
@@ -2535,6 +2546,7 @@ describe("P01 versioned contract fixtures", () => {
           absorbed: 0,
           applied: 0,
           overkill: 0,
+          discarded: 0,
           targetHealthAfter: 0,
           killed: true,
         },
@@ -2624,6 +2636,10 @@ describe("P01 versioned contract fixtures", () => {
     verifiedTransfer.run.cohortHash =
       verifiedTransfer.resolvedScenario.effective.cohort.contentHash;
     verifiedTransfer.run.policyHash = verifiedTransfer.resolvedScenario.policyHash;
+    verifiedTransfer.candidateInputHash = verifiedTransfer.resolvedScenario.candidateInputHash;
+    verifiedTransfer.run.candidateInputHash = verifiedTransfer.resolvedScenario.candidateInputHash;
+    verifiedTransfer.result.candidateInputHash =
+      verifiedTransfer.resolvedScenario.candidateInputHash;
     verifiedTransfer.run.resolvedScenarioHash =
       verifiedTransfer.resolvedScenario.resolvedScenarioHash;
     verifiedTransfer.result.resolvedScenarioHash =
@@ -2659,7 +2675,7 @@ describe("P01 versioned contract fixtures", () => {
         mockPortContext,
         { accepted: true, emittedCommands: [], reason: null },
       ),
-    ).toThrow(/event time and sequence/);
+    ).toThrow(/event time, sequence/);
 
     const scriptedScenario = clone(sampleResolvedScenario);
     scriptedScenario.effective.policy.mode = "scripted";
@@ -2764,6 +2780,7 @@ describe("P01 versioned contract fixtures", () => {
           absorbed: 0,
           applied: 5,
           overkill: 5,
+          discarded: 0,
           targetHealthAfter: 0,
           killed: true,
         },
@@ -2829,6 +2846,7 @@ describe("P01 versioned contract fixtures", () => {
           absorbed: 0,
           applied: 0,
           overkill: 0,
+          discarded: 0,
           targetHealthAfter: observedTarget.health.current,
           killed: false,
         },
@@ -2889,6 +2907,7 @@ describe("P01 versioned contract fixtures", () => {
           absorbed: 0,
           applied: 0,
           overkill: 0,
+          discarded: 0,
           targetHealthAfter: observedTarget.health.current,
           killed: false,
         },
@@ -2968,5 +2987,243 @@ describe("P01 versioned contract fixtures", () => {
         { entityId: "actor", revision: 1, values: {} },
       ),
     ).toThrow(/baseline stat/);
+  });
+
+  test("closes latest damage, resume, identity, and frontier findings", async () => {
+    const lowHealth = clone(observedTarget);
+    lowHealth.health.current = 5;
+    const damageRequest = {
+      packet: {
+        sourceEntityId: "actor",
+        targetEntityId: "enemy",
+        damageType: "true" as const,
+        rawAmount: 10,
+        tags: [] as string[],
+        canOverkill: false,
+      },
+      attacker: transformedCopiedAbility,
+      target: lowHealth,
+      attackerStats: { entityId: "actor", revision: 2, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 2, values: lowHealth.stats },
+      read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 2 },
+    };
+    expect(() =>
+      assertDamageResolution(damageRequest, mockPortContext, {
+        attempted: 10,
+        prevented: 0,
+        absorbed: 0,
+        applied: 5,
+        overkill: 0,
+        discarded: 5,
+        targetHealthAfter: 0,
+        killed: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertDamageResolution(
+        { ...damageRequest, targetStats: { ...damageRequest.targetStats, revision: 1 } },
+        mockPortContext,
+        {
+          attempted: 10,
+          prevented: 0,
+          absorbed: 0,
+          applied: 5,
+          overkill: 0,
+          discarded: 5,
+          targetHealthAfter: 0,
+          killed: true,
+        },
+      ),
+    ).toThrow(/identities/);
+
+    const horizonRun = clone(sampleRunningRun);
+    horizonRun.objective = {
+      ...horizonRun.objective,
+      kind: "ttk",
+      primaryMetric: "ttk",
+      horizonMs: 5000,
+    };
+    const beyondHorizon = clone(censoredResult);
+    beyondHorizon.objective = "ttk";
+    beyondHorizon.killed = true;
+    beyondHorizon.censoring = "not-censored";
+    beyondHorizon.metrics.ttk = { status: "value", value: 6000 };
+    beyondHorizon.metrics.timeToFirstDeath = { status: "value", value: 6000 };
+    beyondHorizon.metrics.timeToElimination = { status: "value", value: 6000 };
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: horizonRun, ports: createMockPorts() },
+        { status: "complete", result: beyondHorizon, trace: sampleTrace },
+      ),
+    ).toThrow(/objective horizon/);
+
+    const replayedQueue = clone(sampleSnapshot);
+    replayedQueue.queue.lastProcessedSequence = replayedQueue.queue.entries[0]!.sequence;
+    expect(() => parseContract(EngineSnapshotSchema, replayedQueue)).toThrow(/processed frontier/);
+
+    const sampledRun = clone(sampleRunningRun);
+    sampledRun.evaluationMode = {
+      kind: "sampled-estimate",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 10 },
+      approximation: null,
+      confidenceLevel: 0.95,
+    };
+    sampledRun.random = clone(sampledRun.evaluationMode.random);
+    const undersampled = clone(censoredResult);
+    undersampled.uncertainty = {
+      effectiveSampleCount: 1,
+      confidenceLevel: 0.95,
+      standardErrors: { damage: 1 },
+    };
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampledRun, ports: createMockPorts() },
+        { status: "complete", result: undersampled, trace: sampleTrace },
+      ),
+    ).toThrow(/confidence and metric/);
+
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "trigger-event",
+      timeMs: 0,
+      sequence: 1,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        mockPortContext,
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [
+            {
+              schemaVersion: 1,
+              kind: "schedule-event",
+              commandId: "retroactive-sequence",
+              issuedAtMs: 0,
+              causeEventIds: ["trigger-event"],
+              event: {
+                eventId: "scheduled",
+                timeMs: 0,
+                sequence: 1,
+                phase: "impact",
+                kind: "damage",
+                payload: {},
+                causeEventIds: ["trigger-event"],
+              },
+            },
+          ],
+        },
+      ),
+    ).toThrow(/dispatch timing/);
+
+    const resumed = assertResumeCompatible(
+      { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+      sampleSnapshot,
+    );
+    expect(Object.isFrozen(resumed)).toBe(true);
+    expect(Object.isFrozen(resumed.input.run)).toBe(true);
+    expect(Object.isFrozen(resumed.snapshot)).toBe(true);
+
+    const foreignResult = clone(censoredResult);
+    foreignResult.objective = "ttk";
+    for (const metric of Object.values(foreignResult.metrics)) {
+      if (metric.status === "censored") metric.horizonMs = sampleSnapshot.currentTimeMs;
+    }
+    const terminalSnapshot = clone(sampleSnapshot);
+    terminalSnapshot.status = "complete";
+    terminalSnapshot.resumability = "non-resumable";
+    terminalSnapshot.interruption = { state: "completed", reason: null };
+    terminalSnapshot.queue.entries = [];
+    terminalSnapshot.pendingActions = [];
+    terminalSnapshot.result = foreignResult;
+    expect(() =>
+      assertEngineStepResult(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        {
+          schemaVersion: 1,
+          status: "complete",
+          snapshot: terminalSnapshot,
+          emittedEvents: [],
+          result: foreignResult,
+          reason: null,
+        },
+      ),
+    ).toThrow(/requested objective/);
+
+    const absent = clone(transformedCopiedAbility);
+    absent.entityId = "absent";
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "absent", transition: "transform", replacement: absent },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "absent",
+          transition: "transform",
+          state: absent,
+          reason: null,
+        },
+      ),
+    ).toThrow(/authoritative entity existence/);
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "spawn", replacement: transformedCopiedAbility },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "spawn",
+          state: transformedCopiedAbility,
+          reason: null,
+        },
+      ),
+    ).toThrow(/authoritative entity existence/);
+
+    const earlyContinuation = clone(sampleSnapshot);
+    earlyContinuation.pendingActions[0]!.startedAtMs = 1000;
+    earlyContinuation.queue.entries[0]!.timeMs = 500;
+    expect(() => parseContract(EngineSnapshotSchema, earlyContinuation)).toThrow(
+      /cannot precede the action start/,
+    );
+    expect(() =>
+      parseContract(TraceEventSchema, {
+        ...sampleTrace.events[0]!,
+        causeEventIds: [sampleTrace.events[0]!.eventId],
+      }),
+    ).toThrow(/cannot cite itself/);
+
+    const verifiedRuleset = clone(sampleRuleset);
+    const rulesetBytes = Object.fromEntries(
+      Object.entries(verifiedRuleset).filter(([key]) => key !== "manifestHash"),
+    );
+    verifiedRuleset.manifestHash = await hashCanonical(rulesetBytes);
+    await expect(assertRulesetManifestHash(verifiedRuleset)).resolves.toBeDefined();
+    verifiedRuleset.patch = "changed-patch";
+    await expect(assertRulesetManifestHash(verifiedRuleset)).rejects.toThrow(/manifest hash/);
+
+    const staleCandidate = await bindScenarioHashes(clone(sampleResolvedScenario));
+    staleCandidate.candidateInput = { candidateId: "changed" };
+    await expect(assertResolvedScenarioPolicyHash(staleCandidate)).rejects.toThrow(
+      /resolved scenario hashes/,
+    );
+
+    expect(() =>
+      assertTriggerDispatchResult(
+        {
+          triggerId: "trigger",
+          ownerEntityId: "actor",
+          event: { ...triggerEvent, causeEventIds: ["event-a"] },
+        },
+        { ...mockPortContext, causeEventIds: ["event-b"] },
+        { accepted: true, emittedCommands: [], reason: null },
+      ),
+    ).toThrow(/causes must match/);
   });
 });

@@ -42,7 +42,8 @@ export function createMockPorts(): CombatKernelPorts {
           absorbed,
           prevented: 0,
           applied,
-          overkill: afterShield - applied,
+          overkill: packet.canOverkill ? afterShield - applied : 0,
+          discarded: packet.canOverkill ? 0 : afterShield - applied,
           targetHealthAfter: target.health.current - applied,
           killed: target.health.current - applied <= 0,
         };

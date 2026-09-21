@@ -186,6 +186,10 @@ export const RulesetManifestSchema = z
     }
   });
 export type RulesetManifest = z.infer<typeof RulesetManifestSchema>;
+declare const verifiedRulesetHash: unique symbol;
+export type HashVerifiedRulesetManifest = RulesetManifest & {
+  readonly [verifiedRulesetHash]: true;
+};
 
 export const PositionSchema = z
   .object({ x: finiteNumber, y: finiteNumber, z: finiteNumber })
@@ -891,6 +895,7 @@ const scenarioInputProvenanceFields = [
 const resolvedProvenanceFields = [
   ...scenarioInputProvenanceFields,
   "policyHash",
+  "candidateInput",
   "candidateInputHash",
 ] as const;
 
@@ -1225,6 +1230,7 @@ export const ResolvedScenarioSchema = z
     scenarioId: identifier,
     resolvedScenarioHash: ContentHashSchema,
     policyHash: ContentHashSchema,
+    candidateInput: JsonValueSchema,
     candidateInputHash: ContentHashSchema,
     effective: ResolvedScenarioValuesSchema,
     provenance: provenanceMap,
@@ -1378,12 +1384,14 @@ export const DamageResolutionSchema = z
     prevented: nonNegativeNumber,
     applied: nonNegativeNumber,
     overkill: nonNegativeNumber,
+    discarded: nonNegativeNumber,
     targetHealthAfter: nonNegativeNumber,
     killed: z.boolean(),
   })
   .strict()
   .superRefine((value, context) => {
-    const accounted = value.absorbed + value.prevented + value.applied + value.overkill;
+    const accounted =
+      value.absorbed + value.prevented + value.applied + value.overkill + value.discarded;
     if (Math.abs(value.attempted - accounted) > 1e-9) {
       context.addIssue({
         code: "custom",
@@ -1507,7 +1515,16 @@ export const TraceEventSchema = z
     effects: z.array(TraceEffectSchema),
     stateDigest: ContentHashSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.causeEventIds.includes(value.eventId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["causeEventIds"],
+        message: "a trace event cannot cite itself as a cause",
+      });
+    }
+  });
 export type TraceEvent = z.infer<typeof TraceEventSchema>;
 
 export const TraceSchema = z
@@ -1873,6 +1890,15 @@ export const EventQueueSnapshotSchema = z
         message: "queued event sequence IDs must be unique",
       });
     }
+    for (const [index, sequence] of sequences.entries()) {
+      if (sequence <= value.lastProcessedSequence) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "sequence"],
+          message: "queued event sequences must follow the processed frontier",
+        });
+      }
+    }
     const maxSequence = sequences.reduce((maximum, sequence) => Math.max(maximum, sequence), 0);
     if (value.nextSequence <= Math.max(maxSequence, value.lastProcessedSequence)) {
       context.addIssue({
@@ -2166,14 +2192,20 @@ export const EngineSnapshotSchema = z
     }
     for (const [index, pending] of value.pendingActions.entries()) {
       if (["scheduled", "windup"].includes(pending.state)) {
-        if (
-          pending.continuationEventId === null ||
-          !value.queue.entries.some((event) => event.eventId === pending.continuationEventId)
-        ) {
+        const continuation = value.queue.entries.find(
+          (event) => event.eventId === pending.continuationEventId,
+        );
+        if (pending.continuationEventId === null || !continuation) {
           context.addIssue({
             code: "custom",
             path: ["pendingActions", index, "continuationEventId"],
             message: "active pending actions require a queued continuation event",
+          });
+        } else if (continuation.timeMs < pending.startedAtMs) {
+          context.addIssue({
+            code: "custom",
+            path: ["pendingActions", index, "continuationEventId"],
+            message: "pending action continuations cannot precede the action start",
           });
         }
       }
@@ -3228,6 +3260,29 @@ export async function hashCanonical(value: unknown): Promise<ContentHash> {
   return `sha256:${hex}`;
 }
 
+/** Parses and verifies a ruleset manifest before its hash is used as a replay identity. */
+export async function assertRulesetManifestHash(
+  value: unknown,
+): Promise<HashVerifiedRulesetManifest> {
+  const manifest = parseContract(RulesetManifestSchema, value);
+  const manifestBytes = Object.fromEntries(
+    Object.entries(manifest).filter(([key]) => key !== "manifestHash"),
+  );
+  if (manifest.manifestHash !== (await hashCanonical(manifestBytes))) {
+    throw new ContractValidationError(
+      new z.ZodError([
+        {
+          code: "custom",
+          path: ["manifestHash"],
+          message: "ruleset manifest hash must match canonical manifest bytes",
+        },
+      ]),
+    );
+  }
+  deepFreeze(manifest);
+  return manifest as HashVerifiedRulesetManifest;
+}
+
 export async function assertResolvedScenarioPolicyHash(
   value: unknown,
 ): Promise<HashVerifiedResolvedScenario> {
@@ -3239,11 +3294,15 @@ export async function assertResolvedScenarioPolicyHash(
   const cohortBytes = Object.fromEntries(
     Object.entries(scenario.effective.cohort).filter(([key]) => key !== "contentHash"),
   );
-  const actualCohortHash = await hashCanonical(cohortBytes);
+  const [actualCohortHash, actualCandidateInputHash] = await Promise.all([
+    hashCanonical(cohortBytes),
+    hashCanonical(scenario.candidateInput),
+  ]);
   if (
     scenario.policyHash !== actualPolicyHash ||
     scenario.resolvedScenarioHash !== actualScenarioHash ||
-    scenario.effective.cohort.contentHash !== actualCohortHash
+    scenario.effective.cohort.contentHash !== actualCohortHash ||
+    scenario.candidateInputHash !== actualCandidateInputHash
   ) {
     throw new ContractValidationError(
       new z.ZodError([
@@ -3254,7 +3313,9 @@ export async function assertResolvedScenarioPolicyHash(
               ? ["policyHash"]
               : scenario.effective.cohort.contentHash !== actualCohortHash
                 ? ["effective", "cohort", "contentHash"]
-                : ["resolvedScenarioHash"],
+                : scenario.candidateInputHash !== actualCandidateInputHash
+                  ? ["candidateInputHash"]
+                  : ["resolvedScenarioHash"],
           message: "resolved scenario hashes must match canonical effective bytes",
         },
       ]),
