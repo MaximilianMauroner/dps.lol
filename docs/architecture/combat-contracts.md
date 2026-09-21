@@ -200,8 +200,10 @@ remain in the result's run context.
 
 `EngineSnapshot` contains engine/ruleset/cohort/policy/scenario/candidate
 identity, queue IDs/order, current time, entity state, buff state, pending
-actions, per-step policy cursor/repeat progress, trigger state, uniquely named
-RNG stream/counters, numerical branch state and typed result/status.
+actions, per-entity state revisions, the retained trace prefix, per-step policy
+cursor/repeat progress, trigger state, uniquely named RNG stream/counters,
+numerical branch state and typed result/status. Portable resume restores the
+trace prefix through the trace port alongside resource and RNG state.
 Pending-action, trigger and numerical-branch IDs are unique; owners must resolve;
 and retained buffs may not already be expired at snapshot time. It
 explicitly records `resumability` and an interruption state (`none`,

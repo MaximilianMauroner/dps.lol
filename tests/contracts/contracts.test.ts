@@ -924,6 +924,7 @@ describe("P01 versioned contract fixtures", () => {
         target: observedTarget,
         attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
         targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+        attackerRead: { kind: "impact", entityId: "actor", atTimeMs: 100, stateRevision: 1 },
         read: { kind: "impact", entityId: "enemy", atTimeMs: 100, stateRevision: 1 },
       },
       mockPortContext,
@@ -1493,6 +1494,7 @@ describe("P01 versioned contract fixtures", () => {
         target: shielded,
         attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
         targetStats: { entityId: "enemy", revision: 1, values: shielded.stats },
+        attackerRead: { kind: "impact", entityId: "actor", atTimeMs: 100, stateRevision: 1 },
         read: { kind: "impact", entityId: "enemy", atTimeMs: 100, stateRevision: 1 },
       },
       mockPortContext,
@@ -1579,6 +1581,7 @@ describe("P01 versioned contract fixtures", () => {
       target: observedTarget,
       attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
       targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+      attackerRead: { kind: "impact" as const, entityId: "actor", atTimeMs: 0, stateRevision: 1 },
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
@@ -1813,6 +1816,7 @@ describe("P01 versioned contract fixtures", () => {
       target: observedTarget,
       attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
       targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+      attackerRead: { kind: "impact" as const, entityId: "actor", atTimeMs: 0, stateRevision: 1 },
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
@@ -2063,6 +2067,7 @@ describe("P01 versioned contract fixtures", () => {
       target: shielded,
       attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
       targetStats: { entityId: "enemy", revision: 1, values: shielded.stats },
+      attackerRead: { kind: "impact" as const, entityId: "actor", atTimeMs: 0, stateRevision: 1 },
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
@@ -2180,6 +2185,7 @@ describe("P01 versioned contract fixtures", () => {
       target: lowHealthTarget,
       attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
       targetStats: { entityId: "enemy", revision: 1, values: lowHealthTarget.stats },
+      attackerRead: { kind: "impact" as const, entityId: "actor", atTimeMs: 0, stateRevision: 1 },
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
@@ -2470,6 +2476,7 @@ describe("P01 versioned contract fixtures", () => {
           target: fractionalTarget,
           attackerStats: { entityId: "actor", revision: 1, values: {} },
           targetStats: { entityId: "enemy", revision: 1, values: {} },
+          attackerRead: { kind: "impact", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
           read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
         mockPortContext,
@@ -2537,6 +2544,7 @@ describe("P01 versioned contract fixtures", () => {
           target: deadTarget,
           attackerStats: { entityId: "actor", revision: 1, values: {} },
           targetStats: { entityId: "enemy", revision: 1, values: {} },
+          attackerRead: { kind: "impact", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
           read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
         mockPortContext,
@@ -2715,6 +2723,7 @@ describe("P01 versioned contract fixtures", () => {
 
     const missingActor = clone(sampleSnapshot);
     missingActor.entities = [clone(observedTarget)];
+    missingActor.stateRevisions = { enemy: 1 };
     missingActor.buffs = [];
     missingActor.pendingActions = [];
     missingActor.triggerState = [];
@@ -2771,6 +2780,7 @@ describe("P01 versioned contract fixtures", () => {
           target: lowHealth,
           attackerStats: { entityId: "actor", revision: 1, values: {} },
           targetStats: { entityId: "enemy", revision: 1, values: {} },
+          attackerRead: { kind: "impact", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
           read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
         mockPortContext,
@@ -2834,6 +2844,7 @@ describe("P01 versioned contract fixtures", () => {
       target: observedTarget,
       attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
       targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+      attackerRead: { kind: "impact" as const, entityId: "actor", atTimeMs: 100, stateRevision: 1 },
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 101, stateRevision: 1 },
     };
     expect(() =>
@@ -2898,6 +2909,7 @@ describe("P01 versioned contract fixtures", () => {
         {
           ...clockDamage,
           packet: { ...clockDamage.packet, rawAmount: 0.3 },
+          attackerRead: { ...clockDamage.attackerRead, atTimeMs: 0 },
           read: { ...clockDamage.read, atTimeMs: 0 },
         },
         mockPortContext,
@@ -3005,6 +3017,7 @@ describe("P01 versioned contract fixtures", () => {
       target: lowHealth,
       attackerStats: { entityId: "actor", revision: 2, values: transformedCopiedAbility.stats },
       targetStats: { entityId: "enemy", revision: 2, values: lowHealth.stats },
+      attackerRead: { kind: "impact" as const, entityId: "actor", atTimeMs: 0, stateRevision: 2 },
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 2 },
     };
     expect(() =>
@@ -3225,5 +3238,186 @@ describe("P01 versioned contract fixtures", () => {
         { accepted: true, emittedCommands: [], reason: null },
       ),
     ).toThrow(/causes must match/);
+  });
+
+  test("closes latest portable-resume and output-frontier findings", () => {
+    const dependent = clone(observedTarget);
+    dependent.ownerEntityId = "actor";
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "despawn", replacement: null },
+        [transformedCopiedAbility, dependent],
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "despawn",
+          state: null,
+          reason: null,
+        },
+      ),
+    ).toThrow(/dangling entity references/);
+
+    const coverageRun = clone(sampleRunningRun);
+    coverageRun.objective.aggregation = "coverage-then-ttk";
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: coverageRun, ports: createMockPorts() },
+        { status: "complete", result: censoredResult, trace: sampleTrace },
+      ),
+    ).toThrow(/coverage.*cohort denominator/);
+
+    const foreignSnapshot = clone(sampleSnapshot);
+    foreignSnapshot.engineHash = HASH_C;
+    expect(() =>
+      assertEngineStepResult(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        {
+          schemaVersion: 1,
+          status: "progress",
+          snapshot: foreignSnapshot,
+          emittedEvents: [],
+          result: null,
+          reason: foreignSnapshot.interruption.reason,
+        },
+      ),
+    ).toThrow(/every requested run identity/);
+
+    const beyondProcessed = clone(sampleSnapshot);
+    beyondProcessed.queue.entries[0]!.sequence = 4;
+    beyondProcessed.queue.nextSequence = 5;
+    expect(() =>
+      parseContract(EngineStepResultSchema, {
+        schemaVersion: 1,
+        status: "progress",
+        snapshot: beyondProcessed,
+        emittedEvents: [
+          {
+            schemaVersion: 1,
+            eventId: "emitted-3",
+            timeMs: 100,
+            sequence: 3,
+            phase: "impact",
+            kind: "damage",
+            actorEntityId: "actor",
+            targetEntityIds: ["enemy"],
+            causeEventIds: [],
+            payload: {},
+          },
+        ],
+        result: null,
+        reason: beyondProcessed.interruption.reason,
+      }),
+    ).toThrow(/snapshot frontier/);
+
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "trigger-event",
+      timeMs: 0,
+      sequence: 1,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    const scheduledCommand = {
+      schemaVersion: 1 as const,
+      kind: "schedule-event" as const,
+      commandId: "schedule-a",
+      issuedAtMs: 0,
+      causeEventIds: ["trigger-event"],
+      event: {
+        eventId: "same-event",
+        timeMs: 1,
+        sequence: 2,
+        phase: "impact" as const,
+        kind: "damage",
+        payload: {},
+        causeEventIds: ["trigger-event"],
+      },
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        mockPortContext,
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [scheduledCommand, { ...scheduledCommand, commandId: "schedule-b" }],
+        },
+      ),
+    ).toThrow(/scheduled event IDs and sequences/);
+
+    const lateTrace = clone(sampleTrace);
+    lateTrace.events[1]!.timeMs = sampleRunningRun.objective.horizonMs + 1;
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { status: "complete", result: censoredResult, trace: lateTrace },
+      ),
+    ).toThrow(/trace events cannot exceed/);
+
+    const sharedContinuation = clone(sampleSnapshot);
+    sharedContinuation.pendingActions.push({
+      ...clone(sharedContinuation.pendingActions[0]!),
+      actionId: "action-002",
+    });
+    expect(() => parseContract(EngineSnapshotSchema, sharedContinuation)).toThrow(
+      /unique continuation events/,
+    );
+    const missingRevision = clone(sampleSnapshot);
+    delete missingRevision.stateRevisions.enemy;
+    expect(() => parseContract(EngineSnapshotSchema, missingRevision)).toThrow(
+      /cover every entity exactly/,
+    );
+
+    const ports = createMockPorts();
+    ports.trace.restore(sampleTrace, mockPortContext);
+    expect(ports.trace.snapshot(mockPortContext.runId).events).toEqual(sampleTrace.events);
+
+    const staleAttacker = {
+      packet: {
+        sourceEntityId: "actor",
+        targetEntityId: "enemy",
+        damageType: "true" as const,
+        rawAmount: 0,
+        tags: [] as string[],
+        canOverkill: false,
+      },
+      attacker: transformedCopiedAbility,
+      target: observedTarget,
+      attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 2, values: observedTarget.stats },
+      attackerRead: {
+        kind: "impact" as const,
+        entityId: "actor",
+        atTimeMs: 0,
+        stateRevision: 2,
+      },
+      read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 2 },
+    };
+    expect(() =>
+      assertDamageResolution(staleAttacker, mockPortContext, {
+        attempted: 0,
+        prevented: 0,
+        absorbed: 0,
+        applied: 0,
+        overkill: 0,
+        discarded: 0,
+        targetHealthAfter: observedTarget.health.current,
+        killed: false,
+      }),
+    ).toThrow(/identities/);
+
+    const consumedDeterministic = clone(sampleSnapshot);
+    consumedDeterministic.rngStreams[0]!.drawCount = 1;
+    consumedDeterministic.rngStreams[0]!.state = [1];
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        consumedDeterministic,
+      ),
+    ).toThrow(/deterministic resume cannot retain consumed RNG state/);
   });
 });

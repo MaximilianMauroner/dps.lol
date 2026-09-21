@@ -2058,6 +2058,8 @@ export const EngineSnapshotSchema = z
     policyHash: ContentHashSchema,
     resolvedScenarioHash: ContentHashSchema,
     candidateInputHash: ContentHashSchema,
+    stateRevisions: z.record(identifier, nonNegativeInteger),
+    trace: TraceSchema,
     currentTimeMs: nonNegativeInteger,
     queue: EventQueueSnapshotSchema,
     entities: z.array(EntityStateSchema).min(1),
@@ -2116,6 +2118,23 @@ export const EngineSnapshotSchema = z
       });
     }
     const knownEntityIds = new Set(entityIds);
+    if (
+      canonicalJson(Object.keys(value.stateRevisions).sort()) !==
+      canonicalJson([...entityIds].sort())
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["stateRevisions"],
+        message: "snapshot state revisions must cover every entity exactly",
+      });
+    }
+    if (value.trace.runId !== value.runId) {
+      context.addIssue({
+        code: "custom",
+        path: ["trace", "runId"],
+        message: "snapshot trace must match the snapshot run",
+      });
+    }
     const entitiesById = new Map(value.entities.map((entity) => [entity.entityId, entity]));
     for (const [entityIndex, entity] of value.entities.entries()) {
       if (entity.ownerEntityId !== null && !knownEntityIds.has(entity.ownerEntityId)) {
@@ -2267,6 +2286,17 @@ export const EngineSnapshotSchema = z
           });
         }
       }
+    }
+    const activeContinuations = value.pendingActions
+      .filter((pending) => ["scheduled", "windup"].includes(pending.state))
+      .map((pending) => pending.continuationEventId)
+      .filter((id): id is string => id !== null);
+    if (new Set(activeContinuations).size !== activeContinuations.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["pendingActions"],
+        message: "active pending actions require unique continuation events",
+      });
     }
     if (value.status === "complete") {
       if (value.result === null) {
@@ -2724,7 +2754,7 @@ export const EngineStepResultSchema = z
     for (const [index, event] of value.emittedEvents.entries()) {
       if (
         event.timeMs > value.snapshot.currentTimeMs ||
-        event.sequence >= value.snapshot.queue.nextSequence
+        event.sequence > value.snapshot.queue.lastProcessedSequence
       ) {
         context.addIssue({
           code: "custom",

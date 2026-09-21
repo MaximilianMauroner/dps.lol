@@ -402,6 +402,8 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
   policyHash: sampleRun.policyHash,
   resolvedScenarioHash: sampleRun.resolvedScenarioHash,
   candidateInputHash: sampleRun.candidateInputHash,
+  stateRevisions: { actor: 1, enemy: 1 },
+  trace: sampleTrace,
   currentTimeMs: 100,
   queue: {
     lastProcessedSequence: 2,

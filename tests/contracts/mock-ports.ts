@@ -150,6 +150,9 @@ export function createMockPorts(): CombatKernelPorts {
       },
     },
     trace: {
+      restore: (trace, context) => {
+        eventsByRunId.set(context.runId, [...trace.events]);
+      },
       record: (event, context) => {
         const events = eventsByRunId.get(context.runId) ?? [];
         events.push(event);

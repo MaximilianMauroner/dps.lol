@@ -101,6 +101,7 @@ export type DamageRequest = Readonly<{
   target: EntityState;
   attackerStats: StatsSnapshot;
   targetStats: StatsSnapshot;
+  attackerRead: StateRead;
   read: StateRead;
 }>;
 
@@ -117,6 +118,9 @@ export function assertDamageResolution(
     request.packet.sourceEntityId !== request.attacker.entityId ||
     request.packet.targetEntityId !== request.target.entityId ||
     request.attackerStats.entityId !== request.attacker.entityId ||
+    request.attackerRead.entityId !== request.attacker.entityId ||
+    request.attackerStats.revision !== request.attackerRead.stateRevision ||
+    request.attackerRead.atTimeMs !== context.timeMs ||
     request.targetStats.entityId !== request.target.entityId ||
     request.targetStats.revision !== request.read.stateRevision ||
     request.read.entityId !== request.target.entityId ||
@@ -436,17 +440,23 @@ export function assertLifecycleResolution(
     ) {
       throw new TypeError("lifecycle replacement references must resolve in the world");
     }
-    const resulting = new Map(entities.map((entity) => [entity.entityId, entity]));
-    resulting.set(transition.entityId, transition.replacement);
-    for (const entity of resulting.values()) {
-      const visited = new Set<string>([entity.entityId]);
-      let ownerId = entity.ownerEntityId;
-      while (ownerId !== null) {
-        if (visited.has(ownerId))
-          throw new TypeError("lifecycle replacement ownership cannot create cycles");
-        visited.add(ownerId);
-        ownerId = resulting.get(ownerId)?.ownerEntityId ?? null;
-      }
+  }
+  const resulting = new Map(entities.map((entity) => [entity.entityId, entity]));
+  if (transition.replacement === null) resulting.delete(transition.entityId);
+  else resulting.set(transition.entityId, transition.replacement);
+  for (const entity of resulting.values()) {
+    if (
+      (entity.ownerEntityId !== null && !resulting.has(entity.ownerEntityId)) ||
+      entity.buffs.some((buff) => !resulting.has(buff.sourceEntityId))
+    )
+      throw new TypeError("lifecycle result cannot leave dangling entity references");
+    const visited = new Set<string>([entity.entityId]);
+    let ownerId = entity.ownerEntityId;
+    while (ownerId !== null) {
+      if (visited.has(ownerId))
+        throw new TypeError("lifecycle replacement ownership cannot create cycles");
+      visited.add(ownerId);
+      ownerId = resulting.get(ownerId)?.ownerEntityId ?? null;
     }
   }
   if (
@@ -521,6 +531,12 @@ export function assertTriggerDispatchResult(
   );
   if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
     throw new TypeError("trigger command IDs must be unique within a batch");
+  const scheduled = commands.filter((command) => command.kind === "schedule-event");
+  if (
+    new Set(scheduled.map((command) => command.event.eventId)).size !== scheduled.length ||
+    new Set(scheduled.map((command) => command.event.sequence)).size !== scheduled.length
+  )
+    throw new TypeError("trigger scheduled event IDs and sequences must be unique within a batch");
   for (const command of commands) {
     if (
       command.issuedAtMs !== context.timeMs ||
@@ -574,6 +590,7 @@ export interface RngPort {
 }
 
 export interface TracePort {
+  restore(trace: Trace, context: PortContext): void;
   record(event: TraceEvent, context: PortContext): void;
   snapshot(runId: string): Trace;
 }
@@ -734,6 +751,11 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Vali
     ) {
       mismatches.push(`snapshot RNG stream ${stream.streamId} differs from evaluation seed`);
     }
+    if (
+      scenario.effective.evaluationMode.random.kind === "deterministic" &&
+      (stream.drawCount !== 0 || stream.state.length !== 0)
+    )
+      mismatches.push("deterministic resume cannot retain consumed RNG state");
   }
   if (
     scenario.effective.evaluationMode.random.kind === "seeded" &&
@@ -825,23 +847,42 @@ function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult
   }
   if (!result.killed && input.run.objective.censoring === "fail-if-not-killed")
     throw new TypeError("engine output violates fail-if-not-killed policy");
+  if (input.run.objective.aggregation === "coverage-then-ttk") {
+    const totalWeight = input.scenario.effective.cohort.members.reduce(
+      (sum, member) => sum + member.weight,
+      0,
+    );
+    if (
+      result.coverage === null ||
+      result.coverage.totalCount !== input.scenario.effective.cohort.members.length ||
+      Math.abs(result.coverage.totalWeight - totalWeight) > 1e-12
+    )
+      throw new TypeError("engine output coverage must match the requested cohort denominator");
+  }
 }
 
 export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
   const run = parseContract(EngineRunSchema, value);
   assertCombatResultMatchesInput(input, run.result);
+  if (run.trace.events.some((event) => event.timeMs > input.run.objective.horizonMs))
+    throw new TypeError("engine trace events cannot exceed the requested objective horizon");
   return run;
 }
 
 /** Validates bounded-step output against the session configuration before consumption. */
 export function assertEngineStepResult(input: EngineInput, value: unknown): EngineStepResult {
   const step = parseContract(EngineStepResultSchema, value);
-  if (
-    step.snapshot.runId !== input.run.runId ||
-    step.snapshot.resolvedScenarioHash !== input.run.resolvedScenarioHash ||
-    step.snapshot.candidateInputHash !== input.run.candidateInputHash
-  )
-    throw new TypeError("engine step output must match the requested run identities");
+  const identities: ReadonlyArray<[string, string]> = [
+    [step.snapshot.runId, input.run.runId],
+    [step.snapshot.engineHash, input.run.engineHash],
+    [step.snapshot.rulesetHash, input.run.rulesetHash],
+    [step.snapshot.cohortHash, input.run.cohortHash],
+    [step.snapshot.policyHash, input.run.policyHash],
+    [step.snapshot.resolvedScenarioHash, input.run.resolvedScenarioHash],
+    [step.snapshot.candidateInputHash, input.run.candidateInputHash],
+  ];
+  if (identities.some(([actual, expected]) => actual !== expected))
+    throw new TypeError("engine step output must match every requested run identity");
   if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
   return step;
 }
