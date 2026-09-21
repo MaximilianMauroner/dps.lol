@@ -37,6 +37,8 @@ import {
   type TraceEvent,
 } from "./schemas";
 
+const NUMERIC_TOLERANCE = 1e-9;
+
 /**
  * Port calls are synchronous and deterministic from the engine's point of
  * view. Implementations may be backed by a worker or a database adapter, but
@@ -81,6 +83,10 @@ export function assertStatsSnapshot(
   ) {
     throw new TypeError("stats snapshot must match the requested entity and state revision");
   }
+  for (const key of Object.keys(request.entity.stats)) {
+    if (!Object.hasOwn(snapshot.values, key))
+      throw new TypeError("stats snapshot must retain every authoritative baseline stat");
+  }
   return snapshot;
 }
 
@@ -101,20 +107,26 @@ export interface DamagePort {
   resolve(request: DamageRequest, context: PortContext): DamageResolution;
 }
 
-export function assertDamageResolution(request: DamageRequest, value: unknown): DamageResolution {
+export function assertDamageResolution(
+  request: DamageRequest,
+  context: PortContext,
+  value: unknown,
+): DamageResolution {
   if (
     request.packet.sourceEntityId !== request.attacker.entityId ||
     request.packet.targetEntityId !== request.target.entityId ||
     request.attackerStats.entityId !== request.attacker.entityId ||
     request.targetStats.entityId !== request.target.entityId ||
-    request.read.entityId !== request.target.entityId
+    request.read.entityId !== request.target.entityId ||
+    request.read.atTimeMs !== context.timeMs
   ) {
     throw new TypeError("damage request identities must agree");
   }
   if (!request.target.alive) throw new TypeError("damage requests require a living target");
   const resolution = parseContract(DamageResolutionSchema, value);
   const close = (left: number, right: number) => Math.abs(left - right) <= 1e-9;
-  const postMitigation = request.packet.rawAmount - resolution.prevented;
+  const rawPostMitigation = request.packet.rawAmount - resolution.prevented;
+  const postMitigation = Math.abs(rawPostMitigation) <= NUMERIC_TOLERANCE ? 0 : rawPostMitigation;
   const expectedAbsorbed = Math.min(postMitigation, request.target.health.shield);
   const postShield = postMitigation - expectedAbsorbed;
   const expectedApplied = Math.min(postShield, request.target.health.current);
@@ -122,7 +134,7 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
   const expectedHealth = request.target.health.current - expectedApplied;
   if (
     resolution.attempted !== request.packet.rawAmount ||
-    postMitigation < 0 ||
+    rawPostMitigation < -NUMERIC_TOLERANCE ||
     !close(resolution.absorbed, expectedAbsorbed) ||
     !close(resolution.applied, expectedApplied) ||
     !close(resolution.overkill, expectedOverkill) ||
@@ -160,6 +172,8 @@ export function assertResourceResolution(
   resource: ResourceState,
   value: unknown,
 ): ResourceResolution {
+  if (!Number.isFinite(mutation.delta))
+    throw new TypeError("resource mutation delta must be finite");
   const result = parseContract(ResourceResolutionSchema, value);
   const expected = result.accepted
     ? Math.min(resource.maximum, Math.max(0, resource.current + mutation.delta))
@@ -194,7 +208,11 @@ export function assertTimerCancelResult(value: unknown): boolean {
 export function assertTimerPeekResult(context: PortContext, value: unknown): ScheduledEvent | null {
   if (value === null) return null;
   const event = parseContract(ScheduledEventSchema, value);
-  if (event.timeMs < context.timeMs) throw new TypeError("peeked timer cannot precede port time");
+  if (
+    event.timeMs < context.timeMs ||
+    (event.timeMs === context.timeMs && event.sequence <= context.sequence)
+  )
+    throw new TypeError("peeked timer must follow the full port ordering key");
   return event;
 }
 
@@ -217,6 +235,7 @@ export interface MovementPort {
 
 export function assertMovementResolution(
   request: MovementRequest,
+  context: PortContext,
   value: unknown,
 ): MovementResolution {
   canonicalJson(value);
@@ -234,6 +253,7 @@ export function assertMovementResolution(
   const position = parseContract(PositionSchema, result.position);
   if (
     request.read.entityId !== request.entity.entityId ||
+    request.read.atTimeMs !== context.timeMs ||
     result.entityId !== request.entity.entityId ||
     typeof result.accepted !== "boolean" ||
     (result.reason !== null && typeof result.reason !== "string") ||
@@ -256,6 +276,8 @@ export type TargetingRequest = Readonly<{
   actor: EntityState;
   selector: TargetSelector;
   visibleState: PolicyVisibleState;
+  /** Copied from the hash-verified resolved scenario policy, not derived from visibleState. */
+  expectedVisibleEntityIds: readonly string[];
 }>;
 
 export type TargetingResolution = Readonly<{
@@ -279,6 +301,12 @@ export function assertTargetingResolution(
     request.visibleState.atTimeMs !== context.timeMs
   ) {
     throw new TypeError("targeting request actor, selector, and context time must agree");
+  }
+  if (
+    canonicalJson([...request.visibleState.visibility.visibleEntityIds].sort()) !==
+    canonicalJson([...request.expectedVisibleEntityIds].sort())
+  ) {
+    throw new TypeError("policy view visibility must match the scenario allowlist");
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("targeting resolution must be a strict object");
@@ -396,6 +424,18 @@ export function assertLifecycleResolution(
       transition.replacement.buffs.some((buff) => !knownIds.has(buff.sourceEntityId))
     ) {
       throw new TypeError("lifecycle replacement references must resolve in the world");
+    }
+    const resulting = new Map(entities.map((entity) => [entity.entityId, entity]));
+    resulting.set(transition.entityId, transition.replacement);
+    for (const entity of resulting.values()) {
+      const visited = new Set<string>([entity.entityId]);
+      let ownerId = entity.ownerEntityId;
+      while (ownerId !== null) {
+        if (visited.has(ownerId))
+          throw new TypeError("lifecycle replacement ownership cannot create cycles");
+        visited.add(ownerId);
+        ownerId = resulting.get(ownerId)?.ownerEntityId ?? null;
+      }
     }
   }
   if (
@@ -538,6 +578,11 @@ export type EngineInput = Readonly<{
   ports: CombatKernelPorts;
 }>;
 
+declare const validatedEngineInput: unique symbol;
+
+/** Frozen input returned only after replay-affecting identities are validated. */
+export type ValidatedEngineInput = EngineInput & Readonly<{ [validatedEngineInput]: true }>;
+
 export class ResumeCompatibilityError extends Error {
   readonly mismatches: readonly string[];
 
@@ -570,12 +615,15 @@ function engineInputMismatches(
 }
 
 /** Validates all replay-affecting identities before starting fresh execution. */
-export function assertEngineInputCompatible(input: EngineInput): void {
+export function assertEngineInputCompatible(input: EngineInput): ValidatedEngineInput {
   const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
   const run = parseContract(RunManifestSchema, input.run);
   const mismatches = engineInputMismatches(scenario, run);
   if (run.status !== "planned") mismatches.unshift("run must be planned for fresh execution");
   if (mismatches.length > 0) throw new ResumeCompatibilityError(mismatches);
+  const validated = { scenario: input.scenario, run, ports: input.ports } as ValidatedEngineInput;
+  deepFreezeRun(validated.run);
+  return Object.freeze(validated);
 }
 
 /**
@@ -718,12 +766,34 @@ export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
   }
   if ((input.run.evaluationMode.kind === "sampled-estimate") !== (run.result.uncertainty !== null))
     throw new TypeError("engine output uncertainty must match the requested evaluation mode");
+  if (input.run.evaluationMode.kind === "sampled-estimate") {
+    const uncertainty = run.result.uncertainty!;
+    const primaryMetric =
+      input.run.objective.primaryMetric === "time-to-first-death"
+        ? "timeToFirstDeath"
+        : input.run.objective.primaryMetric === "time-to-elimination"
+          ? "timeToElimination"
+          : input.run.objective.primaryMetric;
+    if (
+      uncertainty.confidenceLevel !== input.run.evaluationMode.confidenceLevel ||
+      !(primaryMetric in uncertainty.standardErrors)
+    )
+      throw new TypeError("engine output uncertainty must match requested confidence and metric");
+  }
+  if (!run.result.killed && input.run.objective.censoring === "fail-if-not-killed")
+    throw new TypeError("engine output violates fail-if-not-killed policy");
   return run;
 }
 
+function deepFreezeRun(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  for (const child of Object.values(value)) deepFreezeRun(child);
+  Object.freeze(value);
+}
+
 export interface CombatEngine {
-  /** Must call assertEngineInputCompatible before starting fresh execution. */
-  createSession(input: EngineInput): EngineSession;
+  /** Retains the frozen value returned by assertEngineInputCompatible. */
+  createSession(input: ValidatedEngineInput): EngineSession;
   /** Must call assertResumeCompatible and reject non-resumable snapshots. */
   resumeSession(input: EngineInput, snapshot: EngineSnapshot): EngineSession;
   /** Must call assertEngineInputCompatible before starting fresh execution. */

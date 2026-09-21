@@ -1702,6 +1702,13 @@ export const CombatResultSchema = z
         message: "first death cannot follow final elimination",
       });
     }
+    if (elimination.status === "value" && firstDeath.status !== "value") {
+      context.addIssue({
+        code: "custom",
+        path: ["metrics", "timeToFirstDeath"],
+        message: "finite elimination requires a finite first-death time",
+      });
+    }
     if (value.status === "complete") {
       const primaryMetric =
         value.objective === "sustained-dps"
@@ -2627,7 +2634,16 @@ export const EngineEventSchema = z
     causeEventIds: uniqueIdentifiers,
     payload: JsonValueSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.causeEventIds.includes(value.eventId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["causeEventIds"],
+        message: "an event cannot cite itself as a cause",
+      });
+    }
+  });
 export type EngineEvent = z.infer<typeof EngineEventSchema>;
 
 export const EngineStepResultSchema = z
@@ -3220,16 +3236,25 @@ export async function assertResolvedScenarioPolicyHash(
     hashCanonical(scenario.effective.policy),
     hashCanonical(scenario.effective),
   ]);
+  const cohortBytes = Object.fromEntries(
+    Object.entries(scenario.effective.cohort).filter(([key]) => key !== "contentHash"),
+  );
+  const actualCohortHash = await hashCanonical(cohortBytes);
   if (
     scenario.policyHash !== actualPolicyHash ||
-    scenario.resolvedScenarioHash !== actualScenarioHash
+    scenario.resolvedScenarioHash !== actualScenarioHash ||
+    scenario.effective.cohort.contentHash !== actualCohortHash
   ) {
     throw new ContractValidationError(
       new z.ZodError([
         {
           code: "custom",
           path:
-            scenario.policyHash !== actualPolicyHash ? ["policyHash"] : ["resolvedScenarioHash"],
+            scenario.policyHash !== actualPolicyHash
+              ? ["policyHash"]
+              : scenario.effective.cohort.contentHash !== actualCohortHash
+                ? ["effective", "cohort", "contentHash"]
+                : ["resolvedScenarioHash"],
           message: "resolved scenario hashes must match canonical effective bytes",
         },
       ]),

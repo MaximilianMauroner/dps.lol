@@ -65,6 +65,18 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+async function bindScenarioHashes<T extends typeof sampleResolvedScenario>(
+  scenario: T,
+): Promise<T> {
+  const cohortBytes = Object.fromEntries(
+    Object.entries(scenario.effective.cohort).filter(([key]) => key !== "contentHash"),
+  );
+  scenario.effective.cohort.contentHash = await hashCanonical(cohortBytes);
+  scenario.policyHash = await hashCanonical(scenario.effective.policy);
+  scenario.resolvedScenarioHash = await hashCanonical(scenario.effective);
+  return scenario;
+}
+
 function visiblePolicyStateFixture() {
   return {
     schemaVersion: 1,
@@ -1241,7 +1253,7 @@ describe("P01 versioned contract fixtures", () => {
           read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
         },
         mockPortContext,
-        { entityId: "actor", revision: 1, values: { attackDamage: 150 } },
+        { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
       ),
     ).toMatchObject({ entityId: "actor", revision: 1 });
     expect(() =>
@@ -1251,7 +1263,11 @@ describe("P01 versioned contract fixtures", () => {
           read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
         },
         mockPortContext,
-        { entityId: "actor", revision: 1, values: { attackDamage: Infinity } },
+        {
+          entityId: "actor",
+          revision: 1,
+          values: { ...transformedCopiedAbility.stats, attackDamage: Infinity },
+        },
       ),
     ).toThrow(/non-finite/);
 
@@ -1433,6 +1449,7 @@ describe("P01 versioned contract fixtures", () => {
         actor: transformedCopiedAbility,
         selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
         visibleState: parseContract(PolicyVisibleStateSchema, visibleState),
+        expectedVisibleEntityIds: visibleState.visibility.visibleEntityIds,
       },
       mockPortContext,
     );
@@ -1443,6 +1460,7 @@ describe("P01 versioned contract fixtures", () => {
         actor: transformedCopiedAbility,
         selector: { kind: "all-visible-enemies", actorId: "actor" },
         visibleState: parseContract(PolicyVisibleStateSchema, visibleState),
+        expectedVisibleEntityIds: visibleState.visibility.visibleEntityIds,
       },
       mockPortContext,
     );
@@ -1558,7 +1576,7 @@ describe("P01 versioned contract fixtures", () => {
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
-      assertDamageResolution(request, {
+      assertDamageResolution(request, mockPortContext, {
         attempted: 10,
         absorbed: 0,
         prevented: 0,
@@ -1682,6 +1700,7 @@ describe("P01 versioned contract fixtures", () => {
           actor: transformedCopiedAbility,
           selector: { kind: "self", actorId: "actor" },
           visibleState: parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture()),
+          expectedVisibleEntityIds: samplePolicy.visibility.visibleEntityIds,
         },
         { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["enemy"], rejected: false, reason: null },
@@ -1754,6 +1773,7 @@ describe("P01 versioned contract fixtures", () => {
           actor: transformedCopiedAbility,
           selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
           visibleState: parsedVisible,
+          expectedVisibleEntityIds: parsedVisible.visibility.visibleEntityIds,
         },
         { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["enemy"], rejected: false, reason: null },
@@ -1765,6 +1785,7 @@ describe("P01 versioned contract fixtures", () => {
           actor: transformedCopiedAbility,
           selector: { kind: "all-visible-enemies", actorId: "actor" },
           visibleState: parsedVisible,
+          expectedVisibleEntityIds: parsedVisible.visibility.visibleEntityIds,
         },
         { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["actor"], rejected: false, reason: null },
@@ -1788,7 +1809,7 @@ describe("P01 versioned contract fixtures", () => {
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
-      assertDamageResolution(command, {
+      assertDamageResolution(command, mockPortContext, {
         attempted: 10,
         absorbed: 0,
         prevented: 0,
@@ -1883,8 +1904,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(traversed).toBe(true);
 
     const policyBound = clone(sampleResolvedScenario);
-    policyBound.policyHash = await hashCanonical(policyBound.effective.policy);
-    policyBound.resolvedScenarioHash = await hashCanonical(policyBound.effective);
+    await bindScenarioHashes(policyBound);
     await expect(assertResolvedScenarioPolicyHash(policyBound)).resolves.toBeDefined();
     policyBound.effective.policy.steps[0]!.priority += 100;
     await expect(assertResolvedScenarioPolicyHash(policyBound)).rejects.toThrow(
@@ -1941,6 +1961,7 @@ describe("P01 versioned contract fixtures", () => {
           destination: { x: 1, y: 2, z: 3 },
           read: { kind: "snapshot", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         { entityId: "actor", accepted: true, position: { x: 1, y: 2, z: 3 }, reason: null },
       ),
     ).toThrow(/requested entity/);
@@ -2011,8 +2032,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(getterRan).toBe(false);
 
     const scenarioHash = clone(sampleResolvedScenario);
-    scenarioHash.policyHash = await hashCanonical(scenarioHash.effective.policy);
-    scenarioHash.resolvedScenarioHash = await hashCanonical(scenarioHash.effective);
+    await bindScenarioHashes(scenarioHash);
     scenarioHash.effective.objective.horizonMs += 1;
     await expect(assertResolvedScenarioPolicyHash(scenarioHash)).rejects.toThrow(
       /resolved scenario hashes/,
@@ -2038,7 +2058,7 @@ describe("P01 versioned contract fixtures", () => {
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
-      assertDamageResolution(damageRequest, {
+      assertDamageResolution(damageRequest, mockPortContext, {
         attempted: 100,
         prevented: 50,
         absorbed: 50,
@@ -2055,6 +2075,7 @@ describe("P01 versioned contract fixtures", () => {
           actor: transformedCopiedAbility,
           selector: { kind: "self", actorId: "enemy" },
           visibleState: parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture()),
+          expectedVisibleEntityIds: samplePolicy.visibility.visibleEntityIds,
         },
         { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: ["enemy"], rejected: false, reason: null },
@@ -2153,7 +2174,7 @@ describe("P01 versioned contract fixtures", () => {
       read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
     };
     expect(() =>
-      assertDamageResolution(overkillRequest, {
+      assertDamageResolution(overkillRequest, mockPortContext, {
         attempted: 10,
         prevented: 0,
         absorbed: 0,
@@ -2184,7 +2205,7 @@ describe("P01 versioned contract fixtures", () => {
         { ...mockPortContext, timeMs: 101 },
         { ...sampleSnapshot.queue.entries[0]!, timeMs: 100 },
       ),
-    ).toThrow(/precede port time/);
+    ).toThrow(/full port ordering key/);
 
     expect(() =>
       assertMovementResolution(
@@ -2193,6 +2214,7 @@ describe("P01 versioned contract fixtures", () => {
           destination: { x: 1, y: 2, z: 3 },
           read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         { entityId: "actor", accepted: false, position: { x: 1, y: 2, z: 3 }, reason: "blocked" },
       ),
     ).toThrow(/destination.*acceptance/);
@@ -2342,6 +2364,7 @@ describe("P01 versioned contract fixtures", () => {
       actor: transformedCopiedAbility,
       selector: { kind: "self" as const, actorId: "actor" },
       visibleState: visible,
+      expectedVisibleEntityIds: visible.visibility.visibleEntityIds,
     };
     expect(() =>
       assertTargetingResolution(
@@ -2439,6 +2462,7 @@ describe("P01 versioned contract fixtures", () => {
           targetStats: { entityId: "enemy", revision: 1, values: {} },
           read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         {
           attempted: 0.3,
           prevented: 0.1,
@@ -2466,11 +2490,9 @@ describe("P01 versioned contract fixtures", () => {
       ),
     ).not.toThrow();
 
-    const verified = await assertResolvedScenarioPolicyHash({
-      ...clone(sampleResolvedScenario),
-      policyHash: await hashCanonical(sampleResolvedScenario.effective.policy),
-      resolvedScenarioHash: await hashCanonical(sampleResolvedScenario.effective),
-    });
+    const verified = await assertResolvedScenarioPolicyHash(
+      await bindScenarioHashes(clone(sampleResolvedScenario)),
+    );
     expect(() => {
       verified.effective.entities[0]!.stats.attackDamage = 999;
     }).toThrow();
@@ -2506,6 +2528,7 @@ describe("P01 versioned contract fixtures", () => {
           targetStats: { entityId: "enemy", revision: 1, values: {} },
           read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         {
           attempted: 0,
           prevented: 0,
@@ -2576,6 +2599,7 @@ describe("P01 versioned contract fixtures", () => {
           actor: transformedCopiedAbility,
           selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
           visibleState: parseContract(PolicyVisibleStateSchema, noLivingEnemy),
+          expectedVisibleEntityIds: noLivingEnemy.visibility.visibleEntityIds,
         },
         { ...mockPortContext, timeMs: 100 },
         { targetEntityIds: [], rejected: false, reason: null },
@@ -2596,12 +2620,9 @@ describe("P01 versioned contract fixtures", () => {
 
   test("closes latest frontier, correlation, and immutable-transfer findings", async () => {
     const verifiedTransfer = clone(sampleTransfer);
-    verifiedTransfer.resolvedScenario.policyHash = await hashCanonical(
-      verifiedTransfer.resolvedScenario.effective.policy,
-    );
-    verifiedTransfer.resolvedScenario.resolvedScenarioHash = await hashCanonical(
-      verifiedTransfer.resolvedScenario.effective,
-    );
+    await bindScenarioHashes(verifiedTransfer.resolvedScenario as typeof sampleResolvedScenario);
+    verifiedTransfer.run.cohortHash =
+      verifiedTransfer.resolvedScenario.effective.cohort.contentHash;
     verifiedTransfer.run.policyHash = verifiedTransfer.resolvedScenario.policyHash;
     verifiedTransfer.run.resolvedScenarioHash =
       verifiedTransfer.resolvedScenario.resolvedScenarioHash;
@@ -2736,6 +2757,7 @@ describe("P01 versioned contract fixtures", () => {
           targetStats: { entityId: "enemy", revision: 1, values: {} },
           read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         {
           attempted: 10,
           prevented: 0,
@@ -2747,5 +2769,204 @@ describe("P01 versioned contract fixtures", () => {
         },
       ),
     ).toThrow(/requested packet and target state/);
+  });
+
+  test("closes latest visibility, clock, hash, and statistical findings", async () => {
+    const visible = parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture());
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "self", actorId: "actor" },
+          visibleState: visible,
+          expectedVisibleEntityIds: ["actor"],
+        },
+        { ...mockPortContext, timeMs: 100 },
+        { targetEntityIds: ["actor"], rejected: false, reason: null },
+      ),
+    ).toThrow(/scenario allowlist/);
+
+    const child = clone(observedTarget);
+    child.ownerEntityId = "actor";
+    const cyclicReplacement = clone(transformedCopiedAbility);
+    cyclicReplacement.ownerEntityId = "enemy";
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "transform", replacement: cyclicReplacement },
+        [transformedCopiedAbility, child],
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "transform",
+          state: cyclicReplacement,
+          reason: null,
+        },
+      ),
+    ).toThrow(/ownership cannot create cycles/);
+
+    const clockDamage = {
+      packet: {
+        sourceEntityId: "actor",
+        targetEntityId: "enemy",
+        damageType: "true" as const,
+        rawAmount: 0,
+        tags: [] as string[],
+        canOverkill: false,
+      },
+      attacker: transformedCopiedAbility,
+      target: observedTarget,
+      attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+      read: { kind: "impact" as const, entityId: "enemy", atTimeMs: 101, stateRevision: 1 },
+    };
+    expect(() =>
+      assertDamageResolution(
+        clockDamage,
+        { ...mockPortContext, timeMs: 100 },
+        {
+          attempted: 0,
+          prevented: 0,
+          absorbed: 0,
+          applied: 0,
+          overkill: 0,
+          targetHealthAfter: observedTarget.health.current,
+          killed: false,
+        },
+      ),
+    ).toThrow(/identities/);
+    expect(() =>
+      assertMovementResolution(
+        {
+          entity: transformedCopiedAbility,
+          destination: { x: 1, y: 2, z: 3 },
+          read: { kind: "snapshot", entityId: "actor", atTimeMs: 101, stateRevision: 1 },
+        },
+        { ...mockPortContext, timeMs: 100 },
+        { entityId: "actor", accepted: true, position: { x: 1, y: 2, z: 3 }, reason: null },
+      ),
+    ).toThrow(/requested entity/);
+
+    const sampledInputRun = clone(sampleRunningRun);
+    sampledInputRun.evaluationMode = {
+      kind: "sampled-estimate",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 10 },
+      approximation: null,
+      confidenceLevel: 0.95,
+    };
+    sampledInputRun.random = clone(sampledInputRun.evaluationMode.random);
+    const sampledOutput = clone(censoredResult);
+    sampledOutput.uncertainty = {
+      effectiveSampleCount: 2,
+      confidenceLevel: 0.5,
+      standardErrors: {},
+    };
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampledInputRun, ports: createMockPorts() },
+        { status: "complete", result: sampledOutput, trace: sampleTrace },
+      ),
+    ).toThrow(/confidence and metric/);
+    const failIfNotKilled = clone(sampleRunningRun);
+    failIfNotKilled.objective.censoring = "fail-if-not-killed";
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: failIfNotKilled, ports: createMockPorts() },
+        { status: "complete", result: censoredResult, trace: sampleTrace },
+      ),
+    ).toThrow(/fail-if-not-killed/);
+
+    expect(() =>
+      assertDamageResolution(
+        {
+          ...clockDamage,
+          packet: { ...clockDamage.packet, rawAmount: 0.3 },
+          read: { ...clockDamage.read, atTimeMs: 0 },
+        },
+        mockPortContext,
+        {
+          attempted: 0.3,
+          prevented: 0.1 + 0.2,
+          absorbed: 0,
+          applied: 0,
+          overkill: 0,
+          targetHealthAfter: observedTarget.health.current,
+          killed: false,
+        },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertTimerPeekResult(
+        { ...mockPortContext, timeMs: 100, sequence: 5 },
+        { ...sampleSnapshot.queue.entries[0]!, timeMs: 100, sequence: 4 },
+      ),
+    ).toThrow(/full port ordering key/);
+
+    const planned = clone(sampleRunningRun);
+    planned.status = "planned";
+    const validated = assertEngineInputCompatible({
+      scenario: sampleResolvedScenario,
+      run: planned,
+      ports: createMockPorts(),
+    });
+    expect(Object.isFrozen(validated)).toBe(true);
+    expect(Object.isFrozen(validated.run)).toBe(true);
+    expect(() => {
+      validated.run.objective.horizonMs = 1;
+    }).toThrow();
+
+    const staleCohort = await bindScenarioHashes(clone(sampleResolvedScenario));
+    staleCohort.effective.cohort.members[0]!.matchKey = "changed-match";
+    staleCohort.resolvedScenarioHash = await hashCanonical(staleCohort.effective);
+    await expect(assertResolvedScenarioPolicyHash(staleCohort)).rejects.toThrow(
+      /resolved scenario hashes/,
+    );
+
+    expect(() =>
+      parseContract(EngineEventSchema, {
+        schemaVersion: 1,
+        eventId: "self-cause",
+        timeMs: 0,
+        sequence: 1,
+        phase: "input",
+        kind: "action",
+        actorEntityId: "actor",
+        targetEntityIds: [],
+        causeEventIds: ["self-cause"],
+        payload: {},
+      }),
+    ).toThrow(/cannot cite itself/);
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "actor", resourceId: "mana", delta: Number.NaN, reason: "bad" },
+        transformedCopiedAbility.resources[0]!,
+        {
+          accepted: true,
+          entityId: "actor",
+          resourceId: "mana",
+          previous: transformedCopiedAbility.resources[0]!.current,
+          current: transformedCopiedAbility.resources[0]!.current,
+          reason: null,
+        },
+      ),
+    ).toThrow(/delta must be finite/);
+
+    const missingFirstDeath = clone(censoredResult);
+    missingFirstDeath.killed = true;
+    missingFirstDeath.censoring = "not-censored";
+    missingFirstDeath.metrics.ttk = { status: "value", value: 100 };
+    missingFirstDeath.metrics.timeToElimination = { status: "value", value: 100 };
+    expect(() => parseContract(CombatResultSchema, missingFirstDeath)).toThrow(
+      /finite elimination requires a finite first-death/,
+    );
+    expect(() =>
+      assertStatsSnapshot(
+        {
+          entity: transformedCopiedAbility,
+          read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
+        },
+        mockPortContext,
+        { entityId: "actor", revision: 1, values: {} },
+      ),
+    ).toThrow(/baseline stat/);
   });
 });
