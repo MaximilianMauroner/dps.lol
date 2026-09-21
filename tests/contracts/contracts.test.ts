@@ -104,6 +104,9 @@ function visiblePolicyStateFixture() {
 
 function completeSnapshotForTest() {
   const snapshot = clone(sampleSnapshot);
+  snapshot.currentTimeMs = 5000;
+  snapshot.buffs.forEach((buff) => (buff.expiresAtMs = null));
+  snapshot.entities.forEach((entity) => entity.buffs.forEach((buff) => (buff.expiresAtMs = null)));
   snapshot.status = "complete";
   snapshot.resumability = "non-resumable";
   snapshot.interruption = { state: "completed", reason: null };
@@ -497,6 +500,11 @@ describe("P01 versioned contract fixtures", () => {
     );
 
     const complete = clone(sampleSnapshot);
+    complete.currentTimeMs = 5000;
+    complete.buffs.forEach((buff) => (buff.expiresAtMs = null));
+    complete.entities.forEach((entity) =>
+      entity.buffs.forEach((buff) => (buff.expiresAtMs = null)),
+    );
     complete.status = "complete";
     complete.resumability = "non-resumable";
     complete.interruption = { state: "completed", reason: null };
@@ -1794,6 +1802,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertLifecycleResolution(
         { entityId: "enemy", transition: "death", replacement: null },
+        sampleSnapshot.entities,
         ports.lifecycle.apply(
           { entityId: "actor", transition: "death", replacement: null },
           mockPortContext,
@@ -2078,6 +2087,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertLifecycleResolution(
         { entityId: "actor", transition: "transform", replacement: wrongReplacement },
+        sampleSnapshot.entities,
         {
           accepted: true,
           entityId: "actor",
@@ -2205,7 +2215,7 @@ describe("P01 versioned contract fixtures", () => {
             payload: {},
           },
         },
-        { ...mockPortContext, timeMs: 100 },
+        mockPortContext,
         {
           accepted: true,
           emittedCommands: [
@@ -2270,6 +2280,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertLifecycleResolution(
         { entityId: "actor", transition: "revive", replacement: deadRevive },
+        sampleSnapshot.entities,
         {
           accepted: true,
           entityId: "actor",
@@ -2581,5 +2592,160 @@ describe("P01 versioned contract fixtures", () => {
         event: { ...sampleTrace.events[0]!, timeMs: 101 },
       }),
     ).toThrow(/trace event time must match/);
+  });
+
+  test("closes latest frontier, correlation, and immutable-transfer findings", async () => {
+    const verifiedTransfer = clone(sampleTransfer);
+    verifiedTransfer.resolvedScenario.policyHash = await hashCanonical(
+      verifiedTransfer.resolvedScenario.effective.policy,
+    );
+    verifiedTransfer.resolvedScenario.resolvedScenarioHash = await hashCanonical(
+      verifiedTransfer.resolvedScenario.effective,
+    );
+    verifiedTransfer.run.policyHash = verifiedTransfer.resolvedScenario.policyHash;
+    verifiedTransfer.run.resolvedScenarioHash =
+      verifiedTransfer.resolvedScenario.resolvedScenarioHash;
+    verifiedTransfer.result.resolvedScenarioHash =
+      verifiedTransfer.resolvedScenario.resolvedScenarioHash;
+    const frozenTransfer = await assertExactComparisonTransfer(verifiedTransfer);
+    expect(() => {
+      frozenTransfer.result.warnings.push("mutated");
+    }).toThrow();
+
+    const reusedSequence = clone(sampleSnapshot);
+    reusedSequence.queue.entries = [];
+    reusedSequence.queue.lastProcessedSequence = 3;
+    reusedSequence.queue.nextSequence = 3;
+    expect(() => parseContract(EngineSnapshotSchema, reusedSequence)).toThrow(
+      /greater than every allocated event sequence/,
+    );
+
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "future-cause",
+      timeMs: 100,
+      sequence: 2,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        mockPortContext,
+        { accepted: true, emittedCommands: [], reason: null },
+      ),
+    ).toThrow(/event time and sequence/);
+
+    const scriptedScenario = clone(sampleResolvedScenario);
+    scriptedScenario.effective.policy.mode = "scripted";
+    const outOfOrder = clone(sampleSnapshot);
+    outOfOrder.policyProgress.nextStepId = "cast-w";
+    outOfOrder.policyProgress.steps[0] = {
+      stepId: "cast-w",
+      consumedRepeats: 0,
+      state: "not-started",
+    };
+    outOfOrder.policyProgress.steps[1] = {
+      stepId: "basic-attack",
+      consumedRepeats: 1,
+      state: "completed",
+    };
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: scriptedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        outOfOrder,
+      ),
+    ).toThrow(/beyond the cursor/);
+
+    const wrongObjective = clone(censoredResult);
+    wrongObjective.objective = "ttk";
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { status: "complete", result: wrongObjective, trace: sampleTrace },
+      ),
+    ).toThrow(/requested objective/);
+
+    const prematureCensoring = completeSnapshotForTest();
+    prematureCensoring.currentTimeMs = 100;
+    expect(() => parseContract(EngineSnapshotSchema, prematureCensoring)).toThrow(
+      /censoring horizons cannot exceed currentTimeMs/,
+    );
+
+    const missingActor = clone(sampleSnapshot);
+    missingActor.entities = [clone(observedTarget)];
+    missingActor.buffs = [];
+    missingActor.pendingActions = [];
+    missingActor.triggerState = [];
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        missingActor,
+      ),
+    ).toThrow(/retain the designated scenario actor/);
+
+    expect(() =>
+      parseContract(CombatResultSchema, {
+        ...clone(censoredResult),
+        coverage: {
+          killedCount: 1,
+          totalCount: 1,
+          killedWeight: 0.30000000000000004,
+          totalWeight: 0.3,
+          fraction: 1,
+        },
+      }),
+    ).not.toThrow();
+
+    const missingOwner = clone(transformedCopiedAbility);
+    missingOwner.ownerEntityId = "missing";
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "transform", replacement: missingOwner },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "transform",
+          state: missingOwner,
+          reason: null,
+        },
+      ),
+    ).toThrow(/references must resolve/);
+
+    const lowHealth = clone(observedTarget);
+    lowHealth.health.current = 5;
+    expect(() =>
+      assertDamageResolution(
+        {
+          packet: {
+            sourceEntityId: "actor",
+            targetEntityId: "enemy",
+            damageType: "true",
+            rawAmount: 10,
+            tags: [],
+            canOverkill: false,
+          },
+          attacker: transformedCopiedAbility,
+          target: lowHealth,
+          attackerStats: { entityId: "actor", revision: 1, values: {} },
+          targetStats: { entityId: "enemy", revision: 1, values: {} },
+          read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+        },
+        {
+          attempted: 10,
+          prevented: 0,
+          absorbed: 0,
+          applied: 5,
+          overkill: 5,
+          targetHealthAfter: 0,
+          killed: true,
+        },
+      ),
+    ).toThrow(/requested packet and target state/);
   });
 });

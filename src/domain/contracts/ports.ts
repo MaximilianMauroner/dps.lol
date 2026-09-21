@@ -118,7 +118,7 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
   const expectedAbsorbed = Math.min(postMitigation, request.target.health.shield);
   const postShield = postMitigation - expectedAbsorbed;
   const expectedApplied = Math.min(postShield, request.target.health.current);
-  const expectedOverkill = postShield - expectedApplied;
+  const expectedOverkill = request.packet.canOverkill ? postShield - expectedApplied : 0;
   const expectedHealth = request.target.health.current - expectedApplied;
   if (
     resolution.attempted !== request.packet.rawAmount ||
@@ -375,6 +375,7 @@ export interface LifecyclePort {
 
 export function assertLifecycleResolution(
   transition: LifecycleTransition,
+  entities: readonly EntityState[],
   value: unknown,
 ): LifecycleResolution {
   if (transition.replacement !== null && transition.replacement.entityId !== transition.entityId) {
@@ -386,6 +387,16 @@ export function assertLifecycleResolution(
     (!transition.replacement.alive || transition.replacement.health.current <= 0)
   ) {
     throw new TypeError("revive replacement must be alive with positive health");
+  }
+  if (transition.replacement !== null) {
+    const knownIds = new Set([...entities.map((entity) => entity.entityId), transition.entityId]);
+    if (
+      (transition.replacement.ownerEntityId !== null &&
+        !knownIds.has(transition.replacement.ownerEntityId)) ||
+      transition.replacement.buffs.some((buff) => !knownIds.has(buff.sourceEntityId))
+    ) {
+      throw new TypeError("lifecycle replacement references must resolve in the world");
+    }
   }
   if (
     (["spawn", "revive", "transform"].includes(transition.transition) &&
@@ -428,6 +439,8 @@ export function assertTriggerDispatchResult(
   context: PortContext,
   value: unknown,
 ): TriggerDispatchResult {
+  if (request.event.timeMs !== context.timeMs || request.event.sequence !== context.sequence)
+    throw new TypeError("trigger event time and sequence must match the port context");
   canonicalJson(value);
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new TypeError("trigger result must be a strict object");
@@ -621,6 +634,16 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
     if (snapshot.policyProgress.nextStepId !== (firstExecutable?.stepId ?? null)) {
       mismatches.push("scripted policy cursor must reference the first executable step");
     }
+    const frontier = firstExecutable
+      ? snapshot.policyProgress.steps.findIndex((step) => step.stepId === firstExecutable.stepId)
+      : snapshot.policyProgress.steps.length;
+    if (
+      snapshot.policyProgress.steps
+        .slice(frontier + 1)
+        .some((step) => step.state !== "not-started" || step.consumedRepeats !== 0)
+    ) {
+      mismatches.push("scripted policy steps beyond the cursor must remain not-started");
+    }
   }
   for (const branch of snapshot.numericalBranches) {
     if (branch.mode !== scenario.effective.evaluationMode.kind) {
@@ -652,6 +675,8 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   if (snapshot.currentTimeMs > scenario.effective.objective.horizonMs) {
     mismatches.push("snapshot currentTimeMs exceeds the objective horizon");
   }
+  if (!snapshot.entities.some((entity) => entity.entityId === scenario.effective.actorEntityId))
+    mismatches.push("snapshot must retain the designated scenario actor");
 
   const identities: ReadonlyArray<[string, string, string]> = [
     ["runId", snapshot.runId, run.runId],
@@ -685,6 +710,14 @@ export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
     run.result.candidateInputHash !== input.run.candidateInputHash
   )
     throw new TypeError("engine output must match the requested run identities");
+  if (run.result.objective !== input.run.objective.kind)
+    throw new TypeError("engine output must match the requested objective");
+  for (const metric of Object.values(run.result.metrics)) {
+    if (metric.status === "censored" && metric.horizonMs !== input.run.objective.horizonMs)
+      throw new TypeError("engine output censoring must match the requested objective horizon");
+  }
+  if ((input.run.evaluationMode.kind === "sampled-estimate") !== (run.result.uncertainty !== null))
+    throw new TypeError("engine output uncertainty must match the requested evaluation mode");
   return run;
 }
 

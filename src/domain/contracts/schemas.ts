@@ -1612,7 +1612,8 @@ export const KillCoverageSchema = z
         message: "kill coverage cannot exceed its denominator",
       });
     }
-    if (value.killedWeight > value.totalWeight) {
+    const weightsEqual = Math.abs(value.killedWeight - value.totalWeight) <= 1e-12;
+    if (value.killedWeight - value.totalWeight > 1e-12) {
       context.addIssue({
         code: "custom",
         path: ["killedWeight"],
@@ -1626,7 +1627,7 @@ export const KillCoverageSchema = z
         message: "zero kill count and weight must agree",
       });
     }
-    if ((value.killedCount === value.totalCount) !== (value.killedWeight === value.totalWeight)) {
+    if ((value.killedCount === value.totalCount) !== weightsEqual) {
       context.addIssue({
         code: "custom",
         path: ["killedWeight"],
@@ -1843,6 +1844,7 @@ export type ScheduledEvent = z.infer<typeof ScheduledEventSchema>;
 
 export const EventQueueSnapshotSchema = z
   .object({
+    lastProcessedSequence: nonNegativeInteger,
     nextSequence: positiveInteger,
     entries: z.array(ScheduledEventSchema),
   })
@@ -1865,11 +1867,11 @@ export const EventQueueSnapshotSchema = z
       });
     }
     const maxSequence = sequences.reduce((maximum, sequence) => Math.max(maximum, sequence), 0);
-    if (value.nextSequence <= maxSequence) {
+    if (value.nextSequence <= Math.max(maxSequence, value.lastProcessedSequence)) {
       context.addIssue({
         code: "custom",
         path: ["nextSequence"],
-        message: "nextSequence must be greater than every queued event sequence",
+        message: "nextSequence must be greater than every allocated event sequence",
       });
     }
     for (let index = 1; index < value.entries.length; index += 1) {
@@ -2294,13 +2296,13 @@ export const EngineSnapshotSchema = z
       for (const [metricName, metric] of Object.entries(value.result.metrics)) {
         if (
           ["ttk", "timeToFirstDeath", "timeToElimination"].includes(metricName) &&
-          metric.status === "value" &&
-          metric.value > value.currentTimeMs
+          ((metric.status === "value" && metric.value > value.currentTimeMs) ||
+            (metric.status === "censored" && metric.horizonMs > value.currentTimeMs))
         ) {
           context.addIssue({
             code: "custom",
             path: ["result", "metrics", metricName],
-            message: "snapshot result times cannot exceed currentTimeMs",
+            message: "snapshot result times and censoring horizons cannot exceed currentTimeMs",
           });
         }
       }
@@ -3233,12 +3235,7 @@ export async function assertResolvedScenarioPolicyHash(
       ]),
     );
   }
-  const freeze = (entry: unknown): void => {
-    if (entry === null || typeof entry !== "object" || Object.isFrozen(entry)) return;
-    for (const value of Object.values(entry)) freeze(value);
-    Object.freeze(entry);
-  };
-  freeze(scenario);
+  deepFreeze(scenario);
   return scenario as HashVerifiedResolvedScenario;
 }
 
@@ -3247,6 +3244,14 @@ export async function assertExactComparisonTransfer(
   value: unknown,
 ): Promise<ExactComparisonTransfer> {
   const transfer = parseContract(ExactComparisonTransferSchema, value);
-  await assertResolvedScenarioPolicyHash(transfer.resolvedScenario);
-  return transfer;
+  const resolvedScenario = await assertResolvedScenarioPolicyHash(transfer.resolvedScenario);
+  const verified = { ...transfer, resolvedScenario };
+  deepFreeze(verified);
+  return verified;
+}
+
+function deepFreeze(entry: unknown): void {
+  if (entry === null || typeof entry !== "object" || Object.isFrozen(entry)) return;
+  for (const value of Object.values(entry)) deepFreeze(value);
+  Object.freeze(entry);
 }

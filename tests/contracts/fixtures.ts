@@ -402,6 +402,7 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
   candidateInputHash: sampleRun.candidateInputHash,
   currentTimeMs: 100,
   queue: {
+    lastProcessedSequence: 2,
     nextSequence: 4,
     entries: [
       {
