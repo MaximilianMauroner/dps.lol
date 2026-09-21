@@ -1109,6 +1109,13 @@ function validateScenarioReferences(
   }
   for (const [stepIndex, step] of value.policy.steps.entries()) {
     const action = step.action;
+    if (action.actorId !== value.actorEntityId) {
+      addReferenceIssue(
+        context,
+        ["policy", "steps", stepIndex, "action", "actorId"],
+        "policy actions must use the designated scenario actor",
+      );
+    }
     const actor = entitiesById.get(action.actorId);
     if (!visibleEntityIds.has(action.actorId)) {
       addReferenceIssue(
@@ -2161,6 +2168,16 @@ export const EngineSnapshotSchema = z
           });
         }
       }
+      if (
+        ["interrupted", "complete"].includes(pending.state) &&
+        pending.continuationEventId !== null
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingActions", index, "continuationEventId"],
+          message: "terminal pending actions cannot retain continuations",
+        });
+      }
       if (pending.state !== "scheduled" && pending.startedAtMs > value.currentTimeMs) {
         context.addIssue({
           code: "custom",
@@ -2573,6 +2590,13 @@ export const EngineCommandSchema = z
         code: "custom",
         path: ["event", "timeMs"],
         message: "scheduled events cannot precede command issue time",
+      });
+    }
+    if (value.kind === "trace" && value.event.timeMs !== value.issuedAtMs) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "timeMs"],
+        message: "trace event time must match command issue time",
       });
     }
     if (
@@ -3209,6 +3233,12 @@ export async function assertResolvedScenarioPolicyHash(
       ]),
     );
   }
+  const freeze = (entry: unknown): void => {
+    if (entry === null || typeof entry !== "object" || Object.isFrozen(entry)) return;
+    for (const value of Object.values(entry)) freeze(value);
+    Object.freeze(entry);
+  };
+  freeze(scenario);
   return scenario as HashVerifiedResolvedScenario;
 }
 

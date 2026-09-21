@@ -1232,6 +1232,7 @@ describe("P01 versioned contract fixtures", () => {
           entity: transformedCopiedAbility,
           read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         { entityId: "actor", revision: 1, values: { attackDamage: 150 } },
       ),
     ).toMatchObject({ entityId: "actor", revision: 1 });
@@ -1241,6 +1242,7 @@ describe("P01 versioned contract fixtures", () => {
           entity: transformedCopiedAbility,
           read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         { entityId: "actor", revision: 1, values: { attackDamage: Infinity } },
       ),
     ).toThrow(/non-finite/);
@@ -1560,11 +1562,14 @@ describe("P01 versioned contract fixtures", () => {
     ).toThrow(/requested packet and target/);
 
     expect(() =>
-      assertEngineRun({
-        status: "complete",
-        result: { ...censoredResult, status: "invalid" },
-        trace: sampleTrace,
-      }),
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        {
+          status: "complete",
+          result: { ...censoredResult, status: "invalid" },
+          trace: sampleTrace,
+        },
+      ),
     ).toThrow(/must match/);
 
     expect(() =>
@@ -1573,6 +1578,7 @@ describe("P01 versioned contract fixtures", () => {
           entity: transformedCopiedAbility,
           read: { kind: "snapshot", entityId: "actor", atTimeMs: 0, stateRevision: 2 },
         },
+        mockPortContext,
         { entityId: "enemy", revision: 1, values: { armor: 10 } },
       ),
     ).toThrow(/requested entity and state revision/);
@@ -1680,6 +1686,7 @@ describe("P01 versioned contract fixtures", () => {
           entity: transformedCopiedAbility,
           read: { kind: "snapshot", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
         },
+        mockPortContext,
         { entityId: "actor", revision: 1, values: { attackDamage: 150 } },
       ),
     ).toThrow(/stats read entity/);
@@ -1687,7 +1694,10 @@ describe("P01 versioned contract fixtures", () => {
     const traceMismatch = clone(censoredResult);
     traceMismatch.traceId = "different-trace";
     expect(() =>
-      assertEngineRun({ status: "complete", result: traceMismatch, trace: sampleTrace }),
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { status: "complete", result: traceMismatch, trace: sampleTrace },
+      ),
     ).toThrow(/trace identity/);
 
     const ownershipCycle = clone(sampleSnapshot);
@@ -2367,5 +2377,209 @@ describe("P01 versioned contract fixtures", () => {
         missingRng,
       ),
     ).toThrow(/retained RNG stream state/);
+  });
+
+  test("closes latest continuation, numeric, and execution-boundary findings", async () => {
+    const terminalContinuation = clone(sampleSnapshot);
+    terminalContinuation.pendingActions[0]!.state = "complete";
+    expect(() => parseContract(EngineSnapshotSchema, terminalContinuation)).toThrow(
+      /terminal pending actions cannot retain continuations/,
+    );
+
+    const sampledScenario = clone(sampleResolvedScenario);
+    sampledScenario.effective.evaluationMode = {
+      kind: "sampled-estimate",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 10 },
+      approximation: null,
+      confidenceLevel: 0.95,
+    };
+    const sampledRun = clone(sampleRunningRun);
+    sampledRun.evaluationMode = clone(sampledScenario.effective.evaluationMode);
+    sampledRun.random = clone(sampledRun.evaluationMode.random);
+    const missingBranch = clone(sampleSnapshot);
+    missingBranch.rngStreams[0]!.algorithm = "xorshift32";
+    missingBranch.rngStreams[0]!.seed = "seed";
+    missingBranch.numericalBranches = [];
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampledScenario, run: sampledRun, ports: createMockPorts() },
+        missingBranch,
+      ),
+    ).toThrow(/retained numerical branch state/);
+
+    const fractionalTarget = clone(observedTarget);
+    fractionalTarget.health.current = 1;
+    fractionalTarget.health.maximum = 1;
+    fractionalTarget.health.shield = 0.2;
+    expect(() =>
+      assertDamageResolution(
+        {
+          packet: {
+            sourceEntityId: "actor",
+            targetEntityId: "enemy",
+            damageType: "magic",
+            rawAmount: 0.3,
+            tags: [],
+            canOverkill: false,
+          },
+          attacker: transformedCopiedAbility,
+          target: fractionalTarget,
+          attackerStats: { entityId: "actor", revision: 1, values: {} },
+          targetStats: { entityId: "enemy", revision: 1, values: {} },
+          read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+        },
+        {
+          attempted: 0.3,
+          prevented: 0.1,
+          absorbed: 0.2,
+          applied: 0,
+          overkill: 0,
+          targetHealthAfter: 1,
+          killed: false,
+        },
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "actor", resourceId: "mana", delta: 0.2, reason: "regen" },
+        { resourceId: "mana", current: 0.1, maximum: 1, regenerationPerSecond: 0 },
+        {
+          accepted: true,
+          entityId: "actor",
+          resourceId: "mana",
+          previous: 0.1,
+          current: 0.3,
+          reason: null,
+        },
+      ),
+    ).not.toThrow();
+
+    const verified = await assertResolvedScenarioPolicyHash({
+      ...clone(sampleResolvedScenario),
+      policyHash: await hashCanonical(sampleResolvedScenario.effective.policy),
+      resolvedScenarioHash: await hashCanonical(sampleResolvedScenario.effective),
+    });
+    expect(() => {
+      verified.effective.entities[0]!.stats.attackDamage = 999;
+    }).toThrow();
+
+    const foreignResult = clone(censoredResult);
+    foreignResult.runId = "run-foreign";
+    const foreignTrace = clone(sampleTrace);
+    foreignTrace.runId = "run-foreign";
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { status: "complete", result: foreignResult, trace: foreignTrace },
+      ),
+    ).toThrow(/requested run identities/);
+
+    const deadTarget = clone(observedTarget);
+    deadTarget.alive = false;
+    deadTarget.health.current = 0;
+    expect(() =>
+      assertDamageResolution(
+        {
+          packet: {
+            sourceEntityId: "actor",
+            targetEntityId: "enemy",
+            damageType: "true",
+            rawAmount: 0,
+            tags: [],
+            canOverkill: false,
+          },
+          attacker: transformedCopiedAbility,
+          target: deadTarget,
+          attackerStats: { entityId: "actor", revision: 1, values: {} },
+          targetStats: { entityId: "enemy", revision: 1, values: {} },
+          read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+        },
+        {
+          attempted: 0,
+          prevented: 0,
+          absorbed: 0,
+          applied: 0,
+          overkill: 0,
+          targetHealthAfter: 0,
+          killed: true,
+        },
+      ),
+    ).toThrow(/living target/);
+
+    expect(() =>
+      assertStatsSnapshot(
+        {
+          entity: transformedCopiedAbility,
+          read: { kind: "snapshot", entityId: "actor", atTimeMs: 101, stateRevision: 1 },
+        },
+        { ...mockPortContext, timeMs: 100 },
+        { entityId: "actor", revision: 1, values: {} },
+      ),
+    ).toThrow(/requested entity/);
+
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "cause",
+      timeMs: 100,
+      sequence: 1,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    const duplicateCommand = {
+      schemaVersion: 1 as const,
+      kind: "cancel-event" as const,
+      commandId: "duplicate",
+      issuedAtMs: 100,
+      causeEventIds: ["cause"],
+      eventId: "queued",
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        { ...mockPortContext, timeMs: 100 },
+        {
+          accepted: true,
+          emittedCommands: [duplicateCommand, duplicateCommand],
+          reason: null,
+        },
+      ),
+    ).toThrow(/command IDs must be unique/);
+
+    const enemyActor = clone(sampleScenario);
+    enemyActor.policy.steps[1]!.action.actorId = "enemy";
+    expect(() => parseContract(ScenarioSpecSchema, enemyActor)).toThrow(
+      /designated scenario actor/,
+    );
+
+    const noLivingEnemy = visiblePolicyStateFixture();
+    noLivingEnemy.entities[1]!.alive = false;
+    noLivingEnemy.entities[1]!.health.current = 0;
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
+          visibleState: parseContract(PolicyVisibleStateSchema, noLivingEnemy),
+        },
+        { ...mockPortContext, timeMs: 100 },
+        { targetEntityIds: [], rejected: false, reason: null },
+      ),
+    ).toThrow(/must reject when no living enemy/);
+
+    expect(() =>
+      parseContract(EngineCommandSchema, {
+        schemaVersion: 1,
+        kind: "trace",
+        commandId: "trace-command",
+        issuedAtMs: 100,
+        causeEventIds: [],
+        event: { ...sampleTrace.events[0]!, timeMs: 101 },
+      }),
+    ).toThrow(/trace event time must match/);
   });
 });

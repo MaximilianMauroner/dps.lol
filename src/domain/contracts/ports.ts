@@ -61,9 +61,18 @@ export type StatsRequest = Readonly<{
   read: StateRead;
 }>;
 
-export function assertStatsSnapshot(request: StatsRequest, value: unknown): StatsSnapshot {
-  if (request.read.entityId !== request.entity.entityId) {
-    throw new TypeError("stats read entity must match the requested entity");
+export function assertStatsSnapshot(
+  request: StatsRequest,
+  context: PortContext,
+  value: unknown,
+): StatsSnapshot {
+  if (
+    request.read.entityId !== request.entity.entityId ||
+    request.read.atTimeMs !== context.timeMs
+  ) {
+    throw new TypeError(
+      "stats read entity and time must match the requested entity and port clock",
+    );
   }
   const snapshot = parseContract(StatsSnapshotSchema, value);
   if (
@@ -102,7 +111,9 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
   ) {
     throw new TypeError("damage request identities must agree");
   }
+  if (!request.target.alive) throw new TypeError("damage requests require a living target");
   const resolution = parseContract(DamageResolutionSchema, value);
+  const close = (left: number, right: number) => Math.abs(left - right) <= 1e-9;
   const postMitigation = request.packet.rawAmount - resolution.prevented;
   const expectedAbsorbed = Math.min(postMitigation, request.target.health.shield);
   const postShield = postMitigation - expectedAbsorbed;
@@ -112,10 +123,10 @@ export function assertDamageResolution(request: DamageRequest, value: unknown): 
   if (
     resolution.attempted !== request.packet.rawAmount ||
     postMitigation < 0 ||
-    resolution.absorbed !== expectedAbsorbed ||
-    resolution.applied !== expectedApplied ||
-    resolution.overkill !== expectedOverkill ||
-    resolution.targetHealthAfter !== expectedHealth ||
+    !close(resolution.absorbed, expectedAbsorbed) ||
+    !close(resolution.applied, expectedApplied) ||
+    !close(resolution.overkill, expectedOverkill) ||
+    !close(resolution.targetHealthAfter, expectedHealth) ||
     resolution.killed !== (expectedHealth === 0)
   ) {
     throw new TypeError("damage resolution must match the requested packet and target state");
@@ -157,8 +168,8 @@ export function assertResourceResolution(
     result.entityId !== mutation.entityId ||
     result.resourceId !== mutation.resourceId ||
     result.resourceId !== resource.resourceId ||
-    result.previous !== resource.current ||
-    result.current !== expected
+    Math.abs(result.previous - resource.current) > 1e-9 ||
+    Math.abs(result.current - expected) > 1e-9
   )
     throw new TypeError("resource resolution must be finite and match the requested mutation");
   return result;
@@ -335,6 +346,12 @@ export function assertTargetingResolution(
   ) {
     throw new TypeError("targeting selection must match dynamic selector semantics");
   }
+  if (
+    request.selector.kind === "lowest-health-visible-enemy" &&
+    livingEnemies.length === 0 &&
+    !result.rejected
+  )
+    throw new TypeError("singular enemy targeting must reject when no living enemy exists");
   return result as TargetingResolution;
 }
 
@@ -433,6 +450,8 @@ export function assertTriggerDispatchResult(
   const commands = result.emittedCommands.map((command) =>
     parseContract(EngineCommandSchema, command),
   );
+  if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
+    throw new TypeError("trigger command IDs must be unique within a batch");
   for (const command of commands) {
     if (
       command.issuedAtMs !== context.timeMs ||
@@ -625,6 +644,11 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Engi
   ) {
     mismatches.push("seeded resume requires retained RNG stream state");
   }
+  if (
+    scenario.effective.evaluationMode.kind === "sampled-estimate" &&
+    snapshot.numericalBranches.length === 0
+  )
+    mismatches.push("sampled resume requires retained numerical branch state");
   if (snapshot.currentTimeMs > scenario.effective.objective.horizonMs) {
     mismatches.push("snapshot currentTimeMs exceeds the objective horizon");
   }
@@ -653,8 +677,15 @@ export interface EngineSession {
   policyView(): PolicyVisibleState;
 }
 
-export function assertEngineRun(value: unknown): EngineRun {
-  return parseContract(EngineRunSchema, value);
+export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
+  const run = parseContract(EngineRunSchema, value);
+  if (
+    run.result.runId !== input.run.runId ||
+    run.result.resolvedScenarioHash !== input.run.resolvedScenarioHash ||
+    run.result.candidateInputHash !== input.run.candidateInputHash
+  )
+    throw new TypeError("engine output must match the requested run identities");
+  return run;
 }
 
 export interface CombatEngine {
