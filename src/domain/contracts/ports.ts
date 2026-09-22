@@ -564,9 +564,7 @@ export function assertTriggerDispatchResult(
     if (
       command.issuedAtMs !== context.timeMs ||
       !command.causeEventIds.includes(request.event.eventId) ||
-      (command.kind === "schedule-event" &&
-        command.event.timeMs === context.timeMs &&
-        command.event.sequence <= context.sequence)
+      (command.kind === "schedule-event" && command.event.sequence <= context.sequence)
     ) {
       throw new TypeError("trigger commands must preserve dispatch timing and causal identity");
     }
@@ -794,8 +792,12 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Vali
   if (snapshot.currentTimeMs > scenario.effective.objective.horizonMs) {
     mismatches.push("snapshot currentTimeMs exceeds the objective horizon");
   }
-  if (!snapshot.entities.some((entity) => entity.entityId === scenario.effective.actorEntityId))
-    mismatches.push("snapshot must retain the designated scenario actor");
+  const retainedActor = snapshot.entities.find(
+    (entity) => entity.entityId === scenario.effective.actorEntityId,
+  );
+  if (!retainedActor) mismatches.push("snapshot must retain the designated scenario actor");
+  else if (retainedActor.team !== "actor")
+    mismatches.push("snapshot designated scenario actor must remain on the actor team");
 
   const identities: ReadonlyArray<[string, string, string]> = [
     ["runId", snapshot.runId, run.runId],

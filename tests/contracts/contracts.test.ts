@@ -3709,4 +3709,111 @@ describe("P01 versioned contract fixtures", () => {
       /objective-valid primary metric/,
     );
   });
+
+  test("closes latest emitted-cause, transfer, actor, and scheduling findings", () => {
+    expect(() =>
+      parseContract(EngineStepResultSchema, {
+        schemaVersion: 1,
+        status: "progress",
+        snapshot: sampleSnapshot,
+        emittedEvents: [
+          {
+            schemaVersion: 1,
+            eventId: "emitted-with-missing-cause",
+            timeMs: 100,
+            sequence: 2,
+            phase: "impact",
+            kind: "damage",
+            actorEntityId: "actor",
+            targetEntityIds: ["enemy"],
+            causeEventIds: ["missing-cause"],
+            payload: {},
+          },
+        ],
+        result: null,
+        reason: sampleSnapshot.interruption.reason,
+      }),
+    ).toThrow(/already executed event/);
+
+    const transferWithForeignCoverage = clone(sampleTransfer);
+    transferWithForeignCoverage.result.coverage = {
+      killedCount: 0,
+      totalCount: 99,
+      killedWeight: 0,
+      totalWeight: 99,
+      fraction: 0,
+    };
+    expect(() => parseContract(ExactComparisonTransferSchema, transferWithForeignCoverage)).toThrow(
+      /coverage denominator.*transferred cohort/,
+    );
+
+    const enemyActorSnapshot = clone(sampleSnapshot);
+    enemyActorSnapshot.entities.find((entity) => entity.entityId === "actor")!.team = "enemy";
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        enemyActorSnapshot,
+      ),
+    ).toThrow(/actor team/);
+
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "trigger-sequence-2",
+      timeMs: 0,
+      sequence: 2,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        { ...mockPortContext, sequence: 2 },
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [
+            {
+              schemaVersion: 1,
+              kind: "schedule-event",
+              commandId: "reused-sequence",
+              issuedAtMs: 0,
+              causeEventIds: ["trigger-sequence-2"],
+              event: {
+                eventId: "future-event",
+                timeMs: 1000,
+                sequence: 2,
+                phase: "impact",
+                kind: "damage",
+                payload: {},
+                causeEventIds: ["trigger-sequence-2"],
+              },
+            },
+          ],
+        },
+      ),
+    ).toThrow(/dispatch timing and causal identity/);
+
+    expect(() =>
+      parseContract(EngineCommandSchema, {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: "self-causal-schedule",
+        issuedAtMs: 0,
+        causeEventIds: ["self-causal-event"],
+        event: {
+          eventId: "self-causal-event",
+          timeMs: 1,
+          sequence: 3,
+          phase: "impact",
+          kind: "damage",
+          payload: {},
+          causeEventIds: ["self-causal-event"],
+        },
+      }),
+    ).toThrow(/cannot cite itself/);
+  });
 });

@@ -1869,7 +1869,16 @@ export const ScheduledEventSchema = z
     payload: JsonValueSchema,
     causeEventIds: uniqueIdentifiers,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.causeEventIds.includes(value.eventId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["causeEventIds"],
+        message: "a scheduled event cannot cite itself as a cause",
+      });
+    }
+  });
 export type ScheduledEvent = z.infer<typeof ScheduledEventSchema>;
 
 export const EventQueueSnapshotSchema = z
@@ -2789,6 +2798,7 @@ export const EngineStepResultSchema = z
     const emittedIndexById = new Map(
       value.emittedEvents.map((event, index) => [event.eventId, index]),
     );
+    const retainedTraceIds = new Set(value.snapshot.trace.events.map((event) => event.eventId));
     for (const [index, event] of value.emittedEvents.entries()) {
       if (
         event.timeMs > value.snapshot.currentTimeMs ||
@@ -2804,7 +2814,10 @@ export const EngineStepResultSchema = z
         const emittedCauseIndex = emittedIndexById.get(causeId);
         if (
           (emittedCauseIndex !== undefined && emittedCauseIndex >= index) ||
-          queuedIds.has(causeId)
+          queuedIds.has(causeId) ||
+          (emittedCauseIndex === undefined &&
+            !retainedTraceIds.has(causeId) &&
+            !value.snapshot.trace.truncated)
         ) {
           context.addIssue({
             code: "custom",
@@ -3009,7 +3022,7 @@ export const ExactComparisonTransferSchema = z
         message: "coverage-first aggregation requires machine-readable kill coverage",
       });
     }
-    if (value.run.objective.aggregation === "coverage-then-ttk" && value.result.coverage !== null) {
+    if (value.result.coverage !== null) {
       const cohort = value.resolvedScenario.effective.cohort;
       const totalWeight = cohort.members.reduce((sum, member) => sum + member.weight, 0);
       if (
