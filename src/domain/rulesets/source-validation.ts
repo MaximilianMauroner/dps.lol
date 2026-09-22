@@ -83,12 +83,19 @@ function decodedVersion(value: string): string {
 }
 
 function assertOfficialArtifactLocation(artifact: SourceArtifact, url: URL): void {
-  if (artifact.kind === "data-dragon" && url.hostname !== "ddragon.leagueoflegends.com") {
-    throw new TypeError(`Data Dragon artifact ${artifact.artifactId} must use the official host`);
+  const hasCredentials = url.username !== "" || url.password !== "";
+  if (
+    artifact.kind === "data-dragon" &&
+    (url.origin !== "https://ddragon.leagueoflegends.com" || hasCredentials)
+  ) {
+    throw new TypeError(`Data Dragon artifact ${artifact.artifactId} must use the official origin`);
   }
-  if (artifact.kind === "community-dragon" && url.hostname !== "raw.communitydragon.org") {
+  if (
+    artifact.kind === "community-dragon" &&
+    (url.origin !== "https://raw.communitydragon.org" || hasCredentials)
+  ) {
     throw new TypeError(
-      `CommunityDragon artifact ${artifact.artifactId} must use the official host`,
+      `CommunityDragon artifact ${artifact.artifactId} must use the official origin`,
     );
   }
 }

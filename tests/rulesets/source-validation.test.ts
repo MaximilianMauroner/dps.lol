@@ -220,6 +220,16 @@ describe("P02 retained source validation", () => {
       );
     }
 
+    const alternateOrigin = clone(built);
+    const alternateOriginDdragon = alternateOrigin.sourceArtifacts.find(
+      ({ artifact }) => artifact.kind === "data-dragon",
+    )!;
+    alternateOriginDdragon.artifact.uri =
+      "https://ddragon.leagueoflegends.com:444/cdn/16.18.1/data/en_US/item.json";
+    await expect(assertPinnedSourceSet(alternateOrigin, retainedSources)).rejects.toThrow(
+      /official origin/,
+    );
+
     const fragmentedUrl = clone(built);
     const fragmentedDdragon = fragmentedUrl.sourceArtifacts.find(
       ({ artifact }) => artifact.kind === "data-dragon",
