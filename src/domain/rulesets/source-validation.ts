@@ -65,6 +65,9 @@ function parsePinnedArtifactUrl(artifact: SourceArtifact): URL {
   }
   if (/(^|[./_-])(?:latest|current)(?:$|[./_-])/i.test(decodedPath))
     throw new TypeError(`source artifact ${artifact.artifactId} is not explicitly version-pinned`);
+  if (url.hash) {
+    throw new TypeError(`source artifact ${artifact.artifactId} URI must not contain a fragment`);
+  }
   if (url.href !== artifact.uri || decodedPath !== url.pathname) {
     throw new TypeError(`source artifact ${artifact.artifactId} URI must use canonical spelling`);
   }
@@ -199,6 +202,9 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
   if (decodedSetVersions.some((version) => forbidden.test(version))) {
     throw new TypeError("ruleset sources must use explicit versions, never latest/current");
   }
+  if (value.communityDragonRevision.toLowerCase() === "pbe") {
+    throw new TypeError("CommunityDragon sources must not use the rolling PBE revision");
+  }
   if (decodedSetVersions.some((version, index) => version !== setVersions[index])) {
     throw new TypeError("ruleset source versions must use canonical literal spelling");
   }
@@ -208,6 +214,11 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
     if (forbidden.test(canonicalVersion)) {
       throw new TypeError(
         `source artifact ${artifact.artifactId} is not explicitly version-pinned`,
+      );
+    }
+    if (artifact.kind === "community-dragon" && canonicalVersion.toLowerCase() === "pbe") {
+      throw new TypeError(
+        `CommunityDragon artifact ${artifact.artifactId} must not use the rolling PBE revision`,
       );
     }
     if (canonicalVersion !== artifact.version) {
