@@ -3461,6 +3461,8 @@ describe("P01 versioned contract fixtures", () => {
 
     const interruptedRun = clone(sampleRunningRun);
     interruptedRun.objective.censoring = "fail-if-not-killed";
+    const interruptedScenario = clone(sampleResolvedScenario);
+    interruptedScenario.effective.objective = clone(interruptedRun.objective);
     const interruptedResult = clone(censoredResult);
     interruptedResult.status = "incomplete";
     interruptedResult.censoring = "invalid";
@@ -3471,7 +3473,7 @@ describe("P01 versioned contract fixtures", () => {
     interruptedSnapshot.result = interruptedResult;
     expect(() =>
       assertEngineStepResult(
-        { scenario: sampleResolvedScenario, run: interruptedRun, ports: createMockPorts() },
+        { scenario: interruptedScenario, run: interruptedRun, ports: createMockPorts() },
         {
           schemaVersion: 1,
           status: "incomplete",
@@ -3815,5 +3817,145 @@ describe("P01 versioned contract fixtures", () => {
         },
       }),
     ).toThrow(/cannot cite itself/);
+  });
+
+  test("closes latest terminal, frontier, lifecycle, policy, and mock findings", () => {
+    const terminalSnapshot = completeSnapshotForTest();
+    terminalSnapshot.policyProgress.policyId = "foreign-policy";
+    expect(() =>
+      assertEngineStepResult(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        {
+          schemaVersion: 1,
+          status: "complete",
+          snapshot: terminalSnapshot,
+          emittedEvents: [],
+          result: terminalSnapshot.result,
+          reason: null,
+        },
+      ),
+    ).toThrow(/policyId differs/);
+
+    expect(() =>
+      parseContract(EngineStepResultSchema, {
+        schemaVersion: 1,
+        status: "progress",
+        snapshot: sampleSnapshot,
+        emittedEvents: [
+          {
+            schemaVersion: 1,
+            eventId: "effect-before-cause",
+            timeMs: 0,
+            sequence: 1,
+            phase: "input",
+            kind: "action",
+            actorEntityId: "actor",
+            targetEntityIds: [],
+            causeEventIds: ["event-002"],
+            payload: {},
+          },
+        ],
+        result: null,
+        reason: sampleSnapshot.interruption.reason,
+      }),
+    ).toThrow(/already executed event/);
+
+    const sameTimeBehind = clone(sampleSnapshot);
+    sameTimeBehind.trace.events = [sameTimeBehind.trace.events[1]!];
+    sameTimeBehind.trace.truncated = true;
+    sameTimeBehind.trace.truncationReason = "older trace prefix omitted";
+    sameTimeBehind.queue.entries[0]!.timeMs = sameTimeBehind.currentTimeMs;
+    sameTimeBehind.queue.entries[0]!.sequence = 1;
+    expect(() => parseContract(EngineSnapshotSchema, sameTimeBehind)).toThrow(
+      /processed time and sequence frontier/,
+    );
+
+    const deadTransform = clone(transformedCopiedAbility);
+    deadTransform.alive = false;
+    deadTransform.health.current = 0;
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "transform", replacement: deadTransform },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "transform",
+          state: deadTransform,
+          reason: null,
+        },
+      ),
+    ).toThrow(/preserve entity liveness/);
+
+    const enemyPendingAction = clone(sampleSnapshot);
+    enemyPendingAction.pendingActions[0]!.command.actorId = "enemy";
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        enemyPendingAction,
+      ),
+    ).toThrow(/differs from scenario actor/);
+
+    const unavailableItem = clone(sampleScenario);
+    unavailableItem.entities[0]!.inventory[0]!.state = "owned";
+    unavailableItem.policy.steps[0]!.action = {
+      kind: "item-active",
+      actorId: "actor",
+      itemInstanceId: "item-instance-001",
+      target: { kind: "entity", entityId: "enemy" },
+    };
+    expect(() => parseContract(ScenarioSpecSchema, unavailableItem)).toThrow(
+      /unavailable item instance/,
+    );
+
+    const ports = createMockPorts();
+    ports.resources.restore(transformedCopiedAbility, mockPortContext);
+    const fullMana = transformedCopiedAbility.resources[0]!;
+    const clamped = ports.resources.apply(
+      {
+        entityId: "actor",
+        resourceId: fullMana.resourceId,
+        delta: fullMana.maximum,
+        reason: "restore",
+      },
+      mockPortContext,
+    );
+    expect(clamped.current).toBe(fullMana.maximum);
+
+    const truncatedTrace = clone(sampleTrace);
+    truncatedTrace.traceId = "retained-trace";
+    truncatedTrace.truncated = true;
+    truncatedTrace.truncationReason = "budget";
+    ports.trace.restore(truncatedTrace, mockPortContext);
+    expect(ports.trace.snapshot(mockPortContext.runId)).toEqual(truncatedTrace);
+
+    const noEnemyVisible = visiblePolicyStateFixture();
+    const visibleEnemy = noEnemyVisible.entities.find((entity) => entity.team === "enemy")!;
+    visibleEnemy.alive = false;
+    visibleEnemy.health.current = 0;
+    const noTarget = ports.targeting.select(
+      {
+        actor: transformedCopiedAbility,
+        selector: { kind: "lowest-health-visible-enemy", actorId: "actor" },
+        visibleState: parseContract(PolicyVisibleStateSchema, noEnemyVisible),
+        expectedVisibleEntityIds: noEnemyVisible.visibility.visibleEntityIds,
+      },
+      mockPortContext,
+    );
+    expect(noTarget).toMatchObject({ rejected: true, targetEntityIds: [] });
+
+    const visible = parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture());
+    expect(() =>
+      assertTargetingResolution(
+        {
+          actor: transformedCopiedAbility,
+          selector: { kind: "self", actorId: "actor" },
+          visibleState: visible,
+          expectedVisibleEntityIds: visible.visibility.visibleEntityIds,
+        },
+        { ...mockPortContext, timeMs: visible.atTimeMs },
+        { targetEntityIds: [], rejected: true, reason: "" },
+      ),
+    ).toThrow(/rejection and reason/);
   });
 });

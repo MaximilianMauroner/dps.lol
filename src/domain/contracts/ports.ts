@@ -270,7 +270,7 @@ export function assertMovementResolution(
     request.read.atTimeMs !== context.timeMs ||
     result.entityId !== request.entity.entityId ||
     typeof result.accepted !== "boolean" ||
-    (result.reason !== null && typeof result.reason !== "string") ||
+    (result.reason !== null && (typeof result.reason !== "string" || result.reason.length === 0)) ||
     result.accepted !== (result.reason === null) ||
     canonicalJson(position) !==
       canonicalJson(result.accepted ? request.destination : request.entity.position)
@@ -339,7 +339,7 @@ export function assertTargetingResolution(
   if (
     !Array.isArray(result.targetEntityIds) ||
     typeof result.rejected !== "boolean" ||
-    (result.reason !== null && typeof result.reason !== "string") ||
+    (result.reason !== null && (typeof result.reason !== "string" || result.reason.length === 0)) ||
     result.rejected !== (result.reason !== null)
   ) {
     throw new TypeError("targeting resolution rejection and reason must correlate");
@@ -454,6 +454,13 @@ export function assertLifecycleResolution(
   ) {
     throw new TypeError("death replacement must preserve a dead entity with zero health");
   }
+  if (
+    transition.transition === "transform" &&
+    transition.replacement !== null &&
+    existingEntity?.alive !== transition.replacement.alive
+  ) {
+    throw new TypeError("transform replacements must preserve entity liveness");
+  }
   if (transition.replacement !== null) {
     const knownIds = new Set([...entities.map((entity) => entity.entityId), transition.entityId]);
     if (
@@ -544,7 +551,7 @@ export function assertTriggerDispatchResult(
   if (
     !Array.isArray(result.emittedCommands) ||
     typeof result.accepted !== "boolean" ||
-    (result.reason !== null && typeof result.reason !== "string") ||
+    (result.reason !== null && (typeof result.reason !== "string" || result.reason.length === 0)) ||
     result.accepted !== (result.reason === null) ||
     (!result.accepted && result.emittedCommands.length > 0)
   )
@@ -798,6 +805,10 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Vali
   if (!retainedActor) mismatches.push("snapshot must retain the designated scenario actor");
   else if (retainedActor.team !== "actor")
     mismatches.push("snapshot designated scenario actor must remain on the actor team");
+  for (const pending of snapshot.pendingActions) {
+    if (pending.command.actorId !== scenario.effective.actorEntityId)
+      mismatches.push(`snapshot pending action ${pending.actionId} differs from scenario actor`);
+  }
 
   const identities: ReadonlyArray<[string, string, string]> = [
     ["runId", snapshot.runId, run.runId],
@@ -915,7 +926,17 @@ export function assertEngineStepResult(input: EngineInput, value: unknown): Engi
     throw new TypeError("engine step output must match every requested run identity");
   if (step.snapshot.currentTimeMs > input.run.objective.horizonMs)
     throw new TypeError("engine step snapshot cannot exceed the requested objective horizon");
-  if (step.status === "progress") assertResumeCompatible(input, step.snapshot);
+  const compatibilitySnapshot =
+    step.status === "progress"
+      ? step.snapshot
+      : {
+          ...step.snapshot,
+          status: "running" as const,
+          resumability: "resumable" as const,
+          interruption: { state: "none" as const, reason: null },
+          result: null,
+        };
+  assertResumeCompatible(input, compatibilitySnapshot);
   if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
   return step;
 }

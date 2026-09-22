@@ -3,17 +3,17 @@ import type {
   LifecycleTransition,
   PortContext,
   TargetingRequest,
-  TraceEvent,
+  Trace,
 } from "../../src/domain/contracts";
 
 /** A deterministic, side-effect-free port set for contract consumers. */
 export function createMockPorts(): CombatKernelPorts {
-  const eventsByRunId = new Map<string, TraceEvent[]>();
+  const tracesByRunId = new Map<string, Trace>();
   const scheduledByRunId = new Map<
     string,
     Map<string, import("../../src/domain/contracts").ScheduledEvent>
   >();
-  const resourceValues = new Map<string, number>();
+  const resourceValues = new Map<string, { current: number; maximum: number }>();
   const rngDrawCounts = new Map<string, number>();
   const timersFor = (runId: string) => {
     const existing = scheduledByRunId.get(runId);
@@ -54,15 +54,19 @@ export function createMockPorts(): CombatKernelPorts {
         for (const resource of entity.resources) {
           resourceValues.set(
             `${context.runId}\u0000${entity.entityId}\u0000${resource.resourceId}`,
-            resource.current,
+            {
+              current: resource.current,
+              maximum: resource.maximum,
+            },
           );
         }
       },
       apply: (mutation, context) => {
         const key = `${context.runId}\u0000${mutation.entityId}\u0000${mutation.resourceId}`;
-        const previous = resourceValues.get(key) ?? 100;
-        const current = Math.max(0, previous + mutation.delta);
-        resourceValues.set(key, current);
+        const restored = resourceValues.get(key) ?? { current: 100, maximum: 100 };
+        const previous = restored.current;
+        const current = Math.min(restored.maximum, Math.max(0, previous + mutation.delta));
+        resourceValues.set(key, { ...restored, current });
         return {
           accepted: true,
           entityId: mutation.entityId,
@@ -119,6 +123,8 @@ export function createMockPorts(): CombatKernelPorts {
                     .slice(0, 1)
                     .map((entity) => entity.entityId)
                 : enemies.map((entity) => entity.entityId);
+        if (request.selector.kind === "lowest-health-visible-enemy" && targetEntityIds.length === 0)
+          return { targetEntityIds: [], rejected: true, reason: "no living visible enemy" };
         return { targetEntityIds, rejected: false, reason: null };
       },
     },
@@ -151,21 +157,32 @@ export function createMockPorts(): CombatKernelPorts {
     },
     trace: {
       restore: (trace, context) => {
-        eventsByRunId.set(context.runId, [...trace.events]);
+        tracesByRunId.set(context.runId, { ...trace, events: [...trace.events] });
       },
       record: (event, context) => {
-        const events = eventsByRunId.get(context.runId) ?? [];
-        events.push(event);
-        eventsByRunId.set(context.runId, events);
+        const trace = tracesByRunId.get(context.runId) ?? {
+          schemaVersion: 1,
+          traceId: `trace-${context.runId}`,
+          runId: context.runId,
+          events: [],
+          truncated: false,
+          truncationReason: null,
+        };
+        tracesByRunId.set(context.runId, { ...trace, events: [...trace.events, event] });
       },
-      snapshot: (runId) => ({
-        schemaVersion: 1,
-        traceId: `trace-${runId}`,
-        runId,
-        events: [...(eventsByRunId.get(runId) ?? [])],
-        truncated: false,
-        truncationReason: null,
-      }),
+      snapshot: (runId) => {
+        const trace = tracesByRunId.get(runId);
+        return trace
+          ? { ...trace, events: [...trace.events] }
+          : {
+              schemaVersion: 1,
+              traceId: `trace-${runId}`,
+              runId,
+              events: [],
+              truncated: false,
+              truncationReason: null,
+            };
+      },
     },
   };
 }

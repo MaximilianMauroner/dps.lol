@@ -1150,11 +1150,15 @@ function validateScenarioReferences(
       }
     }
     if (actor && action.kind === "item-active") {
-      if (!actor.inventory.some((item) => item.instanceId === action.itemInstanceId)) {
+      if (
+        !actor.inventory.some(
+          (item) => item.instanceId === action.itemInstanceId && item.state === "equipped",
+        )
+      ) {
         addReferenceIssue(
           context,
           ["policy", "steps", stepIndex, "action", "itemInstanceId"],
-          `policy references unknown item instance ${action.itemInstanceId} on entity ${action.actorId}`,
+          `policy references unknown item instance or unavailable item instance ${action.itemInstanceId} on entity ${action.actorId}`,
         );
       }
     }
@@ -2107,11 +2111,16 @@ export const EngineSnapshotSchema = z
       context,
     );
     for (const [index, entry] of value.queue.entries.entries()) {
-      if (entry.timeMs < value.currentTimeMs) {
+      if (
+        entry.timeMs < value.currentTimeMs ||
+        (entry.timeMs === value.currentTimeMs &&
+          entry.sequence <= value.queue.lastProcessedSequence)
+      ) {
         context.addIssue({
           code: "custom",
           path: ["queue", "entries", index, "timeMs"],
-          message: "snapshot queue events cannot precede currentTimeMs",
+          message:
+            "snapshot queue events cannot precede currentTimeMs or remain behind the processed time and sequence frontier",
         });
       }
     }
@@ -2798,7 +2807,9 @@ export const EngineStepResultSchema = z
     const emittedIndexById = new Map(
       value.emittedEvents.map((event, index) => [event.eventId, index]),
     );
-    const retainedTraceIds = new Set(value.snapshot.trace.events.map((event) => event.eventId));
+    const retainedTraceById = new Map(
+      value.snapshot.trace.events.map((event) => [event.eventId, event]),
+    );
     for (const [index, event] of value.emittedEvents.entries()) {
       if (
         event.timeMs > value.snapshot.currentTimeMs ||
@@ -2816,8 +2827,16 @@ export const EngineStepResultSchema = z
           (emittedCauseIndex !== undefined && emittedCauseIndex >= index) ||
           queuedIds.has(causeId) ||
           (emittedCauseIndex === undefined &&
-            !retainedTraceIds.has(causeId) &&
-            !value.snapshot.trace.truncated)
+            !retainedTraceById.has(causeId) &&
+            !value.snapshot.trace.truncated) ||
+          (() => {
+            const retainedCause = retainedTraceById.get(causeId);
+            return (
+              retainedCause !== undefined &&
+              (retainedCause.timeMs > event.timeMs ||
+                (retainedCause.timeMs === event.timeMs && retainedCause.sequence >= event.sequence))
+            );
+          })()
         ) {
           context.addIssue({
             code: "custom",
