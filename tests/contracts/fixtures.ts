@@ -13,10 +13,11 @@ import {
   ScenarioSpecSchema,
   SearchConstraintsSchema,
   TraceSchema,
+  assertResolvedScenarioPolicyHash,
+  hashCanonical,
   parseContract,
   type Provenance,
 } from "../../src/domain/contracts";
-import type { HashVerifiedResolvedScenario } from "../../src/domain/contracts";
 
 export const HASH_A = `sha256:${"a".repeat(64)}`;
 export const HASH_B = `sha256:${"b".repeat(64)}`;
@@ -147,6 +148,7 @@ export const samplePolicy = parseContract(ActionPolicySchema, {
       },
       condition: { kind: "always" },
       onUnavailable: "wait",
+      unavailableWaitMs: 900,
       repeat: false,
       maxRepeats: null,
     },
@@ -160,6 +162,7 @@ export const samplePolicy = parseContract(ActionPolicySchema, {
       },
       condition: { kind: "target-alive", entityId: "enemy" },
       onUnavailable: "skip",
+      unavailableWaitMs: null,
       repeat: true,
       maxRepeats: 10,
     },
@@ -269,7 +272,7 @@ export const sampleScenario = parseContract(ScenarioSpecSchema, {
   },
 });
 
-export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
+const sampleResolvedScenarioDraft = parseContract(ResolvedScenarioSchema, {
   schemaVersion: 1,
   scenarioId: sampleScenario.scenarioId,
   resolvedScenarioHash: HASH_B,
@@ -293,18 +296,36 @@ export const sampleResolvedScenario = parseContract(ResolvedScenarioSchema, {
     candidateInput: fixtureProvenance,
     candidateInputHash: fixtureProvenance,
   },
-}) as HashVerifiedResolvedScenario;
+});
+const sampleCohortBytes = Object.fromEntries(
+  Object.entries(sampleResolvedScenarioDraft.effective.cohort).filter(
+    ([key]) => key !== "contentHash",
+  ),
+);
+sampleResolvedScenarioDraft.effective.cohort.contentHash = await hashCanonical(sampleCohortBytes);
+sampleResolvedScenarioDraft.policyHash = await hashCanonical(
+  sampleResolvedScenarioDraft.effective.policy,
+);
+sampleResolvedScenarioDraft.candidateInputHash = await hashCanonical(
+  sampleResolvedScenarioDraft.candidateInput,
+);
+sampleResolvedScenarioDraft.resolvedScenarioHash = await hashCanonical(
+  sampleResolvedScenarioDraft.effective,
+);
+export const sampleResolvedScenario = await assertResolvedScenarioPolicyHash(
+  sampleResolvedScenarioDraft,
+);
 
 export const sampleRun = parseContract(RunManifestSchema, {
   schemaVersion: 1,
   runId: "run-001",
   engineHash: HASH_A,
   rulesetHash: HASH_A,
-  resolvedScenarioHash: HASH_B,
-  cohortHash: HASH_B,
-  policyHash: HASH_A,
+  resolvedScenarioHash: sampleResolvedScenario.resolvedScenarioHash,
+  cohortHash: sampleResolvedScenario.effective.cohort.contentHash,
+  policyHash: sampleResolvedScenario.policyHash,
   searchContextHash: HASH_A,
-  candidateInputHash: HASH_C,
+  candidateInputHash: sampleResolvedScenario.candidateInputHash,
   objective: sampleObjective,
   evaluationMode: sampleEvaluationMode,
   random: { kind: "deterministic", algorithm: "none", seed: null, trialCount: 1 },

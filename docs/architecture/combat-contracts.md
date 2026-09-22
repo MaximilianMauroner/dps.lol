@@ -138,6 +138,9 @@ not representable in the projection. The policy visibility contract hard-codes
 The designated scenario actor must belong to the actor team. Step IDs and
 priorities are unique, selector-relative actor IDs match their
 commands, and tolerant tie policies carry an explicit non-negative tolerance.
+An action step that waits when unavailable carries its deterministic
+`unavailableWaitMs` in the policy itself. The policy hash therefore binds the
+generated wait duration; skip/fail steps carry `null` instead.
 
 ## Ports and failure behavior
 
@@ -167,7 +170,9 @@ before they cross a worker. The engine-facing `CombatEngine` has three paths
 over the same session semantics:
 
 1. `createSession(assertEngineInputCompatible(input, engineHash))` starts a run from the frozen,
-   validated input.
+   validated input. Scenario hash verification has runtime identity and must be
+   repeated after a worker or structured-clone boundary; a compile-time brand
+   alone is not accepted.
 2. `EngineSession.step({ maxEvents, untilTimeMs })` advances bounded work;
    `snapshot()` captures resumable state.
 3. `resumeSession(assertResumeCompatible(input, snapshot, engineHash))` continues the exact queue, entity/buff,
@@ -175,8 +180,8 @@ over the same session semantics:
    returns the frozen validated input and detached snapshot after rejecting non-resumable snapshots, any
    run/scenario/engine identity mismatch, or policy progress whose policy ID,
    revision, exact step IDs, or repeat counters are impossible under the scenario policy. Pending actions retain their
-   originating policy step and distinguish policy actions from policy-derived waits; an active wait's continuation time
-   equals its start plus declared duration. Bounded-step results must preserve
+   originating policy step and distinguish policy actions from policy-derived waits; an active wait's command duration
+   equals the policy-hashed step duration, and its continuation time equals its start plus that duration. Bounded-step results must preserve
    the snapshot interruption state and exact reason; `assertEngineStepResult`
    binds terminal results to the session objective and evaluation configuration. Complete sampled results require at least
    two effective samples and primary-metric uncertainty; interrupted sampled results may carry no uncertainty or partial
@@ -225,6 +230,10 @@ snapshot result. A snapshot is data only and is safe for worker structured
 clone and JSON replay.
 Top-level snapshot buffs must exactly match the canonical entity-owned buff
 state; they cannot disagree on stacks, sources or expiry.
+Step envelopes may repeat events retained in the snapshot trace only when the
+event ID, allocation sequence and all causal identity fields describe that
+same retained event. Reusing either a retained ID or sequence for different
+event bytes is rejected.
 
 `ExactComparisonTransferSchema` is itself versioned and carries the selected
 complete `CombatResult`, its `ResolvedScenario`, `RunManifest` and candidate

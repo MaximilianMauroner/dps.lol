@@ -97,6 +97,30 @@ async function bindScenarioHashes<T extends typeof sampleResolvedScenario>(
   return scenario;
 }
 
+async function verifyScenarioForEngine<T extends typeof sampleResolvedScenario>(scenario: T) {
+  await bindScenarioHashes(scenario);
+  return assertResolvedScenarioPolicyHash(scenario);
+}
+
+function bindRunToScenario(
+  run: typeof sampleRunningRun,
+  scenario: typeof sampleResolvedScenario,
+): void {
+  run.resolvedScenarioHash = scenario.resolvedScenarioHash;
+  run.cohortHash = scenario.effective.cohort.contentHash;
+  run.policyHash = scenario.policyHash;
+  run.candidateInputHash = scenario.candidateInputHash;
+}
+
+function bindSnapshotToRun(snapshot: typeof sampleSnapshot, run: typeof sampleRunningRun): void {
+  snapshot.engineHash = run.engineHash;
+  snapshot.rulesetHash = run.rulesetHash;
+  snapshot.cohortHash = run.cohortHash;
+  snapshot.policyHash = run.policyHash;
+  snapshot.resolvedScenarioHash = run.resolvedScenarioHash;
+  snapshot.candidateInputHash = run.candidateInputHash;
+}
+
 function visiblePolicyStateFixture() {
   return {
     schemaVersion: 1,
@@ -1787,7 +1811,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => parseContract(RunManifestSchema, subMillisecond)).toThrow(/explicit timezone/);
   });
 
-  test("enforces selector, port identity, RNG, and lifecycle boundaries", () => {
+  test("enforces selector, port identity, RNG, and lifecycle boundaries", async () => {
     const visibleState = visiblePolicyStateFixture();
     visibleState.entities.push({
       ...clone(visibleState.entities[1]!),
@@ -1876,16 +1900,19 @@ describe("P01 versioned contract fixtures", () => {
     };
     expect(() => assertRngResult({ streamId: "combat", draws: 1 }, 0, executableRng)).toThrow();
 
-    const seededScenario = clone(sampleResolvedScenario);
-    seededScenario.effective.evaluationMode = {
+    const seededScenarioDraft = clone(sampleResolvedScenario);
+    seededScenarioDraft.effective.evaluationMode = {
       kind: "seeded-trajectory",
       random: { kind: "seeded", algorithm: "xorshift32", seed: "expected", trialCount: 1 },
       approximation: null,
     };
+    const seededScenario = await verifyScenarioForEngine(seededScenarioDraft);
     const seededRun = clone(sampleRunningRun);
     seededRun.evaluationMode = clone(seededScenario.effective.evaluationMode);
     seededRun.random = clone(seededRun.evaluationMode.random);
+    bindRunToScenario(seededRun, seededScenario);
     const seededSnapshot = clone(sampleSnapshot);
+    bindSnapshotToRun(seededSnapshot, seededRun);
     seededSnapshot.numericalBranches[0]!.mode = "seeded-trajectory";
     seededSnapshot.rngStreams[0]!.algorithm = "xorshift32";
     seededSnapshot.rngStreams[0]!.seed = "wrong";
@@ -2194,7 +2221,7 @@ describe("P01 versioned contract fixtures", () => {
     );
   });
 
-  test("closes latest exact-head execution boundary findings", () => {
+  test("closes latest exact-head execution boundary findings", async () => {
     const lowHealthTarget = clone(observedTarget);
     lowHealthTarget.health.current = 5;
     const overkillRequest = {
@@ -2377,9 +2404,13 @@ describe("P01 versioned contract fixtures", () => {
       ),
     ).toThrow(/planned for fresh execution/);
 
-    const scriptedScenario = clone(sampleResolvedScenario);
-    scriptedScenario.effective.policy.mode = "scripted";
+    const scriptedScenarioDraft = clone(sampleResolvedScenario);
+    scriptedScenarioDraft.effective.policy.mode = "scripted";
+    const scriptedScenario = await verifyScenarioForEngine(scriptedScenarioDraft);
+    const scriptedRun = clone(sampleRunningRun);
+    bindRunToScenario(scriptedRun, scriptedScenario);
     const skippedCursor = clone(sampleSnapshot);
+    bindSnapshotToRun(skippedCursor, scriptedRun);
     skippedCursor.policyProgress.nextStepId = "basic-attack";
     skippedCursor.policyProgress.steps[0] = {
       stepId: "cast-w",
@@ -2388,7 +2419,7 @@ describe("P01 versioned contract fixtures", () => {
     };
     expect(() =>
       assertResumeCompatible(
-        { scenario: scriptedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { scenario: scriptedScenario, run: scriptedRun, ports: createMockPorts() },
         skippedCursor,
       ),
     ).toThrow(/first executable step/);
@@ -2441,16 +2472,19 @@ describe("P01 versioned contract fixtures", () => {
     selfOwned.ownerEntityId = selfOwned.entityId;
     expect(() => parseContract(EntityStateSchema, selfOwned)).toThrow(/cannot own itself/);
 
-    const seededScenario = clone(sampleResolvedScenario);
-    seededScenario.effective.evaluationMode = {
+    const seededScenarioDraft = clone(sampleResolvedScenario);
+    seededScenarioDraft.effective.evaluationMode = {
       kind: "seeded-trajectory",
       random: { kind: "seeded", algorithm: "xorshift32", seed: "expected", trialCount: 1 },
       approximation: null,
     };
+    const seededScenario = await verifyScenarioForEngine(seededScenarioDraft);
     const seededRun = clone(sampleRunningRun);
     seededRun.evaluationMode = clone(seededScenario.effective.evaluationMode);
     seededRun.random = clone(seededRun.evaluationMode.random);
+    bindRunToScenario(seededRun, seededScenario);
     const missingRng = clone(sampleSnapshot);
+    bindSnapshotToRun(missingRng, seededRun);
     missingRng.numericalBranches[0]!.mode = "seeded-trajectory";
     missingRng.rngStreams = [];
     expect(() =>
@@ -2468,17 +2502,20 @@ describe("P01 versioned contract fixtures", () => {
       /terminal pending actions cannot retain continuations/,
     );
 
-    const sampledScenario = clone(sampleResolvedScenario);
-    sampledScenario.effective.evaluationMode = {
+    const sampledScenarioDraft = clone(sampleResolvedScenario);
+    sampledScenarioDraft.effective.evaluationMode = {
       kind: "sampled-estimate",
       random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 10 },
       approximation: null,
       confidenceLevel: 0.95,
     };
+    const sampledScenario = await verifyScenarioForEngine(sampledScenarioDraft);
     const sampledRun = clone(sampleRunningRun);
     sampledRun.evaluationMode = clone(sampledScenario.effective.evaluationMode);
     sampledRun.random = clone(sampledRun.evaluationMode.random);
+    bindRunToScenario(sampledRun, sampledScenario);
     const missingBranch = clone(sampleSnapshot);
+    bindSnapshotToRun(missingBranch, sampledRun);
     missingBranch.rngStreams[0]!.algorithm = "xorshift32";
     missingBranch.rngStreams[0]!.seed = "seed";
     missingBranch.numericalBranches = [];
@@ -2720,9 +2757,13 @@ describe("P01 versioned contract fixtures", () => {
       ),
     ).toThrow(/event time, sequence/);
 
-    const scriptedScenario = clone(sampleResolvedScenario);
-    scriptedScenario.effective.policy.mode = "scripted";
+    const scriptedScenarioDraft = clone(sampleResolvedScenario);
+    scriptedScenarioDraft.effective.policy.mode = "scripted";
+    const scriptedScenario = await verifyScenarioForEngine(scriptedScenarioDraft);
+    const scriptedRun = clone(sampleRunningRun);
+    bindRunToScenario(scriptedRun, scriptedScenario);
     const outOfOrder = clone(sampleSnapshot);
+    bindSnapshotToRun(outOfOrder, scriptedRun);
     outOfOrder.policyProgress.nextStepId = "cast-w";
     outOfOrder.policyProgress.steps[0] = {
       stepId: "cast-w",
@@ -2736,7 +2777,7 @@ describe("P01 versioned contract fixtures", () => {
     };
     expect(() =>
       assertResumeCompatible(
-        { scenario: scriptedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { scenario: scriptedScenario, run: scriptedRun, ports: createMockPorts() },
         outOfOrder,
       ),
     ).toThrow(/beyond the cursor/);
@@ -3468,7 +3509,7 @@ describe("P01 versioned contract fixtures", () => {
     ).toThrow(/deterministic resume cannot retain consumed RNG state/);
   });
 
-  test("closes latest snapshot, interruption, and detached-output findings", () => {
+  test("closes latest snapshot, interruption, and detached-output findings", async () => {
     const zeroRevision = clone(sampleSnapshot);
     zeroRevision.stateRevisions.actor = 0;
     expect(() => parseContract(EngineSnapshotSchema, zeroRevision)).toThrow(
@@ -3495,16 +3536,21 @@ describe("P01 versioned contract fixtures", () => {
 
     const interruptedRun = clone(sampleRunningRun);
     interruptedRun.objective.censoring = "fail-if-not-killed";
-    const interruptedScenario = clone(sampleResolvedScenario);
-    interruptedScenario.effective.objective = clone(interruptedRun.objective);
+    const interruptedScenarioDraft = clone(sampleResolvedScenario);
+    interruptedScenarioDraft.effective.objective = clone(interruptedRun.objective);
+    const interruptedScenario = await verifyScenarioForEngine(interruptedScenarioDraft);
+    bindRunToScenario(interruptedRun, interruptedScenario);
     const interruptedResult = clone(censoredResult);
     interruptedResult.status = "incomplete";
     interruptedResult.censoring = "invalid";
     interruptedResult.metrics.ttk = { status: "undefined", reason: "budget" };
+    interruptedResult.resolvedScenarioHash = interruptedRun.resolvedScenarioHash;
+    interruptedResult.candidateInputHash = interruptedRun.candidateInputHash;
     const interruptedSnapshot = completeSnapshotForTest();
     interruptedSnapshot.status = "incomplete";
     interruptedSnapshot.interruption = { state: "budget-exhausted", reason: "budget" };
     interruptedSnapshot.result = interruptedResult;
+    bindSnapshotToRun(interruptedSnapshot, interruptedRun);
     expect(() =>
       assertEngineStepResult(
         { scenario: interruptedScenario, run: interruptedRun, ports: createMockPorts() },
@@ -4271,7 +4317,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(ports.trace.snapshot("record-run").events[0]!.eventId).toBe("recorded-original");
   });
 
-  test("closes latest wait, arithmetic, timer, interruption, and cause findings", () => {
+  test("closes latest wait, arithmetic, timer, interruption, and cause findings", async () => {
     const mismatchedWait = clone(sampleSnapshot);
     const pendingWait = mismatchedWait.pendingActions[0]!;
     if (pendingWait.command.kind !== "wait") throw new Error("fixture action should be a wait");
@@ -4356,21 +4402,25 @@ describe("P01 versioned contract fixtures", () => {
     detachedTimer.timeMs += 2000;
     expect(ports.timers.peek(mockPortContext)?.timeMs).toBe(originalTime);
 
-    const sampledScenario = clone(sampleResolvedScenario);
-    sampledScenario.effective.evaluationMode = {
+    const sampledScenarioDraft = clone(sampleResolvedScenario);
+    sampledScenarioDraft.effective.evaluationMode = {
       kind: "sampled-estimate",
       random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 10 },
       approximation: null,
       confidenceLevel: 0.95,
     };
+    const sampledScenario = await verifyScenarioForEngine(sampledScenarioDraft);
     const sampledRun = clone(sampleRunningRun);
     sampledRun.evaluationMode = clone(sampledScenario.effective.evaluationMode);
     sampledRun.random = clone(sampledRun.evaluationMode.random);
+    bindRunToScenario(sampledRun, sampledScenario);
     const interrupted = clone(censoredResult);
     interrupted.status = "cancelled";
     interrupted.censoring = "invalid";
     interrupted.metrics.ttk = { status: "undefined", reason: "cancelled before sampling" };
     interrupted.uncertainty = null;
+    interrupted.resolvedScenarioHash = sampledRun.resolvedScenarioHash;
+    interrupted.candidateInputHash = sampledRun.candidateInputHash;
     const sampledInput = { scenario: sampledScenario, run: sampledRun, ports: createMockPorts() };
     expect(() =>
       assertEngineRun(sampledInput, {
@@ -4404,6 +4454,7 @@ describe("P01 versioned contract fixtures", () => {
       drawCount: 1,
       state: [1],
     };
+    bindSnapshotToRun(interruptedSnapshot, sampledRun);
     expect(() =>
       assertEngineStepResult(sampledInput, {
         schemaVersion: 1,
@@ -4455,5 +4506,73 @@ describe("P01 versioned contract fixtures", () => {
         },
       ),
     ).toThrow(/causal identity/);
+  });
+
+  test("closes latest wait-basis, fraction, verification, and emitted-identity findings", () => {
+    const alteredWait = clone(sampleSnapshot);
+    const alteredWaitCommand = alteredWait.pendingActions[0]!.command;
+    if (alteredWaitCommand.kind !== "wait") throw new Error("fixture action should be a wait");
+    alteredWaitCommand.durationMs = 1000;
+    alteredWait.queue.entries[0]!.timeMs = alteredWait.pendingActions[0]!.startedAtMs + 1000;
+    expect(() => parseContract(EngineSnapshotSchema, alteredWait)).not.toThrow();
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        alteredWait,
+      ),
+    ).toThrow(/policy wait provenance/);
+
+    const wrongTinyFraction = clone(censoredResult);
+    wrongTinyFraction.coverage = {
+      killedCount: 1,
+      totalCount: 2,
+      killedWeight: 1e-20,
+      totalWeight: 1,
+      fraction: 1e-13,
+    };
+    expect(() => parseContract(CombatResultSchema, wrongTinyFraction)).toThrow(
+      /fraction must match its weights/,
+    );
+
+    const clonedScenario = clone(sampleResolvedScenario);
+    clonedScenario.effective.entities[1]!.health.current -= 1;
+    const planned = clone(sampleRunningRun);
+    planned.status = "planned";
+    expect(() =>
+      assertEngineInputCompatible(
+        { scenario: clonedScenario, run: planned, ports: createMockPorts() },
+        planned.engineHash,
+      ),
+    ).toThrow(/runtime-verified canonical hash identity/);
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: clonedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        sampleSnapshot,
+      ),
+    ).toThrow(/runtime-verified canonical hash identity/);
+
+    expect(() =>
+      parseContract(EngineStepResultSchema, {
+        schemaVersion: 1,
+        status: "progress",
+        snapshot: sampleSnapshot,
+        emittedEvents: [
+          {
+            schemaVersion: 1,
+            eventId: "different-event-at-sequence-2",
+            timeMs: 100,
+            sequence: 2,
+            phase: "impact",
+            kind: "damage",
+            actorEntityId: "actor",
+            targetEntityIds: ["enemy"],
+            causeEventIds: ["event-001"],
+            payload: {},
+          },
+        ],
+        result: null,
+        reason: sampleSnapshot.interruption.reason,
+      }),
+    ).toThrow(/identities must exactly match retained trace identities/);
   });
 });

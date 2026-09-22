@@ -6,6 +6,7 @@ import {
   EngineCommandSchema,
   EngineStepResultSchema,
   LifecycleResolutionSchema,
+  isRuntimeVerifiedResolvedScenario,
   parseContract,
   ResolvedScenarioSchema,
   ResourceResolutionSchema,
@@ -728,6 +729,10 @@ export function assertEngineInputCompatible(
   input: EngineInput,
   expectedEngineHash: string,
 ): ValidatedEngineInput {
+  if (!isRuntimeVerifiedResolvedScenario(input.scenario))
+    throw new ResumeCompatibilityError([
+      "scenario must retain runtime-verified canonical hash identity",
+    ]);
   const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
   const run = parseContract(RunManifestSchema, input.run);
   const mismatches = engineInputMismatches(scenario, run);
@@ -750,6 +755,10 @@ export function assertResumeCompatible(
   value: unknown,
   expectedEngineHash: string,
 ): ValidatedResume {
+  if (!isRuntimeVerifiedResolvedScenario(input.scenario))
+    throw new ResumeCompatibilityError([
+      "scenario must retain runtime-verified canonical hash identity",
+    ]);
   const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
   const run = parseContract(RunManifestSchema, input.run);
   const snapshot = assertResumableSnapshot(value);
@@ -873,6 +882,7 @@ export function assertResumeCompatible(
       pending.origin.kind === "policy-wait" &&
       (sourceStep.onUnavailable !== "wait" ||
         pending.command.kind !== "wait" ||
+        sourceStep.unavailableWaitMs !== pending.command.durationMs ||
         pending.command.actorId !== sourceStep.action.actorId)
     ) {
       mismatches.push(`snapshot pending wait ${pending.actionId} lacks policy wait provenance`);

@@ -668,11 +668,18 @@ export const ActionStepSchema = z
     action: ActionCommandSchema,
     condition: ConditionSchema,
     onUnavailable: z.enum(["wait", "skip", "fail"]),
+    unavailableWaitMs: positiveInteger.nullable(),
     repeat: z.boolean(),
     maxRepeats: positiveInteger.nullable(),
   })
   .strict()
   .superRefine((value, context) => {
+    if ((value.onUnavailable === "wait") !== (value.unavailableWaitMs !== null))
+      context.addIssue({
+        code: "custom",
+        path: ["unavailableWaitMs"],
+        message: "only wait-on-unavailable steps require a deterministic wait duration",
+      });
     if (!value.repeat && value.maxRepeats !== null)
       context.addIssue({
         code: "custom",
@@ -1264,6 +1271,13 @@ declare const verifiedScenarioHashes: unique symbol;
 export type HashVerifiedResolvedScenario = ResolvedScenario & {
   readonly [verifiedScenarioHashes]: true;
 };
+const runtimeVerifiedScenarios = new WeakSet<object>();
+
+export function isRuntimeVerifiedResolvedScenario(
+  value: unknown,
+): value is HashVerifiedResolvedScenario {
+  return typeof value === "object" && value !== null && runtimeVerifiedScenarios.has(value);
+}
 
 export const RunManifestSchema = z
   .object({
@@ -1666,7 +1680,7 @@ export const KillCoverageSchema = z
         message: "full kill count and weight must agree",
       });
     }
-    if (Math.abs(value.fraction - value.killedWeight / value.totalWeight) > 1e-12) {
+    if (!scaleAwareEqual(value.fraction, value.killedWeight / value.totalWeight)) {
       context.addIssue({
         code: "custom",
         path: ["fraction"],
@@ -2861,7 +2875,32 @@ export const EngineStepResultSchema = z
     const retainedTraceById = new Map(
       value.snapshot.trace.events.map((event) => [event.eventId, event]),
     );
+    const retainedTraceBySequence = new Map(
+      value.snapshot.trace.events.map((event) => [event.sequence, event]),
+    );
     for (const [index, event] of value.emittedEvents.entries()) {
+      const retainedById = retainedTraceById.get(event.eventId);
+      const retainedBySequence = retainedTraceBySequence.get(event.sequence);
+      const sharedTraceFieldsMatch =
+        retainedById !== undefined &&
+        retainedBySequence === retainedById &&
+        retainedById.timeMs === event.timeMs &&
+        retainedById.sequence === event.sequence &&
+        retainedById.phase === event.phase &&
+        retainedById.kind === event.kind &&
+        retainedById.actorEntityId === event.actorEntityId &&
+        canonicalJson(retainedById.targetEntityIds) === canonicalJson(event.targetEntityIds) &&
+        canonicalJson(retainedById.causeEventIds) === canonicalJson(event.causeEventIds);
+      if (
+        (retainedById !== undefined || retainedBySequence !== undefined) &&
+        !sharedTraceFieldsMatch
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["emittedEvents", index],
+          message: "emitted event identities must exactly match retained trace identities",
+        });
+      }
       if (
         event.timeMs > value.snapshot.currentTimeMs ||
         event.sequence > value.snapshot.queue.lastProcessedSequence ||
@@ -3475,6 +3514,7 @@ export async function assertResolvedScenarioPolicyHash(
     );
   }
   deepFreeze(scenario);
+  runtimeVerifiedScenarios.add(scenario);
   return scenario as HashVerifiedResolvedScenario;
 }
 
