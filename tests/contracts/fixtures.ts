@@ -407,6 +407,7 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
   currentTimeMs: 100,
   queue: {
     lastProcessedSequence: 2,
+    currentTimeSequence: 2,
     nextSequence: 4,
     entries: [
       {
@@ -426,6 +427,7 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
     {
       actionId: "action-001",
       continuationEventId: "event-003",
+      origin: { kind: "policy-wait", stepId: "cast-w" },
       command: {
         kind: "wait",
         actorId: "actor",

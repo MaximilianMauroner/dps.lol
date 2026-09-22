@@ -122,7 +122,9 @@ ordering inputs.
 duplicate trace sequences, duplicate `(timeMs, sequence)` tie keys, duplicate
 queue sequence IDs and stale `nextSequence` values. Snapshot queues also reject
 events earlier than their `currentTimeMs`; a past event cannot be revived by a
-resume. Every event and command carries stable IDs and causal predecessor IDs.
+resume. `lastProcessedSequence` retains the largest processed allocation while
+`currentTimeSequence` independently records ordering progress at `currentTimeMs`.
+Every event and command carries stable IDs and causal predecessor IDs.
 A future event is only state after it executes; it cannot mutate a current
 snapshot. `StateRead.kind` distinguishes a snapshot read from an impact-time
 read in service requests.
@@ -142,7 +144,8 @@ commands, and tolerant tie policies carry an explicit non-negative tolerance.
 `CombatKernelPorts` exposes narrow interfaces for stats, damage, resources,
 timers, movement, targeting, lifecycle, triggers, RNG and tracing. Each call
 receives a deterministic `PortContext` containing run ID, integer time,
-sequence and causal IDs. Port return values are serializable and carry either
+sequence, causal IDs, and the queue's next-sequence/existing-ID allocation
+frontier. Port return values are serializable and carry either
 an accepted/complete result or an explicit reason. Implementations must not
 read the wall clock, network, mutable UI state or hidden future state.
 
@@ -164,11 +167,12 @@ over the same session semantics:
    validated input.
 2. `EngineSession.step({ maxEvents, untilTimeMs })` advances bounded work;
    `snapshot()` captures resumable state.
-3. `resumeSession(assertResumeCompatible(input, snapshot))` continues the exact queue, entity/buff,
-   pending-action, trigger, RNG and numerical-branch state. It must call
-   `assertResumeCompatible` returns the frozen validated input and detached snapshot after rejecting non-resumable snapshots, any
+3. `resumeSession(assertResumeCompatible(input, snapshot, engineHash))` continues the exact queue, entity/buff,
+   pending-action, trigger, RNG and numerical-branch state. `assertResumeCompatible`
+   returns the frozen validated input and detached snapshot after rejecting non-resumable snapshots, any
    run/scenario/engine identity mismatch, or policy progress whose policy ID,
-   revision, exact step IDs, or repeat counters are impossible under the scenario policy. Bounded-step results must preserve
+   revision, exact step IDs, or repeat counters are impossible under the scenario policy. Pending actions retain their
+   originating policy step and distinguish policy actions from policy-derived waits. Bounded-step results must preserve
    the snapshot interruption state and exact reason; `assertEngineStepResult`
    binds terminal results to the session objective and evaluation configuration. A progress result cannot
    claim cancellation or carry an unrelated interruption reason. `run(input)`

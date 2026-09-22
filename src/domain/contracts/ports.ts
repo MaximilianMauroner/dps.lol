@@ -49,7 +49,18 @@ export type PortContext = Readonly<{
   timeMs: number;
   sequence: number;
   causeEventIds: readonly string[];
+  nextEventSequence: number;
+  allocatedEventIds: readonly string[];
 }>;
+
+const SCALE_RELATIVE_TOLERANCE = 1e-12;
+
+function scaleAwareEqual(left: number, right: number): boolean {
+  if (left === right) return true;
+  return (
+    Math.abs(left - right) <= SCALE_RELATIVE_TOLERANCE * Math.max(Math.abs(left), Math.abs(right))
+  );
+}
 
 export type StateRead = Readonly<{
   kind: "snapshot" | "impact";
@@ -466,7 +477,11 @@ export function assertLifecycleResolution(
     if (
       (transition.replacement.ownerEntityId !== null &&
         !knownIds.has(transition.replacement.ownerEntityId)) ||
-      transition.replacement.buffs.some((buff) => !knownIds.has(buff.sourceEntityId))
+      transition.replacement.buffs.some((buff) => !knownIds.has(buff.sourceEntityId)) ||
+      transition.replacement.abilities.some(
+        (ability) =>
+          ability.origin.kind === "copied" && !knownIds.has(ability.origin.sourceEntityId),
+      )
     ) {
       throw new TypeError("lifecycle replacement references must resolve in the world");
     }
@@ -477,7 +492,11 @@ export function assertLifecycleResolution(
   for (const entity of resulting.values()) {
     if (
       (entity.ownerEntityId !== null && !resulting.has(entity.ownerEntityId)) ||
-      entity.buffs.some((buff) => !resulting.has(buff.sourceEntityId))
+      entity.buffs.some((buff) => !resulting.has(buff.sourceEntityId)) ||
+      entity.abilities.some(
+        (ability) =>
+          ability.origin.kind === "copied" && !resulting.has(ability.origin.sourceEntityId),
+      )
     )
       throw new TypeError("lifecycle result cannot leave dangling entity references");
     const visited = new Set<string>([entity.entityId]);
@@ -559,6 +578,8 @@ export function assertTriggerDispatchResult(
   const commands = result.emittedCommands.map((command) =>
     parseContract(EngineCommandSchema, command),
   );
+  if (!Number.isSafeInteger(context.nextEventSequence) || context.nextEventSequence <= 0)
+    throw new TypeError("trigger allocation frontier must provide a positive safe sequence");
   if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
     throw new TypeError("trigger command IDs must be unique within a batch");
   const allocatedEvents = commands
@@ -581,6 +602,13 @@ export function assertTriggerDispatchResult(
       throw new TypeError("trigger commands must preserve dispatch timing and causal identity");
     }
   }
+  const allocatedEventIds = new Set([...context.allocatedEventIds, request.event.eventId]);
+  if (
+    allocatedEvents.some(
+      (event) => allocatedEventIds.has(event.eventId) || event.sequence < context.nextEventSequence,
+    )
+  )
+    throw new TypeError("trigger events must allocate beyond the queue frontier without ID reuse");
   return {
     accepted: result.accepted,
     emittedCommands: commands,
@@ -712,13 +740,21 @@ export function assertEngineInputCompatible(
  * is allowed to resume it. Concrete engines must call this guard at their
  * resumeSession boundary.
  */
-export function assertResumeCompatible(input: EngineInput, value: unknown): ValidatedResume {
+export function assertResumeCompatible(
+  input: EngineInput,
+  value: unknown,
+  expectedEngineHash: string,
+): ValidatedResume {
   const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
   const run = parseContract(RunManifestSchema, input.run);
   const snapshot = assertResumableSnapshot(value);
   const mismatches: string[] = [];
 
   if (run.status !== "running") mismatches.push("run must be running to resume");
+  if (run.engineHash !== expectedEngineHash)
+    mismatches.push("run engineHash differs from the executing engine");
+  if (snapshot.engineHash !== expectedEngineHash)
+    mismatches.push("snapshot engineHash differs from the executing engine");
   mismatches.push(...engineInputMismatches(scenario, run));
   if (snapshot.policyProgress.policyId !== scenario.effective.policy.policyId) {
     mismatches.push("snapshot policy progress policyId differs from scenario policy");
@@ -818,6 +854,24 @@ export function assertResumeCompatible(input: EngineInput, value: unknown): Vali
   for (const pending of snapshot.pendingActions) {
     if (pending.command.actorId !== scenario.effective.actorEntityId)
       mismatches.push(`snapshot pending action ${pending.actionId} differs from scenario actor`);
+    const sourceStep = scenario.effective.policy.steps.find(
+      (step) => step.stepId === pending.origin.stepId,
+    );
+    if (!sourceStep) {
+      mismatches.push(`snapshot pending action ${pending.actionId} has no originating policy step`);
+    } else if (
+      pending.origin.kind === "policy-action" &&
+      canonicalJson(pending.command) !== canonicalJson(sourceStep.action)
+    ) {
+      mismatches.push(`snapshot pending action ${pending.actionId} differs from its policy step`);
+    } else if (
+      pending.origin.kind === "policy-wait" &&
+      (sourceStep.onUnavailable !== "wait" ||
+        pending.command.kind !== "wait" ||
+        pending.command.actorId !== sourceStep.action.actorId)
+    ) {
+      mismatches.push(`snapshot pending wait ${pending.actionId} lacks policy wait provenance`);
+    }
   }
 
   const identities: ReadonlyArray<[string, string, string]> = [
@@ -904,7 +958,7 @@ function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult
     );
     if (
       result.coverage.totalCount !== input.scenario.effective.cohort.members.length ||
-      Math.abs(result.coverage.totalWeight - totalWeight) > 1e-12
+      !scaleAwareEqual(result.coverage.totalWeight, totalWeight)
     )
       throw new TypeError("engine output coverage must match the requested cohort denominator");
   }
@@ -921,7 +975,11 @@ export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
 }
 
 /** Validates bounded-step output against the session configuration before consumption. */
-export function assertEngineStepResult(input: EngineInput, value: unknown): EngineStepResult {
+export function assertEngineStepResult(
+  input: EngineInput,
+  value: unknown,
+  expectedEngineHash: string,
+): EngineStepResult {
   const step = parseContract(EngineStepResultSchema, value);
   const identities: ReadonlyArray<[string, string]> = [
     [step.snapshot.runId, input.run.runId],
@@ -946,7 +1004,7 @@ export function assertEngineStepResult(input: EngineInput, value: unknown): Engi
           interruption: { state: "none" as const, reason: null },
           result: null,
         };
-  assertResumeCompatible(input, compatibilitySnapshot);
+  assertResumeCompatible(input, compatibilitySnapshot, expectedEngineHash);
   if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
   return step;
 }

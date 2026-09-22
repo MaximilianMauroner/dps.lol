@@ -10,6 +10,14 @@ const finiteNumber = z.number().finite();
 const nonNegativeNumber = finiteNumber.nonnegative();
 const nonNegativeInteger = z.number().int().safe().nonnegative();
 const positiveInteger = z.number().int().safe().positive();
+const SCALE_RELATIVE_TOLERANCE = 1e-12;
+
+function scaleAwareEqual(left: number, right: number): boolean {
+  if (left === right) return true;
+  return (
+    Math.abs(left - right) <= SCALE_RELATIVE_TOLERANCE * Math.max(Math.abs(left), Math.abs(right))
+  );
+}
 const identifier = z
   .string()
   .min(1)
@@ -512,7 +520,7 @@ export const CohortSpecSchema = z
     }
     if (value.weighting === "uniform-member") {
       const expectedWeight = value.normalized ? 1 / value.members.length : value.members[0]!.weight;
-      if (value.members.some((member) => Math.abs(member.weight - expectedWeight) > 1e-9)) {
+      if (value.members.some((member) => !scaleAwareEqual(member.weight, expectedWeight))) {
         context.addIssue({
           code: "custom",
           path: ["members"],
@@ -528,7 +536,7 @@ export const CohortSpecSchema = z
           (weightsByMatch.get(member.matchKey) ?? 0) + member.weight,
         );
       const totals = [...weightsByMatch.values()];
-      if (totals.some((weight) => Math.abs(weight - totals[0]!) > 1e-9)) {
+      if (totals.some((weight) => !scaleAwareEqual(weight, totals[0]!))) {
         context.addIssue({
           code: "custom",
           path: ["members"],
@@ -1633,8 +1641,8 @@ export const KillCoverageSchema = z
         message: "kill coverage cannot exceed its denominator",
       });
     }
-    const weightsEqual = Math.abs(value.killedWeight - value.totalWeight) <= 1e-12;
-    if (value.killedWeight - value.totalWeight > 1e-12) {
+    const weightsEqual = scaleAwareEqual(value.killedWeight, value.totalWeight);
+    if (value.killedWeight > value.totalWeight && !weightsEqual) {
       context.addIssue({
         code: "custom",
         path: ["killedWeight"],
@@ -1650,7 +1658,7 @@ export const KillCoverageSchema = z
     }
     if (
       (value.killedCount === value.totalCount && !weightsEqual) ||
-      (value.killedCount < value.totalCount && value.killedWeight === value.totalWeight)
+      (value.killedCount < value.totalCount && value.killedWeight >= value.totalWeight)
     ) {
       context.addIssue({
         code: "custom",
@@ -1898,6 +1906,7 @@ export type ScheduledEvent = z.infer<typeof ScheduledEventSchema>;
 export const EventQueueSnapshotSchema = z
   .object({
     lastProcessedSequence: nonNegativeInteger,
+    currentTimeSequence: nonNegativeInteger,
     nextSequence: positiveInteger,
     entries: z.array(ScheduledEventSchema),
   })
@@ -1920,6 +1929,13 @@ export const EventQueueSnapshotSchema = z
       });
     }
     const maxSequence = sequences.reduce((maximum, sequence) => Math.max(maximum, sequence), 0);
+    if (value.currentTimeSequence > value.lastProcessedSequence) {
+      context.addIssue({
+        code: "custom",
+        path: ["currentTimeSequence"],
+        message: "current-time sequence cursor cannot exceed the processed allocation maximum",
+      });
+    }
     if (value.nextSequence <= Math.max(maxSequence, value.lastProcessedSequence)) {
       context.addIssue({
         code: "custom",
@@ -1960,6 +1976,10 @@ export const PendingActionSchema = z
   .object({
     actionId: identifier,
     continuationEventId: identifier.nullable(),
+    origin: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("policy-action"), stepId: identifier }).strict(),
+      z.object({ kind: z.literal("policy-wait"), stepId: identifier }).strict(),
+    ]),
     command: ActionCommandSchema,
     state: z.enum(["scheduled", "windup", "interrupted", "complete"]),
     startedAtMs: nonNegativeInteger,
@@ -2123,8 +2143,7 @@ export const EngineSnapshotSchema = z
     for (const [index, entry] of value.queue.entries.entries()) {
       if (
         entry.timeMs < value.currentTimeMs ||
-        (entry.timeMs === value.currentTimeMs &&
-          entry.sequence <= value.queue.lastProcessedSequence)
+        (entry.timeMs === value.currentTimeMs && entry.sequence <= value.queue.currentTimeSequence)
       ) {
         context.addIssue({
           code: "custom",
@@ -2163,7 +2182,8 @@ export const EngineSnapshotSchema = z
     for (const [index, event] of value.trace.events.entries()) {
       if (
         event.timeMs > value.currentTimeMs ||
-        event.sequence > value.queue.lastProcessedSequence
+        event.sequence > value.queue.lastProcessedSequence ||
+        (event.timeMs === value.currentTimeMs && event.sequence > value.queue.currentTimeSequence)
       ) {
         context.addIssue({
           code: "custom",
@@ -2215,6 +2235,18 @@ export const EngineSnapshotSchema = z
             code: "custom",
             path: ["entities", entityIndex, "buffs", buffIndex, "sourceEntityId"],
             message: "snapshot entity buffs must reference known source entities",
+          });
+        }
+      }
+      for (const [abilityIndex, ability] of entity.abilities.entries()) {
+        if (
+          ability.origin.kind === "copied" &&
+          !knownEntityIds.has(ability.origin.sourceEntityId)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["entities", entityIndex, "abilities", abilityIndex, "origin", "sourceEntityId"],
+            message: "snapshot copied abilities must reference known source entities",
           });
         }
       }
@@ -2823,7 +2855,9 @@ export const EngineStepResultSchema = z
     for (const [index, event] of value.emittedEvents.entries()) {
       if (
         event.timeMs > value.snapshot.currentTimeMs ||
-        event.sequence > value.snapshot.queue.lastProcessedSequence
+        event.sequence > value.snapshot.queue.lastProcessedSequence ||
+        (event.timeMs === value.snapshot.currentTimeMs &&
+          event.sequence > value.snapshot.queue.currentTimeSequence)
       ) {
         context.addIssue({
           code: "custom",
@@ -3056,7 +3090,7 @@ export const ExactComparisonTransferSchema = z
       const totalWeight = cohort.members.reduce((sum, member) => sum + member.weight, 0);
       if (
         value.result.coverage.totalCount !== cohort.members.length ||
-        Math.abs(value.result.coverage.totalWeight - totalWeight) > 1e-12
+        !scaleAwareEqual(value.result.coverage.totalWeight, totalWeight)
       ) {
         context.addIssue({
           code: "custom",

@@ -3,7 +3,7 @@ import {
   ActionPolicySchema,
   ActionCommandSchema,
   assertDamageResolution,
-  assertEngineStepResult,
+  assertEngineStepResult as assertEngineStepResultBoundary,
   assertEngineRun,
   assertEngineInputCompatible,
   assertExactComparisonTransfer,
@@ -19,7 +19,7 @@ import {
   assertTriggerDispatchResult,
   assertStatsSnapshot,
   assertResumableSnapshot,
-  assertResumeCompatible,
+  assertResumeCompatible as assertResumeCompatibleBoundary,
   CombatResultSchema,
   ContractValidationError,
   ContractSchemas,
@@ -66,6 +66,22 @@ import {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function assertResumeCompatible(
+  input: Parameters<typeof assertResumeCompatibleBoundary>[0],
+  value: unknown,
+  expectedEngineHash = input.run.engineHash,
+) {
+  return assertResumeCompatibleBoundary(input, value, expectedEngineHash);
+}
+
+function assertEngineStepResult(
+  input: Parameters<typeof assertEngineStepResultBoundary>[0],
+  value: unknown,
+  expectedEngineHash = input.run.engineHash,
+) {
+  return assertEngineStepResultBoundary(input, value, expectedEngineHash);
 }
 
 async function bindScenarioHashes<T extends typeof sampleResolvedScenario>(
@@ -4043,5 +4059,209 @@ describe("P01 versioned contract fixtures", () => {
         HASH_C,
       ),
     ).toThrow(/executing engine/);
+  });
+
+  test("closes latest frontier, provenance, scale, lifecycle, and trace findings", () => {
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "trigger-frontier",
+      timeMs: 0,
+      sequence: 2,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    const scheduledCommand = {
+      schemaVersion: 1 as const,
+      kind: "schedule-event" as const,
+      commandId: "frontier-command",
+      issuedAtMs: 0,
+      causeEventIds: [triggerEvent.eventId],
+      event: {
+        eventId: "new-event",
+        timeMs: 10,
+        sequence: 5,
+        phase: "impact" as const,
+        kind: "damage",
+        payload: {},
+        causeEventIds: [triggerEvent.eventId],
+      },
+    };
+    const frontierContext = {
+      ...mockPortContext,
+      sequence: triggerEvent.sequence,
+      nextEventSequence: 6,
+      allocatedEventIds: ["already-allocated"],
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        frontierContext,
+        { accepted: true, reason: null, emittedCommands: [scheduledCommand] },
+      ),
+    ).toThrow(/queue frontier/);
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        frontierContext,
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [
+            {
+              ...scheduledCommand,
+              event: { ...scheduledCommand.event, eventId: "already-allocated", sequence: 6 },
+            },
+          ],
+        },
+      ),
+    ).toThrow(/without ID reuse/);
+
+    const tinyUniform = clone(sampleScenario);
+    tinyUniform.cohort.normalized = false;
+    tinyUniform.cohort.weighting = "uniform-member";
+    tinyUniform.cohort.members[0]!.weight = 1e-20;
+    tinyUniform.cohort.members.push({
+      ...clone(tinyUniform.cohort.members[0]!),
+      memberId: "member-tiny-uniform",
+      weight: 1e-10,
+    });
+    expect(() => parseContract(ScenarioSpecSchema, tinyUniform)).toThrow(/equal member weights/);
+
+    const tinyBalanced = clone(tinyUniform);
+    tinyBalanced.cohort.weighting = "match-balanced";
+    tinyBalanced.cohort.members[1]!.matchKey = "match-002";
+    expect(() => parseContract(ScenarioSpecSchema, tinyBalanced)).toThrow(
+      /equal aggregate weight per match/,
+    );
+
+    const tinyScenario = clone(sampleResolvedScenario);
+    tinyScenario.effective.cohort.normalized = false;
+    tinyScenario.effective.cohort.weighting = "declared-mass";
+    tinyScenario.effective.cohort.members[0]!.weight = 1e-13;
+    const wrongTinyCoverage = clone(censoredResult);
+    wrongTinyCoverage.coverage = {
+      killedCount: 0,
+      totalCount: 1,
+      killedWeight: 0,
+      totalWeight: 9e-13,
+      fraction: 0,
+    };
+    expect(() =>
+      assertEngineRun(
+        { scenario: tinyScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { status: "complete", result: wrongTinyCoverage, trace: sampleTrace },
+      ),
+    ).toThrow(/coverage.*cohort denominator/);
+    const tinyTransfer = clone(sampleTransfer);
+    tinyTransfer.resolvedScenario.effective.cohort.normalized = false;
+    tinyTransfer.resolvedScenario.effective.cohort.weighting = "declared-mass";
+    tinyTransfer.resolvedScenario.effective.cohort.members[0]!.weight = 1e-13;
+    tinyTransfer.result.coverage = clone(wrongTinyCoverage.coverage);
+    expect(() => parseContract(ExactComparisonTransferSchema, tinyTransfer)).toThrow(
+      /coverage denominator.*transferred cohort/,
+    );
+
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        sampleSnapshot,
+        HASH_C,
+      ),
+    ).toThrow(/executing engine/);
+
+    const foreignPolicyCommand = clone(sampleSnapshot);
+    foreignPolicyCommand.pendingActions[0]!.origin = {
+      kind: "policy-action",
+      stepId: "cast-w",
+    };
+    foreignPolicyCommand.pendingActions[0]!.command = {
+      kind: "ability",
+      actorId: "actor",
+      abilityId: "copied-ability",
+      target: { kind: "entity", entityId: "enemy" },
+    };
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        foreignPolicyCommand,
+      ),
+    ).toThrow(/differs from its policy step/);
+
+    const splitFrontier = clone(sampleSnapshot);
+    splitFrontier.currentTimeMs = 10;
+    splitFrontier.trace.events = [
+      {
+        ...clone(sampleTrace.events[0]!),
+        eventId: "past-high-allocation",
+        timeMs: 0,
+        sequence: 100,
+        causeEventIds: [],
+      },
+      {
+        ...clone(sampleTrace.events[1]!),
+        eventId: "current-first",
+        timeMs: 10,
+        sequence: 1,
+        causeEventIds: ["past-high-allocation"],
+      },
+    ];
+    splitFrontier.queue.lastProcessedSequence = 100;
+    splitFrontier.queue.currentTimeSequence = 1;
+    splitFrontier.queue.nextSequence = 101;
+    splitFrontier.queue.entries = [
+      {
+        ...clone(splitFrontier.queue.entries[0]!),
+        eventId: "current-second",
+        timeMs: 10,
+        sequence: 2,
+        causeEventIds: ["current-first"],
+      },
+    ];
+    splitFrontier.pendingActions[0]!.continuationEventId = "current-second";
+    splitFrontier.pendingActions[0]!.startedAtMs = 0;
+    expect(() => parseContract(EngineSnapshotSchema, splitFrontier)).not.toThrow();
+
+    const missingCopySource = clone(transformedCopiedAbility);
+    const copiedAbility = missingCopySource.abilities.find(
+      (ability) => ability.origin.kind === "copied",
+    )!;
+    if (copiedAbility.origin.kind !== "copied") throw new Error("fixture ability should be copied");
+    copiedAbility.origin.sourceEntityId = "missing-copy-source";
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "transform", replacement: missingCopySource },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "transform",
+          state: missingCopySource,
+          reason: null,
+        },
+      ),
+    ).toThrow(/replacement references/);
+    const snapshotWithMissingCopySource = clone(sampleSnapshot);
+    snapshotWithMissingCopySource.entities[0] = missingCopySource;
+    expect(() => parseContract(EngineSnapshotSchema, snapshotWithMissingCopySource)).toThrow(
+      /copied abilities.*known source entities/,
+    );
+
+    const ports = createMockPorts();
+    const restored = clone(sampleTrace);
+    ports.trace.restore(restored, mockPortContext);
+    restored.events[0]!.eventId = "mutated-ingress";
+    expect(ports.trace.snapshot(mockPortContext.runId).events[0]!.eventId).toBe("event-001");
+    const detached = ports.trace.snapshot(mockPortContext.runId);
+    detached.events[0]!.eventId = "mutated-egress";
+    expect(ports.trace.snapshot(mockPortContext.runId).events[0]!.eventId).toBe("event-001");
+    const recorded = clone(sampleTrace.events[0]!);
+    recorded.eventId = "recorded-original";
+    ports.trace.record(recorded, { ...mockPortContext, runId: "record-run" });
+    recorded.eventId = "mutated-record";
+    expect(ports.trace.snapshot("record-run").events[0]!.eventId).toBe("recorded-original");
   });
 });

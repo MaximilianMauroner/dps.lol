@@ -15,6 +15,7 @@ export function createMockPorts(): CombatKernelPorts {
   >();
   const resourceValues = new Map<string, { current: number; maximum: number }>();
   const rngDrawCounts = new Map<string, number>();
+  const cloneTrace = (trace: Trace): Trace => structuredClone(trace);
   const timersFor = (runId: string) => {
     const existing = scheduledByRunId.get(runId);
     if (existing) return existing;
@@ -157,7 +158,7 @@ export function createMockPorts(): CombatKernelPorts {
     },
     trace: {
       restore: (trace, context) => {
-        tracesByRunId.set(context.runId, { ...trace, events: [...trace.events] });
+        tracesByRunId.set(context.runId, cloneTrace(trace));
       },
       record: (event, context) => {
         const trace = tracesByRunId.get(context.runId) ?? {
@@ -168,12 +169,15 @@ export function createMockPorts(): CombatKernelPorts {
           truncated: false,
           truncationReason: null,
         };
-        tracesByRunId.set(context.runId, { ...trace, events: [...trace.events, event] });
+        tracesByRunId.set(
+          context.runId,
+          cloneTrace({ ...trace, events: [...trace.events, structuredClone(event)] }),
+        );
       },
       snapshot: (runId) => {
         const trace = tracesByRunId.get(runId);
         return trace
-          ? { ...trace, events: [...trace.events] }
+          ? cloneTrace(trace)
           : {
               schemaVersion: 1,
               traceId: `trace-${runId}`,
@@ -192,4 +196,6 @@ export const mockPortContext: PortContext = {
   timeMs: 0,
   sequence: 1,
   causeEventIds: [],
+  nextEventSequence: 2,
+  allocatedEventIds: [],
 };
