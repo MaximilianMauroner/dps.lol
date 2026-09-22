@@ -21,7 +21,7 @@ const relativeArchivePath = z
   .min(1)
   .refine(
     (value) => {
-      if (value.includes("\\") || /^[A-Za-z]:/.test(value)) return false;
+      if (value.includes("\\") || value.includes("\0") || /^[A-Za-z]:/.test(value)) return false;
       const segments = value.split("/");
       return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
     },
@@ -57,9 +57,26 @@ function parsePinnedArtifactUrl(artifact: SourceArtifact): URL {
   const url = new URL(artifact.uri);
   if (url.protocol !== "https:")
     throw new TypeError(`source artifact ${artifact.artifactId} must use HTTPS`);
-  if (/(^|[./_-])(?:latest|current)(?:$|[./_-])/i.test(url.pathname))
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(url.pathname);
+  } catch {
+    throw new TypeError(`source artifact ${artifact.artifactId} URI path must be valid UTF-8`);
+  }
+  if (/(^|[./_-])(?:latest|current)(?:$|[./_-])/i.test(decodedPath))
     throw new TypeError(`source artifact ${artifact.artifactId} is not explicitly version-pinned`);
+  if (url.href !== artifact.uri || decodedPath !== url.pathname) {
+    throw new TypeError(`source artifact ${artifact.artifactId} URI must use canonical spelling`);
+  }
   return url;
+}
+
+function decodedVersion(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new TypeError("ruleset source versions must use valid canonical text");
+  }
 }
 
 function assertOfficialArtifactLocation(artifact: SourceArtifact, url: URL): void {
@@ -172,19 +189,30 @@ function sourceSetHashBytes(value: PinnedSourceSet): unknown {
 
 function assertExplicitVersionPin(value: PinnedSourceSet): void {
   const forbidden = /(^|[./_-])(?:latest|current)(?:$|[./_-])/i;
-  if (
-    forbidden.test(value.patch) ||
-    forbidden.test(value.hotfixRevision) ||
-    forbidden.test(value.dataDragonVersion) ||
-    forbidden.test(value.communityDragonRevision)
-  ) {
+  const setVersions = [
+    value.patch,
+    value.hotfixRevision,
+    value.dataDragonVersion,
+    value.communityDragonRevision,
+  ];
+  const decodedSetVersions = setVersions.map(decodedVersion);
+  if (decodedSetVersions.some((version) => forbidden.test(version))) {
     throw new TypeError("ruleset sources must use explicit versions, never latest/current");
+  }
+  if (decodedSetVersions.some((version, index) => version !== setVersions[index])) {
+    throw new TypeError("ruleset source versions must use canonical literal spelling");
   }
 
   for (const { artifact } of value.sourceArtifacts) {
-    if (forbidden.test(artifact.version)) {
+    const canonicalVersion = decodedVersion(artifact.version);
+    if (forbidden.test(canonicalVersion)) {
       throw new TypeError(
         `source artifact ${artifact.artifactId} is not explicitly version-pinned`,
+      );
+    }
+    if (canonicalVersion !== artifact.version) {
+      throw new TypeError(
+        `source artifact ${artifact.artifactId} version must use canonical literal spelling`,
       );
     }
     const url = parsePinnedArtifactUrl(artifact);

@@ -148,6 +148,7 @@ describe("P02 retained source validation", () => {
       "C:\\outside.json",
       "source/./item.json",
       "source//item.json",
+      "static/item\0.json",
     ]) {
       const invalidPath = clone(built);
       invalidPath.sourceArtifacts[0]!.retainedPath = retainedPath;
@@ -179,6 +180,38 @@ describe("P02 retained source validation", () => {
     await expect(assertPinnedSourceSet(latestUrl, retainedSources)).rejects.toThrow(
       /not explicitly version-pinned/,
     );
+
+    const encodedLatest = clone(built);
+    encodedLatest.dataDragonVersion = "l%61test";
+    const encodedLatestDdragon = encodedLatest.sourceArtifacts.find(
+      ({ artifact }) => artifact.kind === "data-dragon",
+    )!;
+    encodedLatestDdragon.artifact.version = "l%61test";
+    encodedLatestDdragon.artifact.uri =
+      "https://ddragon.leagueoflegends.com/cdn/l%61test/data/en_US/item.json";
+    await expect(assertPinnedSourceSet(encodedLatest, retainedSources)).rejects.toThrow(
+      /not explicitly version-pinned|never latest/,
+    );
+
+    const encodedPatch = clone(built);
+    encodedPatch.patch = "26%2e18";
+    await expect(assertPinnedSourceSet(encodedPatch, retainedSources)).rejects.toThrow(
+      /canonical literal spelling/,
+    );
+
+    for (const uri of [
+      "https://ddragon.leagueoflegends.com:443/cdn/16.18.1/data/en_US/item.json",
+      "https://ddragon.leagueoflegends.com/cdn/tmp/../16.18.1/data/en_US/item.json",
+    ]) {
+      const noncanonicalUrl = clone(built);
+      const noncanonicalDdragon = noncanonicalUrl.sourceArtifacts.find(
+        ({ artifact }) => artifact.kind === "data-dragon",
+      )!;
+      noncanonicalDdragon.artifact.uri = uri;
+      await expect(assertPinnedSourceSet(noncanonicalUrl, retainedSources)).rejects.toThrow(
+        /canonical spelling/,
+      );
+    }
 
     const versionDrift = clone(built);
     const ddragon = versionDrift.sourceArtifacts.find(
