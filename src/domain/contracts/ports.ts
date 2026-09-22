@@ -561,17 +561,22 @@ export function assertTriggerDispatchResult(
   );
   if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
     throw new TypeError("trigger command IDs must be unique within a batch");
-  const scheduled = commands.filter((command) => command.kind === "schedule-event");
+  const allocatedEvents = commands
+    .filter((command) => command.kind === "schedule-event" || command.kind === "trace")
+    .map((command) => command.event);
   if (
-    new Set(scheduled.map((command) => command.event.eventId)).size !== scheduled.length ||
-    new Set(scheduled.map((command) => command.event.sequence)).size !== scheduled.length
+    new Set(allocatedEvents.map((event) => event.eventId)).size !== allocatedEvents.length ||
+    new Set(allocatedEvents.map((event) => event.sequence)).size !== allocatedEvents.length
   )
-    throw new TypeError("trigger scheduled event IDs and sequences must be unique within a batch");
+    throw new TypeError(
+      "trigger scheduled event IDs and sequences must be unique within a batch, including trace events",
+    );
   for (const command of commands) {
     if (
       command.issuedAtMs !== context.timeMs ||
       !command.causeEventIds.includes(request.event.eventId) ||
-      (command.kind === "schedule-event" && command.event.sequence <= context.sequence)
+      ((command.kind === "schedule-event" || command.kind === "trace") &&
+        command.event.sequence <= context.sequence)
     ) {
       throw new TypeError("trigger commands must preserve dispatch timing and causal identity");
     }
@@ -686,10 +691,15 @@ function engineInputMismatches(
 }
 
 /** Validates all replay-affecting identities before starting fresh execution. */
-export function assertEngineInputCompatible(input: EngineInput): ValidatedEngineInput {
+export function assertEngineInputCompatible(
+  input: EngineInput,
+  expectedEngineHash: string,
+): ValidatedEngineInput {
   const scenario = parseContract(ResolvedScenarioSchema, input.scenario);
   const run = parseContract(RunManifestSchema, input.run);
   const mismatches = engineInputMismatches(scenario, run);
+  if (run.engineHash !== expectedEngineHash)
+    mismatches.unshift("run engineHash differs from the executing engine");
   if (run.status !== "planned") mismatches.unshift("run must be planned for fresh execution");
   if (mismatches.length > 0) throw new ResumeCompatibilityError(mismatches);
   const validated = { scenario: input.scenario, run, ports: input.ports } as ValidatedEngineInput;

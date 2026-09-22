@@ -160,7 +160,7 @@ and resource/RNG ports restore persisted state before resumed mutations or draws
 before they cross a worker. The engine-facing `CombatEngine` has three paths
 over the same session semantics:
 
-1. `createSession(assertEngineInputCompatible(input))` starts a run from the frozen,
+1. `createSession(assertEngineInputCompatible(input, engineHash))` starts a run from the frozen,
    validated input.
 2. `EngineSession.step({ maxEvents, untilTimeMs })` advances bounded work;
    `snapshot()` captures resumable state.

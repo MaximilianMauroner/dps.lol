@@ -2338,18 +2338,24 @@ describe("P01 versioned contract fixtures", () => {
 
     const planned = { ...sampleRunningRun, status: "planned" as const };
     expect(() =>
-      assertEngineInputCompatible({
-        scenario: sampleResolvedScenario,
-        run: planned,
-        ports: createMockPorts(),
-      }),
+      assertEngineInputCompatible(
+        {
+          scenario: sampleResolvedScenario,
+          run: planned,
+          ports: createMockPorts(),
+        },
+        planned.engineHash,
+      ),
     ).not.toThrow();
     expect(() =>
-      assertEngineInputCompatible({
-        scenario: sampleResolvedScenario,
-        run: sampleRunningRun,
-        ports: createMockPorts(),
-      }),
+      assertEngineInputCompatible(
+        {
+          scenario: sampleResolvedScenario,
+          run: sampleRunningRun,
+          ports: createMockPorts(),
+        },
+        sampleRunningRun.engineHash,
+      ),
     ).toThrow(/planned for fresh execution/);
 
     const scriptedScenario = clone(sampleResolvedScenario);
@@ -2747,6 +2753,12 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       parseContract(CombatResultSchema, {
         ...clone(censoredResult),
+        killed: true,
+        censoring: "not-censored",
+        metrics: {
+          ...censoredResult.metrics,
+          ttk: { status: "value", value: 5000 },
+        },
         coverage: {
           killedCount: 1,
           totalCount: 1,
@@ -2944,11 +2956,14 @@ describe("P01 versioned contract fixtures", () => {
 
     const planned = clone(sampleRunningRun);
     planned.status = "planned";
-    const validated = assertEngineInputCompatible({
-      scenario: sampleResolvedScenario,
-      run: planned,
-      ports: createMockPorts(),
-    });
+    const validated = assertEngineInputCompatible(
+      {
+        scenario: sampleResolvedScenario,
+        run: planned,
+        ports: createMockPorts(),
+      },
+      planned.engineHash,
+    );
     expect(Object.isFrozen(validated)).toBe(true);
     expect(Object.isFrozen(validated.run)).toBe(true);
     expect(() => {
@@ -3957,5 +3972,76 @@ describe("P01 versioned contract fixtures", () => {
         { targetEntityIds: [], rejected: true, reason: "" },
       ),
     ).toThrow(/rejection and reason/);
+  });
+
+  test("closes latest trigger allocation, coverage, and engine-identity findings", () => {
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "trigger-event",
+      timeMs: 0,
+      sequence: 1,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    const traceCommand = {
+      schemaVersion: 1 as const,
+      kind: "trace" as const,
+      commandId: "trace-a",
+      issuedAtMs: 0,
+      causeEventIds: ["trigger-event"],
+      event: {
+        ...sampleTrace.events[0]!,
+        eventId: "nested-trace",
+        sequence: 2,
+        causeEventIds: ["trigger-event"],
+      },
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        mockPortContext,
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [traceCommand, { ...traceCommand, commandId: "trace-b" }],
+        },
+      ),
+    ).toThrow(/scheduled event IDs and sequences/);
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        mockPortContext,
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [{ ...traceCommand, event: { ...traceCommand.event, sequence: 1 } }],
+        },
+      ),
+    ).toThrow(/dispatch timing and causal identity/);
+
+    const contradictoryCoverage = clone(censoredResult);
+    contradictoryCoverage.coverage = {
+      killedCount: 1,
+      totalCount: 1,
+      killedWeight: 1,
+      totalWeight: 1,
+      fraction: 1,
+    };
+    expect(() => parseContract(CombatResultSchema, contradictoryCoverage)).toThrow(
+      /kill status must match full cohort coverage/,
+    );
+
+    const planned = clone(sampleRunningRun);
+    planned.status = "planned";
+    expect(() =>
+      assertEngineInputCompatible(
+        { scenario: sampleResolvedScenario, run: planned, ports: createMockPorts() },
+        HASH_C,
+      ),
+    ).toThrow(/executing engine/);
   });
 });

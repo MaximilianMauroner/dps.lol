@@ -1713,6 +1713,16 @@ export const CombatResultSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.coverage !== null &&
+      value.killed !== (value.coverage.killedCount === value.coverage.totalCount)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["killed"],
+        message: "kill status must match full cohort coverage",
+      });
+    }
     const firstDeath = value.metrics.timeToFirstDeath;
     const elimination = value.metrics.timeToElimination;
     if (
