@@ -65,7 +65,7 @@ function parsePinnedArtifactUrl(artifact: SourceArtifact): URL {
   }
   if (/(^|[./_-])(?:latest|current)(?:$|[./_-])/i.test(decodedPath))
     throw new TypeError(`source artifact ${artifact.artifactId} is not explicitly version-pinned`);
-  if (url.hash) {
+  if (artifact.uri.includes("#")) {
     throw new TypeError(`source artifact ${artifact.artifactId} URI must not contain a fragment`);
   }
   if (url.href !== artifact.uri || decodedPath !== url.pathname) {
@@ -130,6 +130,20 @@ export const PinnedSourceSetSchema = z
         code: "custom",
         path: ["sourceArtifacts"],
         message: "retained source paths must be unique",
+      });
+    }
+    if (
+      retainedPaths.some((path, index) =>
+        retainedPaths.some(
+          (candidate, candidateIndex) =>
+            candidateIndex !== index && candidate.startsWith(`${path}/`),
+        ),
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceArtifacts"],
+        message: "retained source paths must not conflict as files and directories",
       });
     }
     if (new Set(value.requiredArtifactIds).size !== value.requiredArtifactIds.length) {

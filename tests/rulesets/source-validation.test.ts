@@ -156,6 +156,13 @@ describe("P02 retained source validation", () => {
         /canonical relative POSIX paths/,
       );
     }
+
+    const conflictingPaths = clone(built);
+    conflictingPaths.sourceArtifacts[0]!.retainedPath = "static/source";
+    conflictingPaths.sourceArtifacts[1]!.retainedPath = "static/source/item.json";
+    await expect(assertPinnedSourceSet(conflictingPaths, retainedSources)).rejects.toThrow(
+      /must not conflict as files and directories/,
+    );
   });
 
   test("rejects missing required sources, latest aliases, version drift, and stale set hashes", async () => {
@@ -219,6 +226,15 @@ describe("P02 retained source validation", () => {
     )!;
     fragmentedDdragon.artifact.uri += "#retained-copy";
     await expect(assertPinnedSourceSet(fragmentedUrl, retainedSources)).rejects.toThrow(/fragment/);
+
+    const emptyFragmentUrl = clone(built);
+    const emptyFragmentDdragon = emptyFragmentUrl.sourceArtifacts.find(
+      ({ artifact }) => artifact.kind === "data-dragon",
+    )!;
+    emptyFragmentDdragon.artifact.uri += "#";
+    await expect(assertPinnedSourceSet(emptyFragmentUrl, retainedSources)).rejects.toThrow(
+      /fragment/,
+    );
 
     const rollingPbe = clone(built);
     rollingPbe.communityDragonRevision = "pbe";
