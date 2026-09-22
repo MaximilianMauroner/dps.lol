@@ -1832,12 +1832,18 @@ describe("P01 versioned contract fixtures", () => {
       }),
     ).toThrow(/identities/);
 
+    const deadEnemy = clone(observedTarget);
+    deadEnemy.alive = false;
+    deadEnemy.health.current = 0;
+    const deadActor = clone(transformedCopiedAbility);
+    deadActor.alive = false;
+    deadActor.health.current = 0;
     expect(() =>
       assertLifecycleResolution(
-        { entityId: "enemy", transition: "death", replacement: null },
+        { entityId: "enemy", transition: "death", replacement: deadEnemy },
         sampleSnapshot.entities,
         ports.lifecycle.apply(
-          { entityId: "actor", transition: "death", replacement: null },
+          { entityId: "actor", transition: "death", replacement: deadActor },
           mockPortContext,
         ),
       ),
@@ -3529,5 +3535,116 @@ describe("P01 versioned contract fixtures", () => {
         },
       ),
     ).toThrow(/belong to the mutated entity/);
+  });
+
+  test("closes latest queue, resume, lifecycle, coverage, and impact-read findings", () => {
+    const reusedQueuedId = clone(sampleSnapshot);
+    reusedQueuedId.queue.entries[0]!.eventId = reusedQueuedId.trace.events[0]!.eventId;
+    expect(() => parseContract(EngineSnapshotSchema, reusedQueuedId)).toThrow(/retained trace/);
+
+    const foreignPolicyProgress = clone(sampleSnapshot);
+    foreignPolicyProgress.policyProgress.policyId = "foreign-policy";
+    expect(() =>
+      assertEngineStepResult(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        {
+          schemaVersion: 1,
+          status: "progress",
+          snapshot: foreignPolicyProgress,
+          emittedEvents: [],
+          result: null,
+          reason: foreignPolicyProgress.interruption.reason,
+        },
+      ),
+    ).toThrow(/policyId differs/);
+
+    const deadActor = clone(transformedCopiedAbility);
+    deadActor.alive = false;
+    deadActor.health.current = 0;
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "death", replacement: null },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "death",
+          state: null,
+          reason: null,
+        },
+      ),
+    ).toThrow(/preserve a dead entity/);
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "death", replacement: transformedCopiedAbility },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "death",
+          state: transformedCopiedAbility,
+          reason: null,
+        },
+      ),
+    ).toThrow(/preserve a dead entity/);
+    expect(
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "death", replacement: deadActor },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "death",
+          state: deadActor,
+          reason: null,
+        },
+      ).state,
+    ).toMatchObject({ entityId: "actor", alive: false, health: { current: 0 } });
+
+    const tinyPartialCoverage = clone(censoredResult);
+    tinyPartialCoverage.coverage = {
+      killedCount: 1,
+      totalCount: 2,
+      killedWeight: 1 - 5e-13,
+      totalWeight: 1,
+      fraction: 1 - 5e-13,
+    };
+    expect(parseContract(CombatResultSchema, tinyPartialCoverage).coverage).toEqual(
+      tinyPartialCoverage.coverage,
+    );
+
+    const snapshotReadDamage = {
+      packet: {
+        sourceEntityId: "actor",
+        targetEntityId: "enemy",
+        damageType: "true" as const,
+        rawAmount: 0,
+        tags: [] as string[],
+        canOverkill: false,
+      },
+      attacker: transformedCopiedAbility,
+      target: observedTarget,
+      attackerStats: { entityId: "actor", revision: 1, values: transformedCopiedAbility.stats },
+      targetStats: { entityId: "enemy", revision: 1, values: observedTarget.stats },
+      attackerRead: {
+        kind: "snapshot" as const,
+        entityId: "actor",
+        atTimeMs: 0,
+        stateRevision: 1,
+      },
+      read: { kind: "snapshot" as const, entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+    };
+    expect(() =>
+      assertDamageResolution(snapshotReadDamage, mockPortContext, {
+        attempted: 0,
+        prevented: 0,
+        absorbed: 0,
+        applied: 0,
+        overkill: 0,
+        discarded: 0,
+        targetHealthAfter: observedTarget.health.current,
+        killed: false,
+      }),
+    ).toThrow(/identities/);
   });
 });

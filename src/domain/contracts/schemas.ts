@@ -1644,7 +1644,10 @@ export const KillCoverageSchema = z
         message: "zero kill count and weight must agree",
       });
     }
-    if ((value.killedCount === value.totalCount) !== weightsEqual) {
+    if (
+      (value.killedCount === value.totalCount && !weightsEqual) ||
+      (value.killedCount < value.totalCount && value.killedWeight === value.totalWeight)
+    ) {
       context.addIssue({
         code: "custom",
         path: ["killedWeight"],
@@ -2144,6 +2147,16 @@ export const EngineSnapshotSchema = z
           code: "custom",
           path: ["trace", "events", index],
           message: "snapshot trace events must remain behind the processed frontier",
+        });
+      }
+    }
+    const retainedTraceEventIds = new Set(value.trace.events.map((event) => event.eventId));
+    for (const [index, event] of value.queue.entries.entries()) {
+      if (retainedTraceEventIds.has(event.eventId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["queue", "entries", index, "eventId"],
+          message: "queued event IDs cannot reuse an ID from the retained trace",
         });
       }
     }

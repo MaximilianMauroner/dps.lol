@@ -117,10 +117,12 @@ export function assertDamageResolution(
     request.packet.sourceEntityId !== request.attacker.entityId ||
     request.packet.targetEntityId !== request.target.entityId ||
     request.attackerStats.entityId !== request.attacker.entityId ||
+    request.attackerRead.kind !== "impact" ||
     request.attackerRead.entityId !== request.attacker.entityId ||
     request.attackerStats.revision !== request.attackerRead.stateRevision ||
     request.attackerRead.atTimeMs !== context.timeMs ||
     request.targetStats.entityId !== request.target.entityId ||
+    request.read.kind !== "impact" ||
     request.targetStats.revision !== request.read.stateRevision ||
     request.read.entityId !== request.target.entityId ||
     request.read.atTimeMs !== context.timeMs
@@ -442,6 +444,14 @@ export function assertLifecycleResolution(
   ) {
     throw new TypeError("revive replacement must be alive with positive health");
   }
+  if (
+    transition.transition === "death" &&
+    (transition.replacement === null ||
+      transition.replacement.alive ||
+      transition.replacement.health.current !== 0)
+  ) {
+    throw new TypeError("death replacement must preserve a dead entity with zero health");
+  }
   if (transition.replacement !== null) {
     const knownIds = new Set([...entities.map((entity) => entity.entityId), transition.entityId]);
     if (
@@ -473,7 +483,7 @@ export function assertLifecycleResolution(
   if (
     (["spawn", "revive", "transform"].includes(transition.transition) &&
       transition.replacement === null) ||
-    (["despawn", "death"].includes(transition.transition) && transition.replacement !== null)
+    (transition.transition === "despawn" && transition.replacement !== null)
   ) {
     throw new TypeError("lifecycle replacement must match transition semantics");
   }
@@ -900,6 +910,7 @@ export function assertEngineStepResult(input: EngineInput, value: unknown): Engi
     throw new TypeError("engine step output must match every requested run identity");
   if (step.snapshot.currentTimeMs > input.run.objective.horizonMs)
     throw new TypeError("engine step snapshot cannot exceed the requested objective horizon");
+  if (step.status === "progress") assertResumeCompatible(input, step.snapshot);
   if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
   return step;
 }
