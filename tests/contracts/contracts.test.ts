@@ -4270,6 +4270,7 @@ describe("P01 versioned contract fixtures", () => {
         causeEventIds: ["current-first"],
       },
     ];
+    splitFrontier.allocatedEventIds = ["past-high-allocation", "current-first", "current-second"];
     splitFrontier.pendingActions[0]!.continuationEventId = "current-second";
     splitFrontier.pendingActions[0]!.startedAtMs = 0;
     const splitWait = splitFrontier.pendingActions[0]!.command;
@@ -4574,5 +4575,93 @@ describe("P01 versioned contract fixtures", () => {
         reason: sampleSnapshot.interruption.reason,
       }),
     ).toThrow(/identities must exactly match retained trace identities/);
+  });
+
+  test("closes latest fresh-step, allocation-ledger, champion, and overflow findings", () => {
+    const plannedRun = clone(sampleRunningRun);
+    plannedRun.status = "planned";
+    const freshInput = assertEngineInputCompatible(
+      { scenario: sampleResolvedScenario, run: plannedRun, ports: createMockPorts() },
+      plannedRun.engineHash,
+    );
+    expect(() =>
+      assertEngineStepResult(freshInput, {
+        schemaVersion: 1,
+        status: "progress",
+        snapshot: sampleSnapshot,
+        emittedEvents: [],
+        result: null,
+        reason: sampleSnapshot.interruption.reason,
+      }),
+    ).not.toThrow();
+
+    const truncated = clone(sampleSnapshot);
+    truncated.trace.truncated = true;
+    truncated.trace.truncationReason = "retention limit";
+    truncated.trace.events = truncated.trace.events.slice(1);
+    expect(() => parseContract(EngineSnapshotSchema, truncated)).not.toThrow();
+    truncated.allocatedEventIds = truncated.allocatedEventIds.filter(
+      (eventId) => eventId !== "event-001",
+    );
+    expect(() => parseContract(EngineSnapshotSchema, truncated)).toThrow(
+      /allocated event IDs must retain represented identity event-001/,
+    );
+
+    const omittedEmissionSnapshot = clone(sampleSnapshot);
+    omittedEmissionSnapshot.trace.truncated = true;
+    omittedEmissionSnapshot.trace.truncationReason = "retention limit";
+    omittedEmissionSnapshot.trace.events = [];
+    const omittedTraceEvent = sampleTrace.events[0]!;
+    const omittedEmission = {
+      schemaVersion: 1 as const,
+      eventId: omittedTraceEvent.eventId,
+      timeMs: omittedTraceEvent.timeMs,
+      sequence: omittedTraceEvent.sequence,
+      phase: omittedTraceEvent.phase,
+      kind: omittedTraceEvent.kind,
+      actorEntityId: omittedTraceEvent.actorEntityId,
+      targetEntityIds: clone(omittedTraceEvent.targetEntityIds),
+      causeEventIds: clone(omittedTraceEvent.causeEventIds),
+      payload: {},
+    };
+    const omittedEmissionStep = {
+      schemaVersion: 1 as const,
+      status: "progress" as const,
+      snapshot: omittedEmissionSnapshot,
+      emittedEvents: [omittedEmission],
+      result: null,
+      reason: omittedEmissionSnapshot.interruption.reason,
+    };
+    expect(() => parseContract(EngineStepResultSchema, omittedEmissionStep)).not.toThrow();
+    omittedEmissionSnapshot.allocatedEventIds = omittedEmissionSnapshot.allocatedEventIds.filter(
+      (eventId) => eventId !== omittedEmission.eventId,
+    );
+    expect(() => parseContract(EngineStepResultSchema, omittedEmissionStep)).toThrow(
+      /snapshot allocation ledger/,
+    );
+
+    const missingChampion = clone(transformedCopiedAbility);
+    missingChampion.championId = null;
+    expect(() => parseContract(EntityStateSchema, missingChampion)).toThrow(
+      /champion entities require a champion ID/,
+    );
+    const falseChampion = clone(transformedCopiedAbility);
+    falseChampion.kind = "summon";
+    expect(() => parseContract(EntityStateSchema, falseChampion)).toThrow(
+      /other entity kinds require null/,
+    );
+
+    expect(() =>
+      parseContract(DamageResolutionSchema, {
+        attempted: 1,
+        absorbed: 1e308,
+        prevented: 1e308,
+        applied: 1e308,
+        overkill: 1e308,
+        discarded: 1e308,
+        targetHealthAfter: 1,
+        killed: false,
+      }),
+    ).toThrow(/damage resolution totals must reconcile/);
   });
 });

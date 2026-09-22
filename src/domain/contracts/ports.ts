@@ -750,10 +750,11 @@ export function assertEngineInputCompatible(
  * is allowed to resume it. Concrete engines must call this guard at their
  * resumeSession boundary.
  */
-export function assertResumeCompatible(
+function assertSnapshotCompatible(
   input: EngineInput,
   value: unknown,
   expectedEngineHash: string,
+  requiredRunStatus: "planned" | "running",
 ): ValidatedResume {
   if (!isRuntimeVerifiedResolvedScenario(input.scenario))
     throw new ResumeCompatibilityError([
@@ -764,7 +765,12 @@ export function assertResumeCompatible(
   const snapshot = assertResumableSnapshot(value);
   const mismatches: string[] = [];
 
-  if (run.status !== "running") mismatches.push("run must be running to resume");
+  if (run.status !== requiredRunStatus)
+    mismatches.push(
+      requiredRunStatus === "running"
+        ? "run must be running to resume"
+        : "fresh-session step validation requires the planned run manifest",
+    );
   if (run.engineHash !== expectedEngineHash)
     mismatches.push("run engineHash differs from the executing engine");
   if (snapshot.engineHash !== expectedEngineHash)
@@ -915,6 +921,14 @@ export function assertResumeCompatible(
   }) as ValidatedResume;
 }
 
+export function assertResumeCompatible(
+  input: EngineInput,
+  value: unknown,
+  expectedEngineHash: string,
+): ValidatedResume {
+  return assertSnapshotCompatible(input, value, expectedEngineHash, "running");
+}
+
 export interface EngineSession {
   /** Advances a bounded number of events without consulting wall-clock time. */
   step(budget: StepBudget): EngineStepResult;
@@ -1022,7 +1036,12 @@ export function assertEngineStepResult(
           interruption: { state: "none" as const, reason: null },
           result: null,
         };
-  assertResumeCompatible(input, compatibilitySnapshot, expectedEngineHash);
+  assertSnapshotCompatible(
+    input,
+    compatibilitySnapshot,
+    expectedEngineHash,
+    input.run.status === "planned" ? "planned" : "running",
+  );
   if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
   return step;
 }

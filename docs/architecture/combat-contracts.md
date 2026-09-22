@@ -108,6 +108,9 @@ instance or lose slot, charges, stacks or provenance.
 Ability state has explicit `native`, `copied` and `transformed` origins. This
 lets P08/P10 model copied or transformed abilities without branching the
 kernel on a champion-specific identity.
+Champion entities always carry a non-null `championId`; non-champion entity
+kinds carry `null`, so ruleset and mechanic lookup never depends on a missing
+or ambiguous champion identity.
 
 ## Time, ordering and visibility
 
@@ -157,7 +160,8 @@ command schema rejects scheduling work before the command's issue time, while
 complete traces require every causal ID to name an earlier event. Damage port
 results reconcile attempted, absorbed, prevented, applied, overkill and explicitly
 discarded capped amounts
-and bind death to zero remaining health; shields absorb damage before health.
+and bind death to zero remaining health; the aggregate must remain finite, and
+shields absorb damage before health.
 Damage/resource arithmetic and cohort/coverage equality use scale-relative
 comparisons without an absolute floor, so tiny valid values cannot hide large
 relative errors.
@@ -174,7 +178,9 @@ over the same session semantics:
    repeated after a worker or structured-clone boundary; a compile-time brand
    alone is not accepted.
 2. `EngineSession.step({ maxEvents, untilTimeMs })` advances bounded work;
-   `snapshot()` captures resumable state.
+   `snapshot()` captures resumable state. Step validation accepts the retained
+   planned manifest from a newly created session as well as the running
+   manifest of a resumed session.
 3. `resumeSession(assertResumeCompatible(input, snapshot, engineHash))` continues the exact queue, entity/buff,
    pending-action, trigger, RNG and numerical-branch state. `assertResumeCompatible`
    returns the frozen validated input and detached snapshot after rejecting non-resumable snapshots, any
@@ -215,7 +221,8 @@ remain in the result's run context.
 
 `EngineSnapshot` contains engine/ruleset/cohort/policy/scenario/candidate
 identity, queue IDs/order, current time, entity state, buff state, pending
-actions, per-entity state revisions, the retained trace prefix, per-step policy
+actions, per-entity state revisions, the retained trace prefix, the complete
+allocated event-ID ledger (including IDs omitted by trace truncation), per-step policy
 cursor/repeat progress, trigger state, uniquely named RNG stream/counters,
 numerical branch state and typed result/status. Portable resume restores the
 trace prefix through the trace port alongside resource and RNG state.
@@ -230,6 +237,8 @@ snapshot result. A snapshot is data only and is safe for worker structured
 clone and JSON replay.
 Top-level snapshot buffs must exactly match the canonical entity-owned buff
 state; they cannot disagree on stacks, sources or expiry.
+Resume restores the allocation ledger into each port context so a discarded
+trace event ID cannot be allocated again.
 Step envelopes may repeat events retained in the snapshot trace only when the
 event ID, allocation sequence and all causal identity fields describe that
 same retained event. Reusing either a retained ID or sequence for different

@@ -425,6 +425,7 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
   candidateInputHash: sampleRun.candidateInputHash,
   stateRevisions: { actor: 1, enemy: 1 },
   trace: sampleTrace,
+  allocatedEventIds: ["event-001", "event-002", "event-003"],
   currentTimeMs: 100,
   queue: {
     lastProcessedSequence: 2,

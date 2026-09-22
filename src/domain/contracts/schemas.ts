@@ -373,6 +373,13 @@ export const EntityStateSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if ((value.kind === "champion") !== (value.championId !== null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["championId"],
+        message: "champion entities require a champion ID and other entity kinds require null",
+      });
+    }
     if (value.ownerEntityId === value.entityId) {
       context.addIssue({
         code: "custom",
@@ -1418,7 +1425,7 @@ export const DamageResolutionSchema = z
   .superRefine((value, context) => {
     const accounted =
       value.absorbed + value.prevented + value.applied + value.overkill + value.discarded;
-    if (!scaleAwareEqual(value.attempted, accounted)) {
+    if (!Number.isFinite(accounted) || !scaleAwareEqual(value.attempted, accounted)) {
       context.addIssue({
         code: "custom",
         path: ["attempted"],
@@ -2114,6 +2121,7 @@ export const EngineSnapshotSchema = z
     candidateInputHash: ContentHashSchema,
     stateRevisions: z.record(identifier, positiveInteger),
     trace: TraceSchema,
+    allocatedEventIds: uniqueIdentifiers,
     currentTimeMs: nonNegativeInteger,
     queue: EventQueueSnapshotSchema,
     entities: z.array(EntityStateSchema).min(1),
@@ -2192,6 +2200,22 @@ export const EngineSnapshotSchema = z
         path: ["trace", "runId"],
         message: "snapshot trace must match the snapshot run",
       });
+    }
+    const allocatedEventIds = new Set(value.allocatedEventIds);
+    const representedEventIds = new Set([
+      ...value.trace.events.map((event) => event.eventId),
+      ...value.trace.events.flatMap((event) => event.causeEventIds),
+      ...value.queue.entries.map((event) => event.eventId),
+      ...value.queue.entries.flatMap((event) => event.causeEventIds),
+    ]);
+    for (const eventId of representedEventIds) {
+      if (!allocatedEventIds.has(eventId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["allocatedEventIds"],
+          message: `snapshot allocated event IDs must retain represented identity ${eventId}`,
+        });
+      }
     }
     for (const [index, event] of value.trace.events.entries()) {
       if (
@@ -2878,7 +2902,15 @@ export const EngineStepResultSchema = z
     const retainedTraceBySequence = new Map(
       value.snapshot.trace.events.map((event) => [event.sequence, event]),
     );
+    const allocatedEventIds = new Set(value.snapshot.allocatedEventIds);
     for (const [index, event] of value.emittedEvents.entries()) {
+      if (!allocatedEventIds.has(event.eventId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["emittedEvents", index, "eventId"],
+          message: "emitted event IDs must remain in the snapshot allocation ledger",
+        });
+      }
       const retainedById = retainedTraceById.get(event.eventId);
       const retainedBySequence = retainedTraceBySequence.get(event.sequence);
       const sharedTraceFieldsMatch =
