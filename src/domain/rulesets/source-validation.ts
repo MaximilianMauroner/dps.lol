@@ -19,9 +19,59 @@ const identifier = z
 const relativeArchivePath = z
   .string()
   .min(1)
-  .refine((value) => !value.startsWith("/") && !value.split("/").includes(".."), {
-    message: "retained paths must be relative and cannot traverse parents",
-  });
+  .refine(
+    (value) => {
+      if (value.includes("\\") || /^[A-Za-z]:/.test(value)) return false;
+      const segments = value.split("/");
+      return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+    },
+    {
+      message: "retained paths must be canonical relative POSIX paths",
+    },
+  );
+
+function compareIdentifiers(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function sortedIdentifiers(values: readonly string[]): string[] {
+  return [...values].sort(compareIdentifiers);
+}
+
+function assertCanonicalOrdering(value: PinnedSourceSet): void {
+  if (
+    canonicalJson(value.regionApplicability) !==
+      canonicalJson(sortedIdentifiers(value.regionApplicability)) ||
+    canonicalJson(value.requiredArtifactIds) !==
+      canonicalJson(sortedIdentifiers(value.requiredArtifactIds)) ||
+    canonicalJson(value.sourceArtifacts.map(({ artifact }) => artifact.artifactId)) !==
+      canonicalJson(
+        sortedIdentifiers(value.sourceArtifacts.map(({ artifact }) => artifact.artifactId)),
+      )
+  ) {
+    throw new TypeError("pinned source-set arrays must use canonical identifier order");
+  }
+}
+
+function parsePinnedArtifactUrl(artifact: SourceArtifact): URL {
+  const url = new URL(artifact.uri);
+  if (url.protocol !== "https:")
+    throw new TypeError(`source artifact ${artifact.artifactId} must use HTTPS`);
+  if (/(^|[./_-])(?:latest|current)(?:$|[./_-])/i.test(url.pathname))
+    throw new TypeError(`source artifact ${artifact.artifactId} is not explicitly version-pinned`);
+  return url;
+}
+
+function assertOfficialArtifactLocation(artifact: SourceArtifact, url: URL): void {
+  if (artifact.kind === "data-dragon" && url.hostname !== "ddragon.leagueoflegends.com") {
+    throw new TypeError(`Data Dragon artifact ${artifact.artifactId} must use the official host`);
+  }
+  if (artifact.kind === "community-dragon" && url.hostname !== "raw.communitydragon.org") {
+    throw new TypeError(
+      `CommunityDragon artifact ${artifact.artifactId} must use the official host`,
+    );
+  }
+}
 
 export const RetainedSourceArtifactSchema = z
   .object({
@@ -132,15 +182,17 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
   }
 
   for (const { artifact } of value.sourceArtifacts) {
-    if (forbidden.test(artifact.uri) || forbidden.test(artifact.version)) {
+    if (forbidden.test(artifact.version)) {
       throw new TypeError(
         `source artifact ${artifact.artifactId} is not explicitly version-pinned`,
       );
     }
+    const url = parsePinnedArtifactUrl(artifact);
+    assertOfficialArtifactLocation(artifact, url);
     if (
       artifact.kind === "data-dragon" &&
       (artifact.version !== value.dataDragonVersion ||
-        !artifact.uri.includes(`/${value.dataDragonVersion}/`))
+        !url.pathname.includes(`/${value.dataDragonVersion}/`))
     ) {
       throw new TypeError(
         `Data Dragon artifact ${artifact.artifactId} must match the pinned version`,
@@ -149,7 +201,7 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
     if (
       artifact.kind === "community-dragon" &&
       (artifact.version !== value.communityDragonRevision ||
-        !artifact.uri.includes(`/${value.communityDragonRevision}/`))
+        !url.pathname.includes(`/${value.communityDragonRevision}/`))
     ) {
       throw new TypeError(
         `CommunityDragon artifact ${artifact.artifactId} must match the pinned revision`,
@@ -201,7 +253,9 @@ export async function buildPinnedSourceSet(
   }
   const sourceArtifacts = await Promise.all(
     [...draft.sourceArtifacts]
-      .sort((left, right) => left.artifact.artifactId.localeCompare(right.artifact.artifactId))
+      .sort((left, right) =>
+        compareIdentifiers(left.artifact.artifactId, right.artifact.artifactId),
+      )
       .map(async ({ artifact, retainedPath }) => {
         const bytes = bytesById.get(artifact.artifactId);
         if (!bytes) throw new TypeError(`missing retained bytes for ${artifact.artifactId}`);
@@ -213,8 +267,8 @@ export async function buildPinnedSourceSet(
   );
   const candidate = parseContract(PinnedSourceSetSchema, {
     ...draft,
-    regionApplicability: [...draft.regionApplicability].sort(),
-    requiredArtifactIds: [...draft.requiredArtifactIds].sort(),
+    regionApplicability: sortedIdentifiers(draft.regionApplicability),
+    requiredArtifactIds: sortedIdentifiers(draft.requiredArtifactIds),
     sourceArtifacts,
     sourceSetHash: `sha256:${"0".repeat(64)}`,
   });
@@ -227,6 +281,7 @@ export async function assertPinnedSourceSet(
   retainedSources: readonly RetainedSourceBytes[],
 ): Promise<VerifiedPinnedSourceSet> {
   const sourceSet = parseContract(PinnedSourceSetSchema, value);
+  assertCanonicalOrdering(sourceSet);
   assertExplicitVersionPin(sourceSet);
   const artifactsById = new Map(
     sourceSet.sourceArtifacts.map(({ artifact }) => [artifact.artifactId, artifact]),

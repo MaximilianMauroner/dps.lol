@@ -75,6 +75,11 @@ describe("P02 retained source validation", () => {
     );
 
     expect(reordered).toEqual(first);
+    expect(first.sourceArtifacts.map(({ artifact }) => artifact.artifactId)).toEqual([
+      "cdragon-yunara",
+      "ddragon-champions",
+      "ddragon-items",
+    ]);
     expect(Object.isFrozen(first)).toBe(false);
     const verified = await assertPinnedSourceSet(first, retainedSources);
     expect(JSON.stringify(verified)).toBe(JSON.stringify(first));
@@ -137,11 +142,19 @@ describe("P02 retained source validation", () => {
       ]),
     ).rejects.toThrow(/inventory exactly|undeclared/);
 
-    const traversal = clone(built);
-    traversal.sourceArtifacts[0]!.retainedPath = "../outside.json";
-    await expect(assertPinnedSourceSet(traversal, retainedSources)).rejects.toThrow(
-      /cannot traverse parents/,
-    );
+    for (const retainedPath of [
+      "../outside.json",
+      "..\\outside.json",
+      "C:\\outside.json",
+      "source/./item.json",
+      "source//item.json",
+    ]) {
+      const invalidPath = clone(built);
+      invalidPath.sourceArtifacts[0]!.retainedPath = retainedPath;
+      await expect(assertPinnedSourceSet(invalidPath, retainedSources)).rejects.toThrow(
+        /canonical relative POSIX paths/,
+      );
+    }
   });
 
   test("rejects missing required sources, latest aliases, version drift, and stale set hashes", async () => {
@@ -157,6 +170,16 @@ describe("P02 retained source validation", () => {
     latest.hotfixRevision = "latest";
     await expect(assertPinnedSourceSet(latest, retainedSources)).rejects.toThrow(/never latest/);
 
+    const latestUrl = clone(built);
+    const latestDdragon = latestUrl.sourceArtifacts.find(
+      ({ artifact }) => artifact.kind === "data-dragon",
+    )!;
+    latestDdragon.artifact.uri =
+      "https://ddragon.leagueoflegends.com/cdn/latest?fallback=/16.18.1/";
+    await expect(assertPinnedSourceSet(latestUrl, retainedSources)).rejects.toThrow(
+      /not explicitly version-pinned/,
+    );
+
     const versionDrift = clone(built);
     const ddragon = versionDrift.sourceArtifacts.find(
       ({ artifact }) => artifact.kind === "data-dragon",
@@ -170,6 +193,14 @@ describe("P02 retained source validation", () => {
     staleHash.regionApplicability = ["KR"];
     await expect(assertPinnedSourceSet(staleHash, retainedSources)).rejects.toThrow(
       /source-set hash must match/,
+    );
+
+    const reordered = clone(built);
+    reordered.regionApplicability.reverse();
+    reordered.requiredArtifactIds.reverse();
+    reordered.sourceArtifacts.reverse();
+    await expect(assertPinnedSourceSet(reordered, retainedSources)).rejects.toThrow(
+      /canonical identifier order/,
     );
   });
 });
