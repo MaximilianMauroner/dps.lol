@@ -28,7 +28,6 @@ import {
   type HashVerifiedResolvedScenario,
   type PolicyVisibleState,
   type RunManifest,
-  type ResourceState,
   type RngStreamSnapshot,
   type ScheduledEvent,
   type StepBudget,
@@ -177,9 +176,14 @@ export interface ResourcePort {
 
 export function assertResourceResolution(
   mutation: ResourceMutation,
-  resource: ResourceState,
+  entity: EntityState,
   value: unknown,
 ): ResourceResolution {
+  const resource = entity.resources.find(
+    (candidate) => candidate.resourceId === mutation.resourceId,
+  );
+  if (entity.entityId !== mutation.entityId || !resource)
+    throw new TypeError("resource state must belong to the mutated entity");
   if (!Number.isFinite(mutation.delta))
     throw new TypeError("resource mutation delta must be finite");
   const result = parseContract(ResourceResolutionSchema, value);
@@ -388,7 +392,11 @@ export function assertTargetingResolution(
     !result.rejected
   )
     throw new TypeError("singular enemy targeting must reject when no living enemy exists");
-  return result as TargetingResolution;
+  return Object.freeze({
+    targetEntityIds: Object.freeze([...result.targetEntityIds]),
+    rejected: result.rejected,
+    reason: result.reason,
+  }) as TargetingResolution;
 }
 
 export type LifecycleTransition = Readonly<{
@@ -415,12 +423,15 @@ export function assertLifecycleResolution(
   value: unknown,
 ): LifecycleResolution {
   const entityExists = entities.some((entity) => entity.entityId === transition.entityId);
+  const existingEntity = entities.find((entity) => entity.entityId === transition.entityId);
   if (
     (transition.transition === "spawn" && entityExists) ||
     (transition.transition !== "spawn" && !entityExists)
   ) {
     throw new TypeError("lifecycle transition must match authoritative entity existence");
   }
+  if (transition.transition === "revive" && existingEntity?.alive)
+    throw new TypeError("revive transitions require an existing dead entity");
   if (transition.replacement !== null && transition.replacement.entityId !== transition.entityId) {
     throw new TypeError("lifecycle replacement identity must match the transition entity");
   }
@@ -845,7 +856,11 @@ function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult
     )
       throw new TypeError("engine output uncertainty must match requested confidence and metric");
   }
-  if (!result.killed && input.run.objective.censoring === "fail-if-not-killed")
+  if (
+    result.status === "complete" &&
+    !result.killed &&
+    input.run.objective.censoring === "fail-if-not-killed"
+  )
     throw new TypeError("engine output violates fail-if-not-killed policy");
   if (input.run.objective.aggregation === "coverage-then-ttk") {
     const totalWeight = input.scenario.effective.cohort.members.reduce(
@@ -883,6 +898,8 @@ export function assertEngineStepResult(input: EngineInput, value: unknown): Engi
   ];
   if (identities.some(([actual, expected]) => actual !== expected))
     throw new TypeError("engine step output must match every requested run identity");
+  if (step.snapshot.currentTimeMs > input.run.objective.horizonMs)
+    throw new TypeError("engine step snapshot cannot exceed the requested objective horizon");
   if (step.result !== null) assertCombatResultMatchesInput(input, step.result);
   return step;
 }

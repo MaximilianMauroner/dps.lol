@@ -1692,7 +1692,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: -10, reason: "cast" },
-        transformedCopiedAbility.resources[0]!,
+        transformedCopiedAbility,
         {
           accepted: "yes",
           entityId: "actor",
@@ -2098,7 +2098,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: 0, reason: "blocked" },
-        transformedCopiedAbility.resources[0]!,
+        transformedCopiedAbility,
         {
           accepted: false,
           entityId: "actor",
@@ -2204,7 +2204,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: 100, reason: "restore" },
-        transformedCopiedAbility.resources[0]!,
+        transformedCopiedAbility,
         {
           accepted: true,
           entityId: "actor",
@@ -2315,10 +2315,11 @@ describe("P01 versioned contract fixtures", () => {
     const deadRevive = clone(transformedCopiedAbility);
     deadRevive.alive = false;
     deadRevive.health.current = 0;
+    const deadExisting = clone(deadRevive);
     expect(() =>
       assertLifecycleResolution(
         { entityId: "actor", transition: "revive", replacement: deadRevive },
-        sampleSnapshot.entities,
+        [deadExisting, observedTarget],
         {
           accepted: true,
           entityId: "actor",
@@ -2496,7 +2497,10 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: 0.2, reason: "regen" },
-        { resourceId: "mana", current: 0.1, maximum: 1, regenerationPerSecond: 0 },
+        {
+          ...transformedCopiedAbility,
+          resources: [{ resourceId: "mana", current: 0.1, maximum: 1, regenerationPerSecond: 0 }],
+        },
         {
           accepted: true,
           entityId: "actor",
@@ -2969,7 +2973,7 @@ describe("P01 versioned contract fixtures", () => {
     expect(() =>
       assertResourceResolution(
         { entityId: "actor", resourceId: "mana", delta: Number.NaN, reason: "bad" },
-        transformedCopiedAbility.resources[0]!,
+        transformedCopiedAbility,
         {
           accepted: true,
           entityId: "actor",
@@ -3419,5 +3423,111 @@ describe("P01 versioned contract fixtures", () => {
         consumedDeterministic,
       ),
     ).toThrow(/deterministic resume cannot retain consumed RNG state/);
+  });
+
+  test("closes latest snapshot, interruption, and detached-output findings", () => {
+    const zeroRevision = clone(sampleSnapshot);
+    zeroRevision.stateRevisions.actor = 0;
+    expect(() => parseContract(EngineSnapshotSchema, zeroRevision)).toThrow(
+      /expected number to be >0/,
+    );
+
+    const futureTrace = clone(sampleSnapshot);
+    futureTrace.trace.events[1]!.sequence = 99;
+    expect(() => parseContract(EngineSnapshotSchema, futureTrace)).toThrow(/processed frontier/);
+
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "revive", replacement: transformedCopiedAbility },
+        sampleSnapshot.entities,
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "revive",
+          state: transformedCopiedAbility,
+          reason: null,
+        },
+      ),
+    ).toThrow(/existing dead entity/);
+
+    const interruptedRun = clone(sampleRunningRun);
+    interruptedRun.objective.censoring = "fail-if-not-killed";
+    const interruptedResult = clone(censoredResult);
+    interruptedResult.status = "incomplete";
+    interruptedResult.censoring = "invalid";
+    interruptedResult.metrics.ttk = { status: "undefined", reason: "budget" };
+    const interruptedSnapshot = completeSnapshotForTest();
+    interruptedSnapshot.status = "incomplete";
+    interruptedSnapshot.interruption = { state: "budget-exhausted", reason: "budget" };
+    interruptedSnapshot.result = interruptedResult;
+    expect(() =>
+      assertEngineStepResult(
+        { scenario: sampleResolvedScenario, run: interruptedRun, ports: createMockPorts() },
+        {
+          schemaVersion: 1,
+          status: "incomplete",
+          snapshot: interruptedSnapshot,
+          emittedEvents: [],
+          result: interruptedResult,
+          reason: "budget",
+        },
+      ),
+    ).not.toThrow();
+
+    const lateStep = clone(sampleSnapshot);
+    lateStep.currentTimeMs = sampleRunningRun.objective.horizonMs + 1;
+    lateStep.queue.entries = [];
+    lateStep.pendingActions = [];
+    lateStep.buffs.forEach((buff) => (buff.expiresAtMs = null));
+    lateStep.entities.forEach((entity) =>
+      entity.buffs.forEach((buff) => (buff.expiresAtMs = null)),
+    );
+    expect(() =>
+      assertEngineStepResult(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        {
+          schemaVersion: 1,
+          status: "progress",
+          snapshot: lateStep,
+          emittedEvents: [],
+          result: null,
+          reason: lateStep.interruption.reason,
+        },
+      ),
+    ).toThrow(/objective horizon/);
+
+    const foreignTrace = completeSnapshotForTest();
+    foreignTrace.result!.traceId = "foreign-trace";
+    expect(() => parseContract(EngineSnapshotSchema, foreignTrace)).toThrow(/identity must match/);
+
+    const visible = parseContract(PolicyVisibleStateSchema, visiblePolicyStateFixture());
+    const adapterTargets = ["actor"];
+    const detached = assertTargetingResolution(
+      {
+        actor: transformedCopiedAbility,
+        selector: { kind: "self", actorId: "actor" },
+        visibleState: visible,
+        expectedVisibleEntityIds: visible.visibility.visibleEntityIds,
+      },
+      { ...mockPortContext, timeMs: 100 },
+      { targetEntityIds: adapterTargets, rejected: false, reason: null },
+    );
+    adapterTargets[0] = "enemy";
+    expect(detached.targetEntityIds).toEqual(["actor"]);
+
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "enemy", resourceId: "mana", delta: 0, reason: "bad-owner" },
+        transformedCopiedAbility,
+        {
+          accepted: true,
+          entityId: "enemy",
+          resourceId: "mana",
+          previous: transformedCopiedAbility.resources[0]!.current,
+          current: transformedCopiedAbility.resources[0]!.current,
+          reason: null,
+        },
+      ),
+    ).toThrow(/belong to the mutated entity/);
   });
 });

@@ -2058,7 +2058,7 @@ export const EngineSnapshotSchema = z
     policyHash: ContentHashSchema,
     resolvedScenarioHash: ContentHashSchema,
     candidateInputHash: ContentHashSchema,
-    stateRevisions: z.record(identifier, nonNegativeInteger),
+    stateRevisions: z.record(identifier, positiveInteger),
     trace: TraceSchema,
     currentTimeMs: nonNegativeInteger,
     queue: EventQueueSnapshotSchema,
@@ -2134,6 +2134,18 @@ export const EngineSnapshotSchema = z
         path: ["trace", "runId"],
         message: "snapshot trace must match the snapshot run",
       });
+    }
+    for (const [index, event] of value.trace.events.entries()) {
+      if (
+        event.timeMs > value.currentTimeMs ||
+        event.sequence > value.queue.lastProcessedSequence
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["trace", "events", index],
+          message: "snapshot trace events must remain behind the processed frontier",
+        });
+      }
     }
     const entitiesById = new Map(value.entities.map((entity) => [entity.entityId, entity]));
     for (const [entityIndex, entity] of value.entities.entries()) {
@@ -2378,7 +2390,8 @@ export const EngineSnapshotSchema = z
       if (
         value.result.runId !== value.runId ||
         value.result.resolvedScenarioHash !== value.resolvedScenarioHash ||
-        value.result.candidateInputHash !== value.candidateInputHash
+        value.result.candidateInputHash !== value.candidateInputHash ||
+        (value.result.traceId !== null && value.result.traceId !== value.trace.traceId)
       ) {
         context.addIssue({
           code: "custom",
