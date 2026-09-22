@@ -37,8 +37,6 @@ import {
   type TraceEvent,
 } from "./schemas";
 
-const NUMERIC_TOLERANCE = 1e-9;
-
 /**
  * Port calls are synchronous and deterministic from the engine's point of
  * view. Implementations may be backed by a worker or a database adapter, but
@@ -142,9 +140,11 @@ export function assertDamageResolution(
   }
   if (!request.target.alive) throw new TypeError("damage requests require a living target");
   const resolution = parseContract(DamageResolutionSchema, value);
-  const close = (left: number, right: number) => Math.abs(left - right) <= 1e-9;
   const rawPostMitigation = request.packet.rawAmount - resolution.prevented;
-  const postMitigation = Math.abs(rawPostMitigation) <= NUMERIC_TOLERANCE ? 0 : rawPostMitigation;
+  const preventionExceedsPacket =
+    resolution.prevented > request.packet.rawAmount &&
+    !scaleAwareEqual(resolution.prevented, request.packet.rawAmount);
+  const postMitigation = Math.max(0, rawPostMitigation);
   const expectedAbsorbed = Math.min(postMitigation, request.target.health.shield);
   const postShield = postMitigation - expectedAbsorbed;
   const expectedApplied = Math.min(postShield, request.target.health.current);
@@ -153,12 +153,12 @@ export function assertDamageResolution(
   const expectedHealth = request.target.health.current - expectedApplied;
   if (
     resolution.attempted !== request.packet.rawAmount ||
-    rawPostMitigation < -NUMERIC_TOLERANCE ||
-    !close(resolution.absorbed, expectedAbsorbed) ||
-    !close(resolution.applied, expectedApplied) ||
-    !close(resolution.overkill, expectedOverkill) ||
-    !close(resolution.discarded, expectedDiscarded) ||
-    !close(resolution.targetHealthAfter, expectedHealth) ||
+    preventionExceedsPacket ||
+    !scaleAwareEqual(resolution.absorbed, expectedAbsorbed) ||
+    !scaleAwareEqual(resolution.applied, expectedApplied) ||
+    !scaleAwareEqual(resolution.overkill, expectedOverkill) ||
+    !scaleAwareEqual(resolution.discarded, expectedDiscarded) ||
+    !scaleAwareEqual(resolution.targetHealthAfter, expectedHealth) ||
     resolution.killed !== (expectedHealth === 0)
   ) {
     throw new TypeError("damage resolution must match the requested packet and target state");
@@ -207,8 +207,9 @@ export function assertResourceResolution(
     result.entityId !== mutation.entityId ||
     result.resourceId !== mutation.resourceId ||
     result.resourceId !== resource.resourceId ||
-    Math.abs(result.previous - resource.current) > 1e-9 ||
-    Math.abs(result.current - expected) > 1e-9
+    !scaleAwareEqual(result.previous, resource.current) ||
+    !scaleAwareEqual(result.current, expected) ||
+    result.current > resource.maximum
   )
     throw new TypeError("resource resolution must be finite and match the requested mutation");
   return result;
@@ -593,9 +594,13 @@ export function assertTriggerDispatchResult(
       "trigger scheduled event IDs and sequences must be unique within a batch, including trace events",
     );
   for (const command of commands) {
+    const allowedCauses = new Set([...context.causeEventIds, request.event.eventId]);
     if (
       command.issuedAtMs !== context.timeMs ||
       !command.causeEventIds.includes(request.event.eventId) ||
+      command.causeEventIds.some((causeEventId) => !allowedCauses.has(causeEventId)) ||
+      ((command.kind === "schedule-event" || command.kind === "trace") &&
+        command.event.causeEventIds.some((causeEventId) => !allowedCauses.has(causeEventId))) ||
       ((command.kind === "schedule-event" || command.kind === "trace") &&
         command.event.sequence <= context.sequence)
     ) {
@@ -927,21 +932,24 @@ function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult
     )
       throw new TypeError("engine output elapsed-time metrics cannot exceed the objective horizon");
   }
-  if ((input.run.evaluationMode.kind === "sampled-estimate") !== (result.uncertainty !== null))
-    throw new TypeError("engine output uncertainty must match the requested evaluation mode");
+  if (input.run.evaluationMode.kind !== "sampled-estimate" && result.uncertainty !== null)
+    throw new TypeError("non-sampled engine output cannot carry sampling uncertainty");
   if (input.run.evaluationMode.kind === "sampled-estimate") {
-    const uncertainty = result.uncertainty!;
+    const uncertainty = result.uncertainty;
     const primaryMetric =
       input.run.objective.primaryMetric === "time-to-first-death"
         ? "timeToFirstDeath"
         : input.run.objective.primaryMetric === "time-to-elimination"
           ? "timeToElimination"
           : input.run.objective.primaryMetric;
+    if (result.status === "complete" && uncertainty === null)
+      throw new TypeError("complete sampled output requires machine-readable uncertainty");
     if (
-      uncertainty.confidenceLevel !== input.run.evaluationMode.confidenceLevel ||
-      uncertainty.effectiveSampleCount < 2 ||
-      uncertainty.effectiveSampleCount > input.run.evaluationMode.random.trialCount ||
-      !(primaryMetric in uncertainty.standardErrors)
+      uncertainty !== null &&
+      (uncertainty.confidenceLevel !== input.run.evaluationMode.confidenceLevel ||
+        uncertainty.effectiveSampleCount > input.run.evaluationMode.random.trialCount ||
+        (result.status === "complete" &&
+          (uncertainty.effectiveSampleCount < 2 || !(primaryMetric in uncertainty.standardErrors))))
     )
       throw new TypeError("engine output uncertainty must match requested confidence and metric");
   }

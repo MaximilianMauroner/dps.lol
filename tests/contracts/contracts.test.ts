@@ -1761,6 +1761,9 @@ describe("P01 versioned contract fixtures", () => {
     const pastHorizon = clone(sampleSnapshot);
     pastHorizon.currentTimeMs = 5001;
     pastHorizon.queue.entries[0]!.timeMs = 6000;
+    const horizonWait = pastHorizon.pendingActions[0]!.command;
+    if (horizonWait.kind !== "wait") throw new Error("fixture action should be a wait");
+    horizonWait.durationMs = 5900;
     pastHorizon.buffs[0]!.expiresAtMs = null;
     pastHorizon.entities[0]!.buffs[0]!.expiresAtMs = null;
     expect(() =>
@@ -4223,6 +4226,9 @@ describe("P01 versioned contract fixtures", () => {
     ];
     splitFrontier.pendingActions[0]!.continuationEventId = "current-second";
     splitFrontier.pendingActions[0]!.startedAtMs = 0;
+    const splitWait = splitFrontier.pendingActions[0]!.command;
+    if (splitWait.kind !== "wait") throw new Error("fixture action should be a wait");
+    splitWait.durationMs = 10;
     expect(() => parseContract(EngineSnapshotSchema, splitFrontier)).not.toThrow();
 
     const missingCopySource = clone(transformedCopiedAbility);
@@ -4263,5 +4269,191 @@ describe("P01 versioned contract fixtures", () => {
     ports.trace.record(recorded, { ...mockPortContext, runId: "record-run" });
     recorded.eventId = "mutated-record";
     expect(ports.trace.snapshot("record-run").events[0]!.eventId).toBe("recorded-original");
+  });
+
+  test("closes latest wait, arithmetic, timer, interruption, and cause findings", () => {
+    const mismatchedWait = clone(sampleSnapshot);
+    const pendingWait = mismatchedWait.pendingActions[0]!;
+    if (pendingWait.command.kind !== "wait") throw new Error("fixture action should be a wait");
+    pendingWait.command.durationMs = 1;
+    expect(() => parseContract(EngineSnapshotSchema, mismatchedWait)).toThrow(
+      /wait continuation must match its declared duration/,
+    );
+
+    const tinyDamage = {
+      attempted: 1e-20,
+      absorbed: 0,
+      prevented: 0,
+      applied: 9e-10,
+      overkill: 0,
+      discarded: 0,
+      targetHealthAfter: 0,
+      killed: true,
+    };
+    expect(() => parseContract(DamageResolutionSchema, tinyDamage)).toThrow(
+      /totals must reconcile/,
+    );
+    const tinyTarget = clone(observedTarget);
+    tinyTarget.health.current = 1e-20;
+    tinyTarget.health.maximum = 1e-20;
+    expect(() =>
+      assertDamageResolution(
+        {
+          packet: {
+            sourceEntityId: "actor",
+            targetEntityId: "enemy",
+            damageType: "true",
+            rawAmount: 1e-20,
+            tags: [],
+            canOverkill: false,
+          },
+          attacker: transformedCopiedAbility,
+          target: tinyTarget,
+          attackerStats: {
+            entityId: "actor",
+            revision: 1,
+            values: clone(transformedCopiedAbility.stats),
+          },
+          targetStats: { entityId: "enemy", revision: 1, values: clone(tinyTarget.stats) },
+          attackerRead: {
+            kind: "impact",
+            entityId: "actor",
+            atTimeMs: 0,
+            stateRevision: 1,
+          },
+          read: { kind: "impact", entityId: "enemy", atTimeMs: 0, stateRevision: 1 },
+        },
+        mockPortContext,
+        tinyDamage,
+      ),
+    ).toThrow(/totals must reconcile|requested packet/);
+
+    const tinyResourceEntity = clone(transformedCopiedAbility);
+    tinyResourceEntity.resources[0]!.current = 1e-20;
+    tinyResourceEntity.resources[0]!.maximum = 1e-20;
+    expect(() =>
+      assertResourceResolution(
+        { entityId: "actor", resourceId: "mana", delta: 0, reason: "no-op" },
+        tinyResourceEntity,
+        {
+          accepted: true,
+          entityId: "actor",
+          resourceId: "mana",
+          previous: 9e-10,
+          current: 9e-10,
+          reason: null,
+        },
+      ),
+    ).toThrow(/match the requested mutation/);
+
+    const ports = createMockPorts();
+    const scheduled = clone(sampleSnapshot.queue.entries[0]!);
+    const originalTime = scheduled.timeMs;
+    ports.timers.schedule({ event: scheduled, replacesEventId: null }, mockPortContext);
+    scheduled.timeMs += 1000;
+    expect(ports.timers.peek(mockPortContext)?.timeMs).toBe(originalTime);
+    const detachedTimer = ports.timers.peek(mockPortContext)!;
+    detachedTimer.timeMs += 2000;
+    expect(ports.timers.peek(mockPortContext)?.timeMs).toBe(originalTime);
+
+    const sampledScenario = clone(sampleResolvedScenario);
+    sampledScenario.effective.evaluationMode = {
+      kind: "sampled-estimate",
+      random: { kind: "seeded", algorithm: "xorshift32", seed: "seed", trialCount: 10 },
+      approximation: null,
+      confidenceLevel: 0.95,
+    };
+    const sampledRun = clone(sampleRunningRun);
+    sampledRun.evaluationMode = clone(sampledScenario.effective.evaluationMode);
+    sampledRun.random = clone(sampledRun.evaluationMode.random);
+    const interrupted = clone(censoredResult);
+    interrupted.status = "cancelled";
+    interrupted.censoring = "invalid";
+    interrupted.metrics.ttk = { status: "undefined", reason: "cancelled before sampling" };
+    interrupted.uncertainty = null;
+    const sampledInput = { scenario: sampledScenario, run: sampledRun, ports: createMockPorts() };
+    expect(() =>
+      assertEngineRun(sampledInput, {
+        status: "cancelled",
+        result: interrupted,
+        trace: sampleTrace,
+      }),
+    ).not.toThrow();
+    const oneSample = clone(interrupted);
+    oneSample.uncertainty = {
+      effectiveSampleCount: 1,
+      confidenceLevel: 0.95,
+      standardErrors: {},
+    };
+    expect(() =>
+      assertEngineRun(sampledInput, { status: "cancelled", result: oneSample, trace: sampleTrace }),
+    ).not.toThrow();
+
+    const interruptedSnapshot = clone(sampleSnapshot);
+    interruptedSnapshot.status = "cancelled";
+    interruptedSnapshot.resumability = "non-resumable";
+    interruptedSnapshot.interruption = { state: "cancelled", reason: "cancelled early" };
+    interruptedSnapshot.queue.entries = [];
+    interruptedSnapshot.pendingActions = [];
+    interruptedSnapshot.result = interrupted;
+    interruptedSnapshot.numericalBranches[0]!.mode = "sampled-estimate";
+    interruptedSnapshot.rngStreams[0] = {
+      streamId: "combat",
+      algorithm: "xorshift32",
+      seed: "seed",
+      drawCount: 1,
+      state: [1],
+    };
+    expect(() =>
+      assertEngineStepResult(sampledInput, {
+        schemaVersion: 1,
+        status: "cancelled",
+        snapshot: interruptedSnapshot,
+        emittedEvents: [],
+        result: interrupted,
+        reason: "cancelled early",
+      }),
+    ).not.toThrow();
+
+    const triggerEvent = {
+      schemaVersion: 1 as const,
+      eventId: "trigger-cause",
+      timeMs: 0,
+      sequence: 1,
+      phase: "input" as const,
+      kind: "action",
+      actorEntityId: "actor",
+      targetEntityIds: [] as string[],
+      causeEventIds: [] as string[],
+      payload: {},
+    };
+    expect(() =>
+      assertTriggerDispatchResult(
+        { triggerId: "trigger", ownerEntityId: "actor", event: triggerEvent },
+        mockPortContext,
+        {
+          accepted: true,
+          reason: null,
+          emittedCommands: [
+            {
+              schemaVersion: 1,
+              kind: "schedule-event",
+              commandId: "unknown-cause-command",
+              issuedAtMs: 0,
+              causeEventIds: ["trigger-cause", "missing-cause"],
+              event: {
+                eventId: "scheduled-cause",
+                timeMs: 1,
+                sequence: 2,
+                phase: "impact",
+                kind: "damage",
+                payload: {},
+                causeEventIds: ["trigger-cause", "missing-cause"],
+              },
+            },
+          ],
+        },
+      ),
+    ).toThrow(/causal identity/);
   });
 });

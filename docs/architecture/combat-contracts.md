@@ -155,6 +155,9 @@ complete traces require every causal ID to name an earlier event. Damage port
 results reconcile attempted, absorbed, prevented, applied, overkill and explicitly
 discarded capped amounts
 and bind death to zero remaining health; shields absorb damage before health.
+Damage/resource arithmetic and cohort/coverage equality use scale-relative
+comparisons without an absolute floor, so tiny valid values cannot hide large
+relative errors.
 `StatsSnapshot` and damage responses are runtime-validated against their requests.
 RNG results validate value range, draw count and cumulative position. Seeded modes
 must name a real random algorithm rather than the deterministic `none` sentinel,
@@ -172,9 +175,12 @@ over the same session semantics:
    returns the frozen validated input and detached snapshot after rejecting non-resumable snapshots, any
    run/scenario/engine identity mismatch, or policy progress whose policy ID,
    revision, exact step IDs, or repeat counters are impossible under the scenario policy. Pending actions retain their
-   originating policy step and distinguish policy actions from policy-derived waits. Bounded-step results must preserve
+   originating policy step and distinguish policy actions from policy-derived waits; an active wait's continuation time
+   equals its start plus declared duration. Bounded-step results must preserve
    the snapshot interruption state and exact reason; `assertEngineStepResult`
-   binds terminal results to the session objective and evaluation configuration. A progress result cannot
+   binds terminal results to the session objective and evaluation configuration. Complete sampled results require at least
+   two effective samples and primary-metric uncertainty; interrupted sampled results may carry no uncertainty or partial
+   one-sample metadata. A progress result cannot
    claim cancellation or carry an unrelated interruption reason. `run(input)`
    is the synchronous convenience entry point, not a second simulator.
 

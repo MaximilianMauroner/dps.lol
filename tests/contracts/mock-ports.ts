@@ -82,13 +82,15 @@ export function createMockPorts(): CombatKernelPorts {
       schedule: ({ event, replacesEventId }, context) => {
         const scheduled = timersFor(context.runId);
         if (replacesEventId !== null) scheduled.delete(replacesEventId);
-        scheduled.set(event.eventId, event);
+        scheduled.set(event.eventId, structuredClone(event));
       },
       cancel: (eventId, context) => timersFor(context.runId).delete(eventId),
-      peek: (context) =>
-        [...timersFor(context.runId).values()].sort(
+      peek: (context) => {
+        const next = [...timersFor(context.runId).values()].sort(
           (left, right) => left.timeMs - right.timeMs || left.sequence - right.sequence,
-        )[0] ?? null,
+        )[0];
+        return next ? structuredClone(next) : null;
+      },
     },
     movement: {
       move: ({ entity, destination }) => ({

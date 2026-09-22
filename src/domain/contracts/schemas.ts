@@ -1404,7 +1404,7 @@ export const DamageResolutionSchema = z
   .superRefine((value, context) => {
     const accounted =
       value.absorbed + value.prevented + value.applied + value.overkill + value.discarded;
-    if (Math.abs(value.attempted - accounted) > 1e-9) {
+    if (!scaleAwareEqual(value.attempted, accounted)) {
       context.addIssue({
         code: "custom",
         path: ["attempted"],
@@ -2322,6 +2322,15 @@ export const EngineSnapshotSchema = z
             code: "custom",
             path: ["pendingActions", index, "continuationEventId"],
             message: "pending action continuations cannot precede the action start",
+          });
+        } else if (
+          pending.command.kind === "wait" &&
+          continuation.timeMs !== pending.startedAtMs + pending.command.durationMs
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["pendingActions", index, "continuationEventId"],
+            message: "pending wait continuation must match its declared duration",
           });
         }
       }
