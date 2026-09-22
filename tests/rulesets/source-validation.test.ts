@@ -232,6 +232,28 @@ describe("P02 retained source validation", () => {
       /rolling PBE revision/,
     );
 
+    const rollingPbePath = clone(built);
+    rollingPbePath.communityDragonRevision = "pbe/game";
+    const rollingPbePathArtifact = rollingPbePath.sourceArtifacts.find(
+      ({ artifact }) => artifact.kind === "community-dragon",
+    )!;
+    rollingPbePathArtifact.artifact.version = "pbe/game";
+    rollingPbePathArtifact.artifact.uri =
+      "https://raw.communitydragon.org/pbe/game/data/characters/yunara/yunara.bin.json";
+    await expect(assertPinnedSourceSet(rollingPbePath, retainedSources)).rejects.toThrow(
+      /single path segment/,
+    );
+
+    const misplacedVersion = clone(built);
+    misplacedVersion.dataDragonVersion = "data";
+    const misplacedVersionArtifact = misplacedVersion.sourceArtifacts.find(
+      ({ artifact }) => artifact.kind === "data-dragon",
+    )!;
+    misplacedVersionArtifact.artifact.version = "data";
+    await expect(assertPinnedSourceSet(misplacedVersion, retainedSources)).rejects.toThrow(
+      /must match the pinned version/,
+    );
+
     const versionDrift = clone(built);
     const ddragon = versionDrift.sourceArtifacts.find(
       ({ artifact }) => artifact.kind === "data-dragon",

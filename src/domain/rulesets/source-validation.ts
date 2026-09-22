@@ -205,6 +205,9 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
   if (value.communityDragonRevision.toLowerCase() === "pbe") {
     throw new TypeError("CommunityDragon sources must not use the rolling PBE revision");
   }
+  if (value.communityDragonRevision.includes("/")) {
+    throw new TypeError("CommunityDragon revisions must be a single path segment");
+  }
   if (decodedSetVersions.some((version, index) => version !== setVersions[index])) {
     throw new TypeError("ruleset source versions must use canonical literal spelling");
   }
@@ -228,10 +231,12 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
     }
     const url = parsePinnedArtifactUrl(artifact);
     assertOfficialArtifactLocation(artifact, url);
+    const pathSegments = url.pathname.split("/");
     if (
       artifact.kind === "data-dragon" &&
       (artifact.version !== value.dataDragonVersion ||
-        !url.pathname.includes(`/${value.dataDragonVersion}/`))
+        pathSegments[1] !== "cdn" ||
+        pathSegments[2] !== value.dataDragonVersion)
     ) {
       throw new TypeError(
         `Data Dragon artifact ${artifact.artifactId} must match the pinned version`,
@@ -240,7 +245,7 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
     if (
       artifact.kind === "community-dragon" &&
       (artifact.version !== value.communityDragonRevision ||
-        !url.pathname.includes(`/${value.communityDragonRevision}/`))
+        pathSegments[1] !== value.communityDragonRevision)
     ) {
       throw new TypeError(
         `CommunityDragon artifact ${artifact.artifactId} must match the pinned revision`,
