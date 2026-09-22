@@ -3080,9 +3080,12 @@ describe("P01 versioned contract fixtures", () => {
       ),
     ).toThrow(/objective horizon/);
 
-    const replayedQueue = clone(sampleSnapshot);
-    replayedQueue.queue.lastProcessedSequence = replayedQueue.queue.entries[0]!.sequence;
-    expect(() => parseContract(EngineSnapshotSchema, replayedQueue)).toThrow(/processed frontier/);
+    const outOfAllocationOrder = clone(sampleSnapshot);
+    outOfAllocationOrder.trace.events = [outOfAllocationOrder.trace.events[1]!];
+    outOfAllocationOrder.trace.truncated = true;
+    outOfAllocationOrder.trace.truncationReason = "earlier allocation remains queued";
+    outOfAllocationOrder.queue.entries[0]!.sequence = 1;
+    expect(() => parseContract(EngineSnapshotSchema, outOfAllocationOrder)).not.toThrow();
 
     const sampledRun = clone(sampleRunningRun);
     sampledRun.evaluationMode = {
@@ -3646,5 +3649,64 @@ describe("P01 versioned contract fixtures", () => {
         killed: false,
       }),
     ).toThrow(/identities/);
+  });
+
+  test("closes latest cause, lifecycle, denominator, queue, and censoring findings", () => {
+    const unresolvedQueuedCause = clone(sampleSnapshot);
+    unresolvedQueuedCause.queue.entries[0]!.causeEventIds = ["missing-cause"];
+    expect(() => parseContract(EngineSnapshotSchema, unresolvedQueuedCause)).toThrow(
+      /resolve to a retained trace or earlier queued event/,
+    );
+
+    const alreadyDead = clone(transformedCopiedAbility);
+    alreadyDead.alive = false;
+    alreadyDead.health.current = 0;
+    expect(() =>
+      assertLifecycleResolution(
+        { entityId: "actor", transition: "death", replacement: alreadyDead },
+        [alreadyDead, observedTarget],
+        {
+          accepted: true,
+          entityId: "actor",
+          transition: "death",
+          state: alreadyDead,
+          reason: null,
+        },
+      ),
+    ).toThrow(/existing living entity/);
+
+    const foreignCoverage = clone(censoredResult);
+    foreignCoverage.coverage = {
+      killedCount: 0,
+      totalCount: 99,
+      killedWeight: 0,
+      totalWeight: 99,
+      fraction: 0,
+    };
+    expect(() =>
+      assertEngineRun(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+        { status: "complete", result: foreignCoverage, trace: sampleTrace },
+      ),
+    ).toThrow(/coverage.*cohort denominator/);
+
+    const reusedTraceSequence = clone(sampleSnapshot);
+    reusedTraceSequence.queue.entries[0]!.sequence = reusedTraceSequence.trace.events[0]!.sequence;
+    expect(() => parseContract(EngineSnapshotSchema, reusedTraceSequence)).toThrow(
+      /identities.*retained trace/,
+    );
+
+    const killedWithCensoredPrimary = clone(censoredResult);
+    killedWithCensoredPrimary.objective = "first-death";
+    killedWithCensoredPrimary.killed = true;
+    killedWithCensoredPrimary.censoring = "not-censored";
+    killedWithCensoredPrimary.metrics.ttk = { status: "value", value: 100 };
+    killedWithCensoredPrimary.metrics.timeToFirstDeath = {
+      status: "censored",
+      horizonMs: 5000,
+    };
+    expect(() => parseContract(CombatResultSchema, killedWithCensoredPrimary)).toThrow(
+      /objective-valid primary metric/,
+    );
   });
 });

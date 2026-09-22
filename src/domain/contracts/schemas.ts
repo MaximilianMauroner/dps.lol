@@ -1744,7 +1744,10 @@ export const CombatResultSchema = z
       const acceptsCensoring = ["ttk", "timeToFirstDeath", "timeToElimination"].includes(
         primaryMetric,
       );
-      if (metric.status !== "value" && !(acceptsCensoring && metric.status === "censored")) {
+      if (
+        metric.status !== "value" &&
+        !(acceptsCensoring && !value.killed && metric.status === "censored")
+      ) {
         context.addIssue({
           code: "custom",
           path: ["metrics", primaryMetric],
@@ -1892,15 +1895,6 @@ export const EventQueueSnapshotSchema = z
         path: ["entries"],
         message: "queued event sequence IDs must be unique",
       });
-    }
-    for (const [index, sequence] of sequences.entries()) {
-      if (sequence <= value.lastProcessedSequence) {
-        context.addIssue({
-          code: "custom",
-          path: ["entries", index, "sequence"],
-          message: "queued event sequences must follow the processed frontier",
-        });
-      }
     }
     const maxSequence = sequences.reduce((maximum, sequence) => Math.max(maximum, sequence), 0);
     if (value.nextSequence <= Math.max(maxSequence, value.lastProcessedSequence)) {
@@ -2151,13 +2145,31 @@ export const EngineSnapshotSchema = z
       }
     }
     const retainedTraceEventIds = new Set(value.trace.events.map((event) => event.eventId));
+    const retainedTraceSequences = new Set(value.trace.events.map((event) => event.sequence));
+    const queuedEventIndexById = new Map(
+      value.queue.entries.map((event, index) => [event.eventId, index]),
+    );
     for (const [index, event] of value.queue.entries.entries()) {
-      if (retainedTraceEventIds.has(event.eventId)) {
+      if (retainedTraceEventIds.has(event.eventId) || retainedTraceSequences.has(event.sequence)) {
         context.addIssue({
           code: "custom",
-          path: ["queue", "entries", index, "eventId"],
-          message: "queued event IDs cannot reuse an ID from the retained trace",
+          path: ["queue", "entries", index],
+          message: "queued event identities cannot reuse an ID or sequence from the retained trace",
         });
+      }
+      for (const [causeIndex, causeEventId] of event.causeEventIds.entries()) {
+        const queuedCauseIndex = queuedEventIndexById.get(causeEventId);
+        if (
+          queuedCauseIndex === undefined &&
+          !retainedTraceEventIds.has(causeEventId) &&
+          !value.trace.truncated
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["queue", "entries", index, "causeEventIds", causeIndex],
+            message: "queued causes must resolve to a retained trace or earlier queued event",
+          });
+        }
       }
     }
     const entitiesById = new Map(value.entities.map((entity) => [entity.entityId, entity]));

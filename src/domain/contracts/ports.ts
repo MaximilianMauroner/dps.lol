@@ -434,6 +434,8 @@ export function assertLifecycleResolution(
   }
   if (transition.transition === "revive" && existingEntity?.alive)
     throw new TypeError("revive transitions require an existing dead entity");
+  if (transition.transition === "death" && !existingEntity?.alive)
+    throw new TypeError("death transitions require an existing living entity");
   if (transition.replacement !== null && transition.replacement.entityId !== transition.entityId) {
     throw new TypeError("lifecycle replacement identity must match the transition entity");
   }
@@ -872,18 +874,19 @@ function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult
     input.run.objective.censoring === "fail-if-not-killed"
   )
     throw new TypeError("engine output violates fail-if-not-killed policy");
-  if (input.run.objective.aggregation === "coverage-then-ttk") {
+  if (result.coverage !== null) {
     const totalWeight = input.scenario.effective.cohort.members.reduce(
       (sum, member) => sum + member.weight,
       0,
     );
     if (
-      result.coverage === null ||
       result.coverage.totalCount !== input.scenario.effective.cohort.members.length ||
       Math.abs(result.coverage.totalWeight - totalWeight) > 1e-12
     )
       throw new TypeError("engine output coverage must match the requested cohort denominator");
   }
+  if (input.run.objective.aggregation === "coverage-then-ttk" && result.coverage === null)
+    throw new TypeError("engine output coverage must match the requested cohort denominator");
 }
 
 export function assertEngineRun(input: EngineInput, value: unknown): EngineRun {
