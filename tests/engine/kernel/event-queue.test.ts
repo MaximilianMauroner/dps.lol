@@ -72,6 +72,7 @@ test("cancel, same-time child, checkpoint, and resume preserve event order", () 
         queue.currentTimeMs,
         100_000,
         JSON.parse(JSON.stringify(queue.snapshot())),
+        queue.allocatedEventIds(),
       );
     const rest = pause ? queue.step(3, null, dispatch).processed : [];
     return [...first, ...rest].map((entry) => entry.eventId);
@@ -108,11 +109,49 @@ test("invalid batch is atomic and work limit stays stable across resume", () => 
   queue.cancel("cancelled");
   queue.schedule(event("later", 2));
   const first = queue.step(1, null, () => []);
-  const restored = new EventQueue(queue.currentTimeMs, 2, queue.snapshot());
+  const restored = new EventQueue(
+    queue.currentTimeMs,
+    2,
+    queue.snapshot(),
+    queue.allocatedEventIds(),
+  );
   expect(first.processed.map((entry) => entry.eventId)).toEqual(["root"]);
-  expect(restored.step(1, null, () => []).processed.map((entry) => entry.eventId)).toEqual([
-    "later",
-  ]);
-  queue.step(1, null, () => []);
+  expect(restored.step(1, null, () => []).status).toBe("event-limit");
+  expect(queue.step(1, null, () => []).status).toBe("event-limit");
   expect(restored.snapshot()).toEqual(queue.snapshot());
+});
+
+test("restored allocation ledger prevents reuse of processed and cancelled IDs", () => {
+  const queue = new EventQueue();
+  queue.schedule(event("processed", 0));
+  queue.schedule(event("cancelled", 1));
+  queue.cancel("cancelled");
+  queue.step(1, null, () => []);
+  expect(() => new EventQueue(queue.currentTimeMs, 100_000, queue.snapshot())).toThrow("ledger");
+  const restored = new EventQueue(
+    queue.currentTimeMs,
+    100_000,
+    queue.snapshot(),
+    queue.allocatedEventIds(),
+  );
+  expect(() => restored.schedule(event("processed", 2))).toThrow("already allocated");
+  expect(() => restored.schedule(event("cancelled", 2))).toThrow("already allocated");
+});
+
+test("batch rejects descendants sorted before their causes without partial allocation", () => {
+  const queue = new EventQueue();
+  expect(() =>
+    queue.scheduleBatch(
+      [event("a-child", 0, "impact", ["z-parent"]), event("z-parent", 0)],
+      phases,
+    ),
+  ).toThrow("cause must precede");
+  expect(queue.peek()).toBeNull();
+  expect(queue.allocatedEventIds()).toEqual([]);
+});
+
+test("separate same-time scheduling is rejected; canonical batch is required", () => {
+  const queue = new EventQueue();
+  queue.schedule(event("z", 0));
+  expect(() => queue.schedule(event("a", 0))).toThrow("canonical batch");
 });
