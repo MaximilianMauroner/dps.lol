@@ -44,7 +44,8 @@ function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnaps
     throw new TypeError("fresh seeded sessions require the RNG initialization service");
   if (scenario.effective.evaluationMode.kind === "sampled-estimate")
     throw new TypeError("fresh sampled sessions require the branch initialization service");
-  const entities = new EntityRegistry(scenario.effective.entities).active();
+  const registry = new EntityRegistry(scenario.effective.entities);
+  const entities = registry.active();
   const queue = new EventQueue(0, eventLimit);
   const policy = scenario.effective.policy;
   queue.schedule({
@@ -68,7 +69,7 @@ function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnaps
     policyHash: run.policyHash,
     resolvedScenarioHash: run.resolvedScenarioHash,
     candidateInputHash: run.candidateInputHash,
-    stateRevisions: Object.fromEntries(entities.map((entity) => [entity.entityId, 1])),
+    stateRevisions: registry.stateRevisions(),
     trace: {
       schemaVersion: 1,
       traceId: run.runId,
@@ -128,7 +129,7 @@ export class IncrementalKernelSession implements EngineSession {
       this.state.queue,
       this.state.allocatedEventIds,
     );
-    this.entities = new EntityRegistry(this.state.entities);
+    this.entities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
   }
 
   snapshot(): EngineSnapshot {
@@ -251,6 +252,7 @@ export class IncrementalKernelSession implements EngineSession {
       currentTimeMs: workingQueue.currentTimeMs,
       queue: workingQueue.snapshot(),
       entities: this.entities.active(),
+      stateRevisions: this.entities.stateRevisions(),
       allocatedEventIds: workingQueue.allocatedEventIds(),
       trace: { ...this.state.trace, events: [...this.state.trace.events, ...traceEvents] },
       pendingActions: this.state.pendingActions.map((pending) =>

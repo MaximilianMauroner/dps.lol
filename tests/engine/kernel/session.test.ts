@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   assertResumeCompatible,
+  EngineSnapshotSchema,
   PolicyVisibleStateSchema,
   RunManifestSchema,
   type EngineCommand,
@@ -173,6 +174,23 @@ test("session work limit fails before the next event and retains the checkpoint"
   const before = session.snapshot();
   expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("no combat score");
   expect(session.snapshot()).toEqual(before);
+});
+
+test("session keeps entity revision counters from a validated checkpoint", () => {
+  const checkpoint = EngineSnapshotSchema.parse({
+    ...sampleSnapshot,
+    stateRevisions: { actor: 7, enemy: 3 },
+  });
+  const session = new IncrementalKernelSession(
+    resume(checkpoint),
+    (event) => [traceCommand(event)],
+    view,
+  );
+  expect(session.snapshot().stateRevisions).toEqual({ actor: 7, enemy: 3 });
+  expect(session.step({ maxEvents: 1, untilTimeMs: null }).snapshot.stateRevisions).toEqual({
+    actor: 7,
+    enemy: 3,
+  });
 });
 
 test("bounded batch matches checkpointed steps and rolls back when a later dispatch fails", () => {
