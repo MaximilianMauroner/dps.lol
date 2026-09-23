@@ -20,7 +20,13 @@ const protocol = z
     championId: id,
     itemIds: z.array(id),
     initialState: z.record(z.string(), z.number().finite()),
-    actionTimelineMs: z.array(z.number().int().nonnegative()),
+    actionTimelineMs: z
+      .array(z.number().int().nonnegative())
+      .min(1)
+      .refine(
+        (times) => times.every((time, index) => index === 0 || time >= times[index - 1]!),
+        "action timeline must be chronological",
+      ),
     targetStats: z.record(z.string(), z.number().finite()),
     repetitions: z.number().int().positive(),
   })

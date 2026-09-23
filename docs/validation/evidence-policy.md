@@ -26,7 +26,10 @@ mechanics therefore retain an observation collection and independent review task
 reports empirical readiness separately from functional implementation.
 
 Run `bun test tests/engine-harness tests/observations` for the synthetic assertion layer. The CLI
-`bun scripts/validate-mechanics.ts <record.json> <trace.json> <expectations.json>` validates a
-record and trace; it prints the evidence category and discrepancy so a synthetic result cannot
-look like an observed result. Integrators pass their engine's public P01 `Trace` to this harness;
-expected facts remain in the record and assertion inputs when the engine adapter changes.
+`bun scripts/validate-mechanics.ts <record.json> <trace.json> <expectations.json> [<patch> <client-version> <hotfix-id>]`
+validates a record and its linked trace. The target triple is mandatory for observed records.
+The command fails on unresolved discrepancies and prints the evidence category only for a passing
+record. Numeric assertions identify a specific event and effect index; count assertions identify
+a specific event. Aggregate assertions require a complete trace. Integrators pass their engine's
+public P01 `Trace` to this harness; expected facts remain in the record and assertion inputs when
+the engine adapter changes.

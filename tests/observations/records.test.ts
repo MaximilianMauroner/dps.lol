@@ -81,6 +81,18 @@ test("observation requires source identity, matched client and independent dispu
     ValidationRecordSchema.safeParse({ ...observed, disputed: true, reviewerId: "author-001" })
       .success,
   ).toBe(false);
+  expect(
+    ValidationRecordSchema.safeParse({
+      ...observed,
+      protocol: { ...observed.protocol, actionTimelineMs: [] },
+    }).success,
+  ).toBe(false);
+  expect(
+    ValidationRecordSchema.safeParse({
+      ...observed,
+      protocol: { ...observed.protocol, actionTimelineMs: [100, 0] },
+    }).success,
+  ).toBe(false);
 });
 
 test("legacy behavior remains labeled and cannot validate the ruleset", () => {
