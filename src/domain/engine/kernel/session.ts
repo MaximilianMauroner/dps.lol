@@ -18,7 +18,7 @@ import {
   type TraceEvent,
   type ValidatedResume,
 } from "../../contracts";
-import { EventQueue, type QueueCommand } from "./event-queue";
+import { DEFAULT_PHASE_ORDER, EventQueue, type QueueCommand } from "./event-queue";
 import { EntityRegistry } from "./entities";
 
 export class KernelWorkLimitError extends Error {
@@ -167,6 +167,8 @@ export class IncrementalKernelSession implements EngineSession {
       const commands = this.dispatch(event, context).map((command) =>
         EngineCommandSchema.parse(command),
       );
+      if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
+        throw new TypeError("command IDs must be unique within one dispatch");
       if (commands.some((command) => command.issuedAtMs !== event.timeMs))
         throw new TypeError("commands must be issued at the processed event time");
       const traces = commands.filter((command) => command.kind === "trace");
@@ -184,10 +186,21 @@ export class IncrementalKernelSession implements EngineSession {
       )
         throw new TypeError("trace command must preserve the processed event identity");
       const scheduled = commands.filter((command) => command.kind === "schedule-event");
-      if (scheduled.length > 1)
-        throw new TypeError("multiple scheduled descendants require a future batch adapter");
-      if (scheduled[0] && scheduled[0].event.sequence !== workingQueue.nextEventSequence)
-        throw new TypeError("scheduled command sequence must match the allocation frontier");
+      const phaseRank = new Map(DEFAULT_PHASE_ORDER.map((phase, index) => [phase, index]));
+      const canonicalScheduled = [...scheduled].sort(
+        (left, right) =>
+          left.event.timeMs - right.event.timeMs ||
+          phaseRank.get(left.event.phase)! - phaseRank.get(right.event.phase)! ||
+          (left.event.eventId < right.event.eventId
+            ? -1
+            : left.event.eventId > right.event.eventId
+              ? 1
+              : 0),
+      );
+      for (const [index, command] of canonicalScheduled.entries()) {
+        if (command.event.sequence !== workingQueue.nextEventSequence + index)
+          throw new TypeError("scheduled command sequence must match canonical allocation order");
+      }
       const queueCommands: QueueCommand[] = [];
       for (const command of commands) {
         if (command.kind === "apply-damage")

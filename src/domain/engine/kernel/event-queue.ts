@@ -13,6 +13,16 @@ export type QueueStep = Readonly<{
   currentTimeMs: number;
 }>;
 
+export const DEFAULT_PHASE_ORDER: readonly ScheduledEvent["phase"][] = [
+  "input",
+  "windup",
+  "impact",
+  "periodic",
+  "expiry",
+  "lifecycle",
+  "checkpoint",
+];
+
 /** P04 queue primitive. One integer time unit is one millisecond. */
 export class EventQueue {
   private entries: ScheduledEvent[];
@@ -194,15 +204,7 @@ export class EventQueue {
           scheduled.push(command.event);
         }
       }
-      trial.scheduleBatch(scheduled, [
-        "input",
-        "windup",
-        "impact",
-        "periodic",
-        "expiry",
-        "lifecycle",
-        "checkpoint",
-      ]);
+      trial.scheduleBatch(scheduled, DEFAULT_PHASE_ORDER);
       this.entries = trial.entries;
       this.clockMs = trial.clockMs;
       this.lastProcessedSequence = trial.lastProcessedSequence;

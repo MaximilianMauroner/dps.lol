@@ -346,3 +346,74 @@ test("a trace cannot claim damage before the damage service changes entity state
   );
   expect(session.snapshot()).toEqual(before);
 });
+
+test("timer commands allocate canonical same-time descendants regardless of command order", () => {
+  const descendants: Extract<EngineCommand, { kind: "schedule-event" }>[] = [
+    {
+      schemaVersion: 1,
+      kind: "schedule-event",
+      commandId: "schedule-expiry",
+      issuedAtMs: 1000,
+      causeEventIds: ["event-003"],
+      event: {
+        eventId: "expiry-child",
+        sequence: 5,
+        timeMs: 1500,
+        phase: "expiry",
+        kind: "buff-expiry",
+        payload: null,
+        causeEventIds: ["event-003"],
+      },
+    },
+    {
+      schemaVersion: 1,
+      kind: "schedule-event",
+      commandId: "schedule-impact",
+      issuedAtMs: 1000,
+      causeEventIds: ["event-003"],
+      event: {
+        eventId: "impact-child",
+        sequence: 4,
+        timeMs: 1500,
+        phase: "impact",
+        kind: "projectile-impact",
+        payload: null,
+        causeEventIds: ["event-003"],
+      },
+    },
+  ];
+  const dispatch = (event: (typeof sampleSnapshot.queue.entries)[number]): EngineCommand[] =>
+    event.eventId === "event-003" ? [traceCommand(event), ...descendants] : [traceCommand(event)];
+  const session = new IncrementalKernelSession(resume(), dispatch, view);
+  const first = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(first.snapshot.queue.entries.map((event) => event.eventId)).toEqual([
+    "impact-child",
+    "expiry-child",
+  ]);
+  const restored = new IncrementalKernelSession(resume(first.snapshot), dispatch, view);
+  expect(
+    restored.step({ maxEvents: 2, untilTimeMs: null }).emittedEvents.map((event) => event.eventId),
+  ).toEqual(["impact-child", "expiry-child"]);
+
+  const reversed = new IncrementalKernelSession(
+    resume(),
+    (event) => [traceCommand(event), ...[...descendants].reverse()],
+    view,
+  );
+  expect(reversed.step({ maxEvents: 1, untilTimeMs: null }).snapshot).toEqual(first.snapshot);
+
+  const invalid = new IncrementalKernelSession(
+    resume(),
+    (event) => [
+      traceCommand(event),
+      { ...descendants[0]!, event: { ...descendants[0]!.event, sequence: 4 } },
+      descendants[1]!,
+    ],
+    view,
+  );
+  const before = invalid.snapshot();
+  expect(() => invalid.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "canonical allocation order",
+  );
+  expect(invalid.snapshot()).toEqual(before);
+});
