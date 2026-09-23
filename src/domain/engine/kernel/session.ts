@@ -66,8 +66,6 @@ export class IncrementalKernelSession implements EngineSession {
 
   step(rawBudget: StepBudget): EngineStepResult {
     const budget = StepBudgetSchema.parse(rawBudget);
-    if (budget.maxEvents !== 1)
-      throw new TypeError("this session slice supports exactly one event per step");
     const traceEvents: TraceEvent[] = [];
     const emittedEvents: EngineEvent[] = [];
     const cancelledIds = new Set<string>();
@@ -148,6 +146,8 @@ export class IncrementalKernelSession implements EngineSession {
       });
       return queueCommands;
     });
+    // A batch is atomic at the session boundary. The queue and trace are only
+    // committed after the entire bounded step has passed contract validation.
     if (step.status === "event-limit") throw new KernelWorkLimitError();
     const nextState = EngineSnapshotSchema.parse({
       ...this.state,

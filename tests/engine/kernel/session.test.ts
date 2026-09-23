@@ -130,7 +130,7 @@ test("failed command dispatch leaves queue and snapshot unchanged", () => {
   const before = session.snapshot();
   expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("one trace command");
   expect(session.snapshot()).toEqual(before);
-  expect(() => session.step({ maxEvents: 2, untilTimeMs: null })).toThrow("one event");
+  expect(() => session.step({ maxEvents: 0, untilTimeMs: null })).toThrow();
 });
 
 test("session dispatch schedules a causal future event and replays it after resume", () => {
@@ -171,4 +171,49 @@ test("session work limit fails before the next event and retains the checkpoint"
   const before = session.snapshot();
   expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("no combat score");
   expect(session.snapshot()).toEqual(before);
+});
+
+test("bounded batch matches checkpointed steps and rolls back when a later dispatch fails", () => {
+  const dispatch = (event: (typeof sampleSnapshot.queue.entries)[number]): EngineCommand[] =>
+    event.eventId === "event-003"
+      ? [
+          traceCommand(event),
+          {
+            schemaVersion: 1,
+            kind: "schedule-event",
+            commandId: "schedule-004",
+            issuedAtMs: event.timeMs,
+            causeEventIds: [event.eventId],
+            event: {
+              eventId: "event-004",
+              sequence: 4,
+              timeMs: 1500,
+              phase: "periodic",
+              kind: "future-tick",
+              payload: null,
+              causeEventIds: [event.eventId],
+            },
+          },
+        ]
+      : [traceCommand(event)];
+  const batched = new IncrementalKernelSession(resume(), dispatch, view);
+  const batch = batched.step({ maxEvents: 2, untilTimeMs: null });
+  expect(batch.emittedEvents.map((event) => event.eventId)).toEqual(["event-003", "event-004"]);
+
+  const first = new IncrementalKernelSession(resume(), dispatch, view).step({
+    maxEvents: 1,
+    untilTimeMs: null,
+  });
+  const resumed = new IncrementalKernelSession(resume(first.snapshot), dispatch, view);
+  const second = resumed.step({ maxEvents: 1, untilTimeMs: null });
+  expect(batch.snapshot).toEqual(second.snapshot);
+
+  const failing = new IncrementalKernelSession(
+    resume(),
+    (event) => (event.eventId === "event-004" ? [] : dispatch(event)),
+    view,
+  );
+  const before = failing.snapshot();
+  expect(() => failing.step({ maxEvents: 2, untilTimeMs: null })).toThrow("one trace command");
+  expect(failing.snapshot()).toEqual(before);
 });
