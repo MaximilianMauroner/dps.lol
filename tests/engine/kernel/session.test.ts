@@ -233,70 +233,55 @@ test("fresh session validates run identity, seeds a chronological queue, and res
       ports: createMockPorts(),
     },
     expectedEngineHash: HASH_A,
-    initialEvents: [
-      {
-        eventId: "first-attack",
-        timeMs: 100,
-        phase: "impact" as const,
-        kind: "attack",
-        payload: null,
-        causeEventIds: [],
-      },
-      {
-        eventId: "future-tick",
-        timeMs: 1000,
-        phase: "periodic" as const,
-        kind: "w-tick",
-        payload: null,
-        causeEventIds: [],
-      },
-    ],
-    phaseOrder: [
-      "input",
-      "windup",
-      "impact",
-      "periodic",
-      "expiry",
-      "lifecycle",
-      "checkpoint",
-    ] as const,
   };
-  const session = new IncrementalKernelSession(start, (event) => [traceCommand(event)], view);
+  const dispatch = (event: (typeof sampleSnapshot.queue.entries)[number]): EngineCommand[] =>
+    event.eventId === plannedRun.runId
+      ? [
+          traceCommand(event),
+          {
+            schemaVersion: 1,
+            kind: "schedule-event",
+            commandId: "schedule-first-attack",
+            issuedAtMs: 0,
+            causeEventIds: [event.eventId],
+            event: {
+              eventId: "first-attack",
+              sequence: 2,
+              timeMs: 100,
+              phase: "impact",
+              kind: "attack",
+              payload: null,
+              causeEventIds: [event.eventId],
+            },
+          },
+        ]
+      : [traceCommand(event)];
+  const session = new IncrementalKernelSession(start, dispatch, view);
   const initial = session.snapshot();
+  expect(new IncrementalKernelSession(start, dispatch, view).snapshot()).toEqual(initial);
   expect(initial.currentTimeMs).toBe(0);
   expect(initial.entities).toEqual(sampleResolvedScenario.effective.entities);
   expect(initial.policyProgress.steps.every((step) => step.state === "not-started")).toBe(true);
-  expect(initial.queue.entries.map((event) => event.eventId)).toEqual([
-    "first-attack",
-    "future-tick",
-  ]);
-  const first = session.step({ maxEvents: 1, untilTimeMs: 100 });
-  expect(first.emittedEvents.map((event) => event.eventId)).toEqual(["first-attack"]);
-  expect(first.snapshot.queue.entries.map((event) => event.eventId)).toEqual(["future-tick"]);
+  expect(initial.queue.entries.map((event) => event.eventId)).toEqual([plannedRun.runId]);
+  const first = session.step({ maxEvents: 1, untilTimeMs: 0 });
+  expect(first.emittedEvents.map((event) => event.eventId)).toEqual([plannedRun.runId]);
+  expect(first.snapshot.queue.entries.map((event) => event.eventId)).toEqual(["first-attack"]);
   const resumed = new IncrementalKernelSession(
     assertResumeCompatible(
       { ...start.input, run: { ...plannedRun, status: "running" } },
       first.snapshot,
       HASH_A,
     ),
-    (event) => [traceCommand(event)],
+    dispatch,
     view,
   );
   expect(resumed.step({ maxEvents: 1, untilTimeMs: null }).emittedEvents[0]?.eventId).toBe(
-    "future-tick",
+    "first-attack",
   );
   expect(
     () =>
       new IncrementalKernelSession({ ...start, expectedEngineHash: "sha256:dead" }, () => [], view),
   ).toThrow();
-  expect(
-    () =>
-      new IncrementalKernelSession(
-        { ...start, initialEvents: [{ ...start.initialEvents[0]!, timeMs: 5001 }] },
-        () => [],
-        view,
-      ),
-  ).toThrow("objective horizon");
 });
 
 test("dispatch cannot place a future effect beyond the objective horizon", () => {

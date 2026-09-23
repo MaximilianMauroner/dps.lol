@@ -18,7 +18,7 @@ import {
   type TraceEvent,
   type ValidatedResume,
 } from "../../contracts";
-import { EventQueue, type EventDraft, type QueueCommand } from "./event-queue";
+import { EventQueue, type QueueCommand } from "./event-queue";
 import { EntityRegistry } from "./entities";
 
 export class KernelWorkLimitError extends Error {
@@ -36,8 +36,6 @@ export type PolicyViewAdapter = (snapshot: Readonly<EngineSnapshot>) => PolicyVi
 export type FreshKernelStart = Readonly<{
   input: EngineInput;
   expectedEngineHash: string;
-  initialEvents: readonly EventDraft[];
-  phaseOrder: readonly ScheduledEvent["phase"][];
 }>;
 
 function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnapshot {
@@ -46,14 +44,21 @@ function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnaps
     throw new TypeError("fresh seeded sessions require the RNG initialization service");
   if (scenario.effective.evaluationMode.kind === "sampled-estimate")
     throw new TypeError("fresh sampled sessions require the branch initialization service");
-  if (start.initialEvents.length === 0)
-    throw new TypeError("fresh sessions require at least one initial event");
-  if (start.initialEvents.some((event) => event.timeMs > run.objective.horizonMs))
-    throw new RangeError("initial events cannot exceed the objective horizon");
   const entities = new EntityRegistry(scenario.effective.entities).active();
   const queue = new EventQueue(0, eventLimit);
-  queue.scheduleBatch(start.initialEvents, start.phaseOrder);
   const policy = scenario.effective.policy;
+  queue.schedule({
+    eventId: run.runId,
+    timeMs: 0,
+    phase: "input",
+    kind: "policy-input",
+    payload: {
+      actorEntityId: scenario.effective.actorEntityId,
+      policyId: policy.policyId,
+      policyRevision: policy.revision,
+    },
+    causeEventIds: [],
+  });
   return EngineSnapshotSchema.parse({
     schemaVersion: 1,
     runId: run.runId,
