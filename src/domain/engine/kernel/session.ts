@@ -4,8 +4,10 @@ import {
   EngineStepResultSchema,
   PolicyVisibleStateSchema,
   StepBudgetSchema,
+  assertEngineInputCompatible,
   type EngineCommand,
   type EngineEvent,
+  type EngineInput,
   type EngineSession,
   type EngineSnapshot,
   type EngineStepResult,
@@ -16,7 +18,7 @@ import {
   type TraceEvent,
   type ValidatedResume,
 } from "../../contracts";
-import { EventQueue, type QueueCommand } from "./event-queue";
+import { EventQueue, type EventDraft, type QueueCommand } from "./event-queue";
 import { EntityRegistry } from "./entities";
 
 export class KernelWorkLimitError extends Error {
@@ -31,19 +33,90 @@ export type KernelDispatcher = (
 ) => readonly EngineCommand[];
 export type PolicyViewAdapter = (snapshot: Readonly<EngineSnapshot>) => PolicyVisibleState;
 
-/** Resume-only P01 session slice. Policy and mechanic handlers are injected shared services. */
+export type FreshKernelStart = Readonly<{
+  input: EngineInput;
+  expectedEngineHash: string;
+  initialEvents: readonly EventDraft[];
+  phaseOrder: readonly ScheduledEvent["phase"][];
+}>;
+
+function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnapshot {
+  const { scenario, run } = assertEngineInputCompatible(start.input, start.expectedEngineHash);
+  if (scenario.effective.evaluationMode.random.kind !== "deterministic")
+    throw new TypeError("fresh seeded sessions require the RNG initialization service");
+  if (scenario.effective.evaluationMode.kind === "sampled-estimate")
+    throw new TypeError("fresh sampled sessions require the branch initialization service");
+  if (start.initialEvents.length === 0)
+    throw new TypeError("fresh sessions require at least one initial event");
+  if (start.initialEvents.some((event) => event.timeMs > run.objective.horizonMs))
+    throw new RangeError("initial events cannot exceed the objective horizon");
+  const entities = new EntityRegistry(scenario.effective.entities).active();
+  const queue = new EventQueue(0, eventLimit);
+  queue.scheduleBatch(start.initialEvents, start.phaseOrder);
+  const policy = scenario.effective.policy;
+  return EngineSnapshotSchema.parse({
+    schemaVersion: 1,
+    runId: run.runId,
+    engineHash: run.engineHash,
+    rulesetHash: run.rulesetHash,
+    cohortHash: run.cohortHash,
+    policyHash: run.policyHash,
+    resolvedScenarioHash: run.resolvedScenarioHash,
+    candidateInputHash: run.candidateInputHash,
+    stateRevisions: Object.fromEntries(entities.map((entity) => [entity.entityId, 1])),
+    trace: {
+      schemaVersion: 1,
+      traceId: run.runId,
+      runId: run.runId,
+      events: [],
+      truncated: false,
+      truncationReason: null,
+    },
+    allocatedEventIds: queue.allocatedEventIds(),
+    currentTimeMs: 0,
+    queue: queue.snapshot(),
+    entities,
+    buffs: entities.flatMap((entity) => entity.buffs),
+    pendingActions: [],
+    policyProgress: {
+      policyId: policy.policyId,
+      revision: policy.revision,
+      nextStepId: policy.steps[0]?.stepId ?? null,
+      steps: policy.steps.map((step) => ({
+        stepId: step.stepId,
+        consumedRepeats: 0,
+        state: "not-started",
+      })),
+    },
+    triggerState: [],
+    rngStreams: [],
+    numericalBranches: [],
+    status: "running",
+    resumability: "resumable",
+    interruption: { state: "none", reason: null },
+    result: null,
+  });
+}
+
+/** P01 session slice. Policy and mechanic handlers are injected shared services. */
 export class IncrementalKernelSession implements EngineSession {
   private state: EngineSnapshot;
   private queue: EventQueue;
   private entities: EntityRegistry;
+  private readonly horizonMs: number;
 
   constructor(
-    resume: ValidatedResume,
+    start: ValidatedResume | FreshKernelStart,
     private readonly dispatch: KernelDispatcher,
     private readonly view: PolicyViewAdapter,
     private readonly eventLimit = 100_000,
   ) {
-    this.state = structuredClone(EngineSnapshotSchema.parse(resume.snapshot));
+    this.horizonMs = start.input.run.objective.horizonMs;
+    this.state = structuredClone(
+      "snapshot" in start
+        ? EngineSnapshotSchema.parse(start.snapshot)
+        : freshSnapshot(start, eventLimit),
+    );
     this.queue = new EventQueue(
       this.state.currentTimeMs,
       eventLimit,
@@ -76,6 +149,8 @@ export class IncrementalKernelSession implements EngineSession {
       this.queue.allocatedEventIds(),
     );
     const step = workingQueue.step(budget.maxEvents, budget.untilTimeMs, (event) => {
+      if (event.timeMs > this.horizonMs)
+        throw new RangeError("kernel event exceeds the objective horizon");
       const context: PortContext = {
         runId: this.state.runId,
         timeMs: event.timeMs,
@@ -93,6 +168,8 @@ export class IncrementalKernelSession implements EngineSession {
       if (traces.length !== 1)
         throw new TypeError("each processed event requires one trace command");
       const trace = traces[0]!.event;
+      if (trace.effects.length > 0)
+        throw new TypeError("trace effects require the corresponding mechanic service");
       if (
         trace.eventId !== event.eventId ||
         trace.sequence !== event.sequence ||
@@ -115,6 +192,8 @@ export class IncrementalKernelSession implements EngineSession {
           cancelledIds.add(command.eventId);
         }
         if (command.kind === "schedule-event") {
+          if (command.event.timeMs > this.horizonMs)
+            throw new RangeError("scheduled event exceeds the objective horizon");
           if (!command.event.causeEventIds.includes(event.eventId))
             throw new TypeError("scheduled event must cite the processed event");
           const nested = command.event;

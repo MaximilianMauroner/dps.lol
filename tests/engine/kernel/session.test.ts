@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   assertResumeCompatible,
   PolicyVisibleStateSchema,
+  RunManifestSchema,
   type EngineCommand,
   type PolicyVisibleState,
 } from "../../../src/domain/contracts";
@@ -10,6 +11,7 @@ import {
   HASH_A,
   sampleResolvedScenario,
   sampleRunningRun,
+  sampleRun,
   sampleSnapshot,
 } from "../../contracts/fixtures";
 import { IncrementalKernelSession } from "../../../src/domain/engine/kernel/session";
@@ -216,4 +218,146 @@ test("bounded batch matches checkpointed steps and rolls back when a later dispa
   const before = failing.snapshot();
   expect(() => failing.step({ maxEvents: 2, untilTimeMs: null })).toThrow("one trace command");
   expect(failing.snapshot()).toEqual(before);
+});
+
+test("fresh session validates run identity, seeds a chronological queue, and resumes", () => {
+  const plannedRun = RunManifestSchema.parse({
+    ...sampleRun,
+    status: "planned",
+    completedAt: null,
+  });
+  const start = {
+    input: {
+      scenario: sampleResolvedScenario,
+      run: plannedRun,
+      ports: createMockPorts(),
+    },
+    expectedEngineHash: HASH_A,
+    initialEvents: [
+      {
+        eventId: "first-attack",
+        timeMs: 100,
+        phase: "impact" as const,
+        kind: "attack",
+        payload: null,
+        causeEventIds: [],
+      },
+      {
+        eventId: "future-tick",
+        timeMs: 1000,
+        phase: "periodic" as const,
+        kind: "w-tick",
+        payload: null,
+        causeEventIds: [],
+      },
+    ],
+    phaseOrder: [
+      "input",
+      "windup",
+      "impact",
+      "periodic",
+      "expiry",
+      "lifecycle",
+      "checkpoint",
+    ] as const,
+  };
+  const session = new IncrementalKernelSession(start, (event) => [traceCommand(event)], view);
+  const initial = session.snapshot();
+  expect(initial.currentTimeMs).toBe(0);
+  expect(initial.entities).toEqual(sampleResolvedScenario.effective.entities);
+  expect(initial.policyProgress.steps.every((step) => step.state === "not-started")).toBe(true);
+  expect(initial.queue.entries.map((event) => event.eventId)).toEqual([
+    "first-attack",
+    "future-tick",
+  ]);
+  const first = session.step({ maxEvents: 1, untilTimeMs: 100 });
+  expect(first.emittedEvents.map((event) => event.eventId)).toEqual(["first-attack"]);
+  expect(first.snapshot.queue.entries.map((event) => event.eventId)).toEqual(["future-tick"]);
+  const resumed = new IncrementalKernelSession(
+    assertResumeCompatible(
+      { ...start.input, run: { ...plannedRun, status: "running" } },
+      first.snapshot,
+      HASH_A,
+    ),
+    (event) => [traceCommand(event)],
+    view,
+  );
+  expect(resumed.step({ maxEvents: 1, untilTimeMs: null }).emittedEvents[0]?.eventId).toBe(
+    "future-tick",
+  );
+  expect(
+    () =>
+      new IncrementalKernelSession({ ...start, expectedEngineHash: "sha256:dead" }, () => [], view),
+  ).toThrow();
+  expect(
+    () =>
+      new IncrementalKernelSession(
+        { ...start, initialEvents: [{ ...start.initialEvents[0]!, timeMs: 5001 }] },
+        () => [],
+        view,
+      ),
+  ).toThrow("objective horizon");
+});
+
+test("dispatch cannot place a future effect beyond the objective horizon", () => {
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) => [
+      traceCommand(event),
+      {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: "too-late",
+        issuedAtMs: event.timeMs,
+        causeEventIds: [event.eventId],
+        event: {
+          eventId: "outside-window",
+          sequence: 4,
+          timeMs: 5001,
+          phase: "periodic",
+          kind: "late-tick",
+          payload: null,
+          causeEventIds: [event.eventId],
+        },
+      },
+    ],
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("objective horizon");
+  expect(session.snapshot()).toEqual(before);
+});
+
+test("a trace cannot claim damage before the damage service changes entity state", () => {
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) => {
+      const command = traceCommand(event);
+      if (command.kind !== "trace") throw new Error("fixture must emit a trace");
+      return [
+        {
+          ...command,
+          event: {
+            ...command.event,
+            effects: [
+              {
+                kind: "damage",
+                sourceEntityId: "actor",
+                targetEntityId: "enemy",
+                damageType: "physical",
+                amount: 50,
+                overkill: 0,
+              },
+            ],
+          },
+        },
+      ];
+    },
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "corresponding mechanic service",
+  );
+  expect(session.snapshot()).toEqual(before);
 });
