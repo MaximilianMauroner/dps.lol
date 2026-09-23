@@ -63,6 +63,10 @@ export class EventQueue {
     return this.clockMs;
   }
 
+  get nextEventSequence(): number {
+    return this.nextSequence;
+  }
+
   allocatedEventIds(): readonly string[] {
     return [...this.allocatedIds];
   }
@@ -128,6 +132,23 @@ export class EventQueue {
     if (index < 0) return false;
     this.entries.splice(index, 1);
     return true;
+  }
+
+  replace(replacesEventId: string, draft: EventDraft): ScheduledEvent {
+    if (!this.entries.some((entry) => entry.eventId === replacesEventId))
+      throw new TypeError("replacement target is not pending");
+    const trial = new EventQueue(
+      this.clockMs,
+      this.eventLimit,
+      this.snapshot(),
+      this.allocatedEventIds(),
+    );
+    trial.cancel(replacesEventId);
+    const replacement = trial.schedule(draft);
+    this.entries = trial.entries;
+    this.nextSequence = trial.nextSequence;
+    this.allocatedIds.add(replacement.eventId);
+    return replacement;
   }
 
   peek(): ScheduledEvent | null {
