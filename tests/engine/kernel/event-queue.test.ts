@@ -1,0 +1,118 @@
+import { expect, test } from "bun:test";
+import { EventQueue, type EventDraft } from "../../../src/domain/engine/kernel/event-queue";
+
+const phases = [
+  "input",
+  "windup",
+  "impact",
+  "periodic",
+  "expiry",
+  "lifecycle",
+  "checkpoint",
+] as const;
+const event = (
+  eventId: string,
+  timeMs: number,
+  phase: EventDraft["phase"] = "impact",
+  causeEventIds: string[] = [],
+): EventDraft => ({
+  eventId,
+  timeMs,
+  phase,
+  kind: "test",
+  payload: null,
+  causeEventIds,
+});
+
+test("future damage cannot mutate current health before an earlier attack", () => {
+  const queue = new EventQueue();
+  let health = 100;
+  queue.schedule(event("w-tick", 500));
+  queue.schedule(event("attack", 200));
+  expect(health).toBe(100);
+  const dispatch = (entry: EventDraft) => {
+    health -= entry.eventId === "attack" ? 10 : 20;
+    return [];
+  };
+  expect(queue.step(1, null, dispatch).processed.map((entry) => entry.eventId)).toEqual(["attack"]);
+  expect(health).toBe(90);
+  expect(queue.step(1, null, dispatch).processed.map((entry) => entry.eventId)).toEqual(["w-tick"]);
+  expect(health).toBe(70);
+});
+
+test("batch phase and ID ties are independent of input order", () => {
+  const drafts = [event("z-impact", 10), event("b-input", 10, "input"), event("a-impact", 10)];
+  const run = (values: EventDraft[]) => {
+    const queue = new EventQueue();
+    queue.scheduleBatch(values, phases);
+    return queue
+      .step(3, null, () => [])
+      .processed.map(({ eventId, sequence }) => [eventId, sequence]);
+  };
+  expect(run(drafts)).toEqual(run([...drafts].reverse()));
+  expect(run(drafts).map(([id]) => id)).toEqual(["b-input", "a-impact", "z-impact"]);
+});
+
+test("cancel, same-time child, checkpoint, and resume preserve event order", () => {
+  const run = (pause: boolean) => {
+    let queue = new EventQueue();
+    queue.schedule(event("root", 0, "input"));
+    queue.schedule(event("cancelled", 10));
+    const dispatch = (entry: EventDraft) =>
+      entry.eventId === "root"
+        ? [
+            { kind: "cancel" as const, eventId: "cancelled" },
+            { kind: "schedule" as const, event: event("child", 0, "impact", ["root"]) },
+            { kind: "schedule" as const, event: event("projectile", 100, "impact", ["root"]) },
+          ]
+        : [];
+    const first = queue.step(pause ? 1 : 3, null, dispatch).processed;
+    if (pause)
+      queue = new EventQueue(
+        queue.currentTimeMs,
+        100_000,
+        JSON.parse(JSON.stringify(queue.snapshot())),
+      );
+    const rest = pause ? queue.step(3, null, dispatch).processed : [];
+    return [...first, ...rest].map((entry) => entry.eventId);
+  };
+  expect(run(true)).toEqual(["root", "child", "projectile"]);
+  expect(run(true)).toEqual(run(false));
+});
+
+test("self-trigger loop reaches a typed limit rather than a completed score", () => {
+  const queue = new EventQueue(0, 3);
+  queue.schedule(event("root", 0));
+  const result = queue.step(10, null, (entry) => [
+    { kind: "schedule", event: event(`child-${entry.sequence}`, 0, "impact", [entry.eventId]) },
+  ]);
+  expect(result.status).toBe("event-limit");
+  expect(result.processed).toHaveLength(3);
+  expect(queue.peek()).not.toBeNull();
+});
+
+test("rejects duplicate identity and scheduling into the past", () => {
+  const queue = new EventQueue();
+  queue.schedule(event("first", 10));
+  queue.step(1, null, () => []);
+  expect(() => queue.schedule(event("first", 11))).toThrow("already allocated");
+  expect(() => queue.schedule(event("past", 9))).toThrow("past");
+});
+
+test("invalid batch is atomic and work limit stays stable across resume", () => {
+  const queue = new EventQueue(0, 2);
+  expect(() => queue.scheduleBatch([event("valid", 0), event("invalid", -1)], phases)).toThrow();
+  expect(queue.peek()).toBeNull();
+  queue.schedule(event("root", 0));
+  queue.schedule(event("cancelled", 1));
+  queue.cancel("cancelled");
+  queue.schedule(event("later", 2));
+  const first = queue.step(1, null, () => []);
+  const restored = new EventQueue(queue.currentTimeMs, 2, queue.snapshot());
+  expect(first.processed.map((entry) => entry.eventId)).toEqual(["root"]);
+  expect(restored.step(1, null, () => []).processed.map((entry) => entry.eventId)).toEqual([
+    "later",
+  ]);
+  queue.step(1, null, () => []);
+  expect(restored.snapshot()).toEqual(queue.snapshot());
+});
