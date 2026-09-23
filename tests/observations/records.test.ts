@@ -68,6 +68,12 @@ test("observation requires source identity, matched client and independent dispu
       source: { ...observed.source, contentHash: null },
     }).success,
   ).toBe(false);
+  expect(
+    ValidationRecordSchema.safeParse({
+      ...observed,
+      source: { ...observed.source, category: "riot-artifact" },
+    }).success,
+  ).toBe(false);
   expect(ValidationRecordSchema.safeParse({ ...observed, observedPatch: "26.19" }).success).toBe(
     false,
   );

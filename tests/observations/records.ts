@@ -7,7 +7,7 @@ const source = z
     sourceId: id,
     contentHash: ContentHashSchema,
     locator: id,
-    category: z.enum(["client-capture", "riot-artifact", "community-artifact", "manual-protocol"]),
+    category: z.literal("client-capture"),
   })
   .strict();
 
