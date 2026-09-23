@@ -175,21 +175,26 @@ export class EventQueue {
       // Cancelled allocations consume budget rather than permitting more work after resume.
       if (this.entries[0]!.sequence > this.eventLimit)
         return { status: "event-limit", processed, currentTimeMs: this.clockMs };
-      const event = this.entries.shift()!;
-      this.clockMs = event.timeMs;
-      this.lastProcessedSequence = Math.max(this.lastProcessedSequence, event.sequence);
-      this.currentTimeSequence = event.sequence;
-      processed.push(structuredClone(event));
+      const trial = new EventQueue(
+        this.clockMs,
+        this.eventLimit,
+        this.snapshot(),
+        this.allocatedEventIds(),
+      );
+      const event = trial.entries.shift()!;
+      trial.clockMs = event.timeMs;
+      trial.lastProcessedSequence = Math.max(trial.lastProcessedSequence, event.sequence);
+      trial.currentTimeSequence = event.sequence;
       const scheduled: EventDraft[] = [];
       for (const command of dispatch(structuredClone(event))) {
-        if (command.kind === "cancel") this.cancel(command.eventId);
+        if (command.kind === "cancel") trial.cancel(command.eventId);
         else {
           if (!command.event.causeEventIds.includes(event.eventId))
             throw new TypeError("scheduled descendants must cite the dispatching event");
           scheduled.push(command.event);
         }
       }
-      this.scheduleBatch(scheduled, [
+      trial.scheduleBatch(scheduled, [
         "input",
         "windup",
         "impact",
@@ -198,6 +203,13 @@ export class EventQueue {
         "lifecycle",
         "checkpoint",
       ]);
+      this.entries = trial.entries;
+      this.clockMs = trial.clockMs;
+      this.lastProcessedSequence = trial.lastProcessedSequence;
+      this.currentTimeSequence = trial.currentTimeSequence;
+      this.nextSequence = trial.nextSequence;
+      for (const id of trial.allocatedIds) this.allocatedIds.add(id);
+      processed.push(structuredClone(event));
     }
     return {
       status: this.entries.length === 0 ? "empty" : "progress",
