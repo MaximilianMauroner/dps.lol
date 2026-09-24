@@ -144,7 +144,8 @@ export class IncrementalKernelSession implements EngineSession {
   }
 
   policyView(): PolicyVisibleState {
-    const value = PolicyVisibleStateSchema.parse(this.view(this.snapshot()));
+    const snapshot = this.snapshot();
+    const value = PolicyVisibleStateSchema.parse(this.view(snapshot));
     if (value.atTimeMs !== this.state.currentTimeMs)
       throw new TypeError("policy view must match the session clock");
     if (
@@ -153,6 +154,42 @@ export class IncrementalKernelSession implements EngineSession {
         JSON.stringify(this.visibleEntityIds)
     )
       throw new TypeError("policy view actor and visibility must match the verified scenario");
+    const entities = new Map(snapshot.entities.map((entity) => [entity.entityId, entity]));
+    for (const visible of value.entities) {
+      const entity = entities.get(visible.entityId);
+      if (
+        !entity ||
+        visible.team !== entity.team ||
+        visible.kind !== entity.kind ||
+        visible.alive !== entity.alive ||
+        JSON.stringify(visible.health) !== JSON.stringify(entity.health) ||
+        JSON.stringify(visible.position) !== JSON.stringify(entity.position) ||
+        visible.resources.some((resource) => {
+          const retained = entity.resources.find(
+            (entry) => entry.resourceId === resource.resourceId,
+          );
+          return (
+            !retained ||
+            resource.current !== retained.current ||
+            resource.maximum !== retained.maximum
+          );
+        }) ||
+        visible.buffs.some((buff) => {
+          const retained = entity.buffs.find((entry) => entry.buffId === buff.buffId);
+          return (
+            !retained ||
+            buff.stacks !== retained.stacks ||
+            buff.expiresAtMs !== retained.expiresAtMs
+          );
+        }) ||
+        visible.visibleAbilityIds.some(
+          (abilityId) => !entity.abilities.some((ability) => ability.abilityId === abilityId),
+        )
+      )
+        throw new TypeError(
+          `policy view entity ${visible.entityId} differs from the kernel snapshot`,
+        );
+    }
     return value;
   }
 

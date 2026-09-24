@@ -238,6 +238,40 @@ test("policy view cannot replace the verified scenario visibility with a narrowe
   );
 });
 
+test("policy view rejects stale visible entity values without changing the session", () => {
+  const mutations: Array<(value: PolicyVisibleState) => void> = [
+    (value) => {
+      value.entities[0]!.health.current -= 1;
+    },
+    (value) => {
+      value.entities[0]!.position.x += 1;
+    },
+    (value) => {
+      value.entities[0]!.resources[0]!.current -= 1;
+    },
+    (value) => {
+      value.entities[0]!.buffs[0]!.stacks += 1;
+    },
+  ];
+  for (const mutate of mutations) {
+    const staleView = (snapshot: typeof sampleSnapshot): PolicyVisibleState => {
+      const visible = structuredClone(view(snapshot));
+      mutate(visible);
+      return PolicyVisibleStateSchema.parse(visible);
+    };
+    const session = new IncrementalKernelSession(
+      resume(),
+      (event) => [traceCommand(event)],
+      staleView,
+    );
+    const before = session.snapshot();
+    expect(() => session.policyView()).toThrow("differs from the kernel snapshot");
+    expect(session.snapshot()).toEqual(before);
+  }
+  const restored = new IncrementalKernelSession(resume(), (event) => [traceCommand(event)], view);
+  expect(restored.policyView().entities[0]?.health).toEqual(sampleSnapshot.entities[0]?.health);
+});
+
 test("failed command dispatch leaves queue and snapshot unchanged", () => {
   const session = new IncrementalKernelSession(
     resume(),
