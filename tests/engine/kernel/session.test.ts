@@ -6,6 +6,7 @@ import {
   RunManifestSchema,
   type EngineCommand,
   type PolicyVisibleState,
+  type ScheduledEvent,
 } from "../../../src/domain/contracts";
 import { createMockPorts } from "../../contracts/mock-ports";
 import {
@@ -87,6 +88,47 @@ function traceCommand(event: (typeof sampleSnapshot.queue.entries)[number]): Eng
       stateDigest: null,
     },
   };
+}
+
+function lifecycleTrace(
+  event: ScheduledEvent,
+  entityId: string,
+  transition: "death" | "revive" | "transform",
+): EngineCommand {
+  const base = traceCommand(event);
+  if (base.kind !== "trace") throw new Error("fixture must produce a trace");
+  return {
+    ...base,
+    event: {
+      ...base.event,
+      kind: "lifecycle",
+      targetEntityIds: [entityId],
+      effects: [{ kind: "lifecycle", entityId, transition }],
+    },
+  };
+}
+
+function deathCheckpoint() {
+  const enemy = sampleSnapshot.entities.find((entity) => entity.entityId === "enemy")!;
+  const deadEnemy = {
+    ...enemy,
+    alive: false,
+    health: { ...enemy.health, current: 0, shield: 0 },
+  };
+  return EngineSnapshotSchema.parse({
+    ...sampleSnapshot,
+    queue: {
+      ...sampleSnapshot.queue,
+      entries: [
+        {
+          ...sampleSnapshot.queue.entries[0]!,
+          phase: "lifecycle",
+          kind: "lifecycle-transition",
+          payload: { entityId: "enemy", transition: "death", replacement: deadEnemy },
+        },
+      ],
+    },
+  });
 }
 
 test("P01 session processes a future tick only at its timestamp and retains a resumable checkpoint", () => {
@@ -434,4 +476,143 @@ test("timer commands allocate canonical same-time descendants regardless of comm
     "canonical allocation order",
   );
   expect(invalid.snapshot()).toEqual(before);
+});
+
+test("scheduled death waits for its timestamp and revival survives checkpoint resume", () => {
+  const checkpoint = deathCheckpoint();
+  const dispatch = (event: ScheduledEvent): EngineCommand[] => {
+    if (event.kind !== "lifecycle-transition") return [traceCommand(event)];
+    const transition = (event.payload as { transition: "death" | "revive" }).transition;
+    const trace = lifecycleTrace(event, "enemy", transition);
+    if (transition === "revive") return [trace];
+    const enemy = checkpoint.entities.find((entity) => entity.entityId === "enemy")!;
+    return [
+      trace,
+      {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: "schedule-revive",
+        issuedAtMs: event.timeMs,
+        causeEventIds: [event.eventId],
+        event: {
+          eventId: "event-004",
+          sequence: 4,
+          timeMs: 1500,
+          phase: "lifecycle",
+          kind: "lifecycle-transition",
+          payload: {
+            entityId: "enemy",
+            transition: "revive",
+            replacement: { ...enemy, health: { ...enemy.health, current: 100 } },
+          },
+          causeEventIds: [event.eventId],
+        },
+      },
+    ];
+  };
+  const session = new IncrementalKernelSession(resume(checkpoint), dispatch, view);
+  const before = session.step({ maxEvents: 1, untilTimeMs: 999 });
+  expect(before.snapshot.entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(true);
+  const death = session.step({ maxEvents: 1, untilTimeMs: 1000 });
+  expect(death.snapshot.entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(false);
+  expect(death.snapshot.stateRevisions.enemy).toBe(2);
+  expect(death.snapshot.queue.entries[0]?.eventId).toBe("event-004");
+  const restored = new IncrementalKernelSession(resume(death.snapshot), dispatch, view);
+  expect(restored.policyView().entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(
+    false,
+  );
+  const revival = restored.step({ maxEvents: 1, untilTimeMs: 1500 });
+  expect(
+    revival.snapshot.entities.find((entity) => entity.entityId === "enemy")?.health.current,
+  ).toBe(100);
+  expect(revival.snapshot.stateRevisions.enemy).toBe(3);
+  expect(revival.snapshot.trace.events.at(-1)?.effects).toEqual([
+    { kind: "lifecycle", entityId: "enemy", transition: "revive" },
+  ]);
+});
+
+test("invalid lifecycle trace or replacement rolls back the whole session step", () => {
+  const checkpoint = deathCheckpoint();
+  const wrongTrace = new IncrementalKernelSession(
+    resume(checkpoint),
+    (event) => [traceCommand(event)],
+    view,
+  );
+  const initial = wrongTrace.snapshot();
+  expect(() => wrongTrace.step({ maxEvents: 1, untilTimeMs: null })).toThrow("lifecycle trace");
+  expect(wrongTrace.snapshot()).toEqual(initial);
+
+  const bad = EngineSnapshotSchema.parse({
+    ...checkpoint,
+    queue: {
+      ...checkpoint.queue,
+      entries: checkpoint.queue.entries.map((event) => ({
+        ...event,
+        payload: {
+          entityId: "enemy",
+          transition: "death",
+          replacement: checkpoint.entities.find((entity) => entity.entityId === "enemy"),
+        },
+      })),
+    },
+  });
+  const invalid = new IncrementalKernelSession(
+    resume(bad),
+    (event) => [lifecycleTrace(event, "enemy", "death")],
+    view,
+  );
+  const before = invalid.snapshot();
+  expect(() => invalid.step({ maxEvents: 1, untilTimeMs: null })).toThrow("dead entity");
+  expect(invalid.snapshot()).toEqual(before);
+
+  const wrongPhase = EngineSnapshotSchema.parse({
+    ...checkpoint,
+    queue: {
+      ...checkpoint.queue,
+      entries: checkpoint.queue.entries.map((event) => ({ ...event, phase: "impact" })),
+    },
+  });
+  const phaseSession = new IncrementalKernelSession(
+    resume(wrongPhase),
+    (event) => [lifecycleTrace(event, "enemy", "death")],
+    view,
+  );
+  const phaseBefore = phaseSession.snapshot();
+  expect(() => phaseSession.step({ maxEvents: 1, untilTimeMs: null })).toThrow("lifecycle phase");
+  expect(phaseSession.snapshot()).toEqual(phaseBefore);
+});
+
+test("same-time lifecycle descendant failure rolls back an earlier death in the batch", () => {
+  const checkpoint = deathCheckpoint();
+  const enemy = checkpoint.entities.find((entity) => entity.entityId === "enemy")!;
+  const dispatch = (event: ScheduledEvent): EngineCommand[] => {
+    if (event.eventId === "event-004") return [traceCommand(event)];
+    return [
+      lifecycleTrace(event, "enemy", "death"),
+      {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: "same-time-revive",
+        issuedAtMs: event.timeMs,
+        causeEventIds: [event.eventId],
+        event: {
+          eventId: "event-004",
+          sequence: 4,
+          timeMs: event.timeMs,
+          phase: "lifecycle",
+          kind: "lifecycle-transition",
+          payload: { entityId: "enemy", transition: "revive", replacement: enemy },
+          causeEventIds: [event.eventId],
+        },
+      },
+    ];
+  };
+  const session = new IncrementalKernelSession(resume(checkpoint), dispatch, view);
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 2, untilTimeMs: null })).toThrow("lifecycle trace");
+  expect(session.snapshot()).toEqual(before);
+  const first = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(first.snapshot.entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(false);
+  expect(first.snapshot.queue.entries[0]?.timeMs).toBe(1000);
+  expect(first.snapshot.queue.entries[0]?.sequence).toBe(4);
 });

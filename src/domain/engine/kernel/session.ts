@@ -20,6 +20,7 @@ import {
 } from "../../contracts";
 import { DEFAULT_PHASE_ORDER, EventQueue, type QueueCommand } from "./event-queue";
 import { EntityRegistry } from "./entities";
+import { lifecycleTransitionFromEvent } from "./lifecycle-event";
 
 export class KernelWorkLimitError extends Error {
   constructor() {
@@ -148,6 +149,7 @@ export class IncrementalKernelSession implements EngineSession {
     const traceEvents: TraceEvent[] = [];
     const emittedEvents: EngineEvent[] = [];
     const cancelledIds = new Set<string>();
+    const workingEntities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
     const workingQueue = new EventQueue(
       this.state.currentTimeMs,
       this.eventLimit,
@@ -176,8 +178,20 @@ export class IncrementalKernelSession implements EngineSession {
       if (traces.length !== 1)
         throw new TypeError("each processed event requires one trace command");
       const trace = traces[0]!.event;
-      if (trace.effects.length > 0)
-        throw new TypeError("trace effects require the corresponding mechanic service");
+      const lifecycle = lifecycleTransitionFromEvent(event);
+      if (lifecycle === null) {
+        if (trace.effects.length > 0)
+          throw new TypeError("trace effects require the corresponding mechanic service");
+      } else if (
+        trace.kind !== "lifecycle" ||
+        trace.effects.length !== 1 ||
+        trace.effects[0]?.kind !== "lifecycle" ||
+        trace.effects[0].entityId !== lifecycle.entityId ||
+        trace.effects[0].transition !== lifecycle.transition ||
+        !trace.targetEntityIds.includes(lifecycle.entityId)
+      ) {
+        throw new TypeError("lifecycle trace must match the scheduled transition");
+      }
       if (
         trace.eventId !== event.eventId ||
         trace.sequence !== event.sequence ||
@@ -229,6 +243,7 @@ export class IncrementalKernelSession implements EngineSession {
           });
         }
       }
+      if (lifecycle !== null) workingEntities.applyInPlace(lifecycle);
       traceEvents.push(structuredClone(trace));
       emittedEvents.push({
         schemaVersion: 1,
@@ -251,8 +266,9 @@ export class IncrementalKernelSession implements EngineSession {
       ...this.state,
       currentTimeMs: workingQueue.currentTimeMs,
       queue: workingQueue.snapshot(),
-      entities: this.entities.active(),
-      stateRevisions: this.entities.stateRevisions(),
+      entities: workingEntities.active(),
+      stateRevisions: workingEntities.stateRevisions(),
+      buffs: workingEntities.active().flatMap((entity) => entity.buffs),
       allocatedEventIds: workingQueue.allocatedEventIds(),
       trace: { ...this.state.trace, events: [...this.state.trace.events, ...traceEvents] },
       pendingActions: this.state.pendingActions.map((pending) =>
@@ -286,6 +302,7 @@ export class IncrementalKernelSession implements EngineSession {
       reason: nextState.interruption.reason,
     });
     this.queue = workingQueue;
+    this.entities = workingEntities;
     this.state = nextState;
     return result;
   }
