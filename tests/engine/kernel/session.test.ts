@@ -150,6 +150,35 @@ test("P01 session processes a future tick only at its timestamp and retains a re
   expect(restored.snapshot()).toEqual(after.snapshot);
 });
 
+test("policy view cannot replace the verified scenario visibility with a narrower schema-valid view", () => {
+  const restrictedView = (snapshot: typeof sampleSnapshot): PolicyVisibleState => {
+    const full = view(snapshot);
+    return PolicyVisibleStateSchema.parse({
+      ...full,
+      visibility: { ...full.visibility, visibleEntityIds: ["actor"] },
+      entities: full.entities.filter((entity) => entity.entityId === "actor"),
+      readiness: full.readiness.filter((record) => record.entityId === "actor"),
+    });
+  };
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) => [traceCommand(event)],
+    restrictedView,
+  );
+  const before = session.snapshot();
+  expect(() => session.policyView()).toThrow("must match the verified scenario");
+  expect(session.snapshot()).toEqual(before);
+
+  const restored = new IncrementalKernelSession(
+    resume(before),
+    (event) => [traceCommand(event)],
+    view,
+  );
+  expect(restored.policyView().visibility.visibleEntityIds).toEqual(
+    sampleResolvedScenario.effective.policy.visibility.visibleEntityIds,
+  );
+});
+
 test("failed command dispatch leaves queue and snapshot unchanged", () => {
   const session = new IncrementalKernelSession(
     resume(),

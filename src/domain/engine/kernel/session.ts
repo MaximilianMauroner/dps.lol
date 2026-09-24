@@ -111,6 +111,8 @@ export class IncrementalKernelSession implements EngineSession {
   private queue: EventQueue;
   private entities: EntityRegistry;
   private readonly horizonMs: number;
+  private readonly actorEntityId: string;
+  private readonly visibleEntityIds: readonly string[];
 
   constructor(
     start: ValidatedResume | FreshKernelStart,
@@ -119,6 +121,10 @@ export class IncrementalKernelSession implements EngineSession {
     private readonly eventLimit = 100_000,
   ) {
     this.horizonMs = start.input.run.objective.horizonMs;
+    this.actorEntityId = start.input.scenario.effective.actorEntityId;
+    this.visibleEntityIds = [
+      ...start.input.scenario.effective.policy.visibility.visibleEntityIds,
+    ].sort();
     this.state = structuredClone(
       "snapshot" in start
         ? EngineSnapshotSchema.parse(start.snapshot)
@@ -141,6 +147,12 @@ export class IncrementalKernelSession implements EngineSession {
     const value = PolicyVisibleStateSchema.parse(this.view(this.snapshot()));
     if (value.atTimeMs !== this.state.currentTimeMs)
       throw new TypeError("policy view must match the session clock");
+    if (
+      value.actorEntityId !== this.actorEntityId ||
+      JSON.stringify([...value.visibility.visibleEntityIds].sort()) !==
+        JSON.stringify(this.visibleEntityIds)
+    )
+      throw new TypeError("policy view actor and visibility must match the verified scenario");
     return value;
   }
 
