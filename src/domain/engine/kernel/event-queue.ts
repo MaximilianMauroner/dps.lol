@@ -10,6 +10,7 @@ export type QueueCommand =
 export type QueueStep = Readonly<{
   status: "progress" | "empty" | "event-limit";
   processed: readonly ScheduledEvent[];
+  cancelledEventIds: readonly string[];
   currentTimeMs: number;
 }>;
 
@@ -188,6 +189,7 @@ export class EventQueue {
     if (untilTimeMs !== null && (!Number.isSafeInteger(untilTimeMs) || untilTimeMs < this.clockMs))
       throw new RangeError("step time bound cannot precede the current time");
     const processed: ScheduledEvent[] = [];
+    const cancelledEventIds: string[] = [];
     while (
       processed.length < maxEvents &&
       this.entries.length > 0 &&
@@ -196,7 +198,7 @@ export class EventQueue {
       // The persisted allocation frontier is a conservative, resume-stable work limit.
       // Cancelled allocations consume budget rather than permitting more work after resume.
       if (this.entries[0]!.sequence > this.eventLimit)
-        return { status: "event-limit", processed, currentTimeMs: this.clockMs };
+        return { status: "event-limit", processed, cancelledEventIds, currentTimeMs: this.clockMs };
       const trial = new EventQueue(
         this.clockMs,
         this.eventLimit,
@@ -208,9 +210,11 @@ export class EventQueue {
       trial.lastProcessedSequence = Math.max(trial.lastProcessedSequence, event.sequence);
       trial.currentTimeSequence = event.sequence;
       const scheduled: EventDraft[] = [];
+      const cancelledInEvent: string[] = [];
       for (const command of dispatch(structuredClone(event))) {
-        if (command.kind === "cancel") trial.cancel(command.eventId);
-        else {
+        if (command.kind === "cancel") {
+          if (trial.cancel(command.eventId)) cancelledInEvent.push(command.eventId);
+        } else {
           if (!command.event.causeEventIds.includes(event.eventId))
             throw new TypeError("scheduled descendants must cite the dispatching event");
           scheduled.push(command.event);
@@ -223,11 +227,13 @@ export class EventQueue {
       this.currentTimeSequence = trial.currentTimeSequence;
       this.nextSequence = trial.nextSequence;
       for (const id of trial.allocatedIds) this.allocatedIds.add(id);
+      cancelledEventIds.push(...cancelledInEvent);
       processed.push(structuredClone(event));
     }
     return {
       status: this.entries.length === 0 ? "empty" : "progress",
       processed,
+      cancelledEventIds,
       currentTimeMs: this.clockMs,
     };
   }

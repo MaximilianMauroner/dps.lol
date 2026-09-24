@@ -150,6 +150,65 @@ test("P01 session processes a future tick only at its timestamp and retains a re
   expect(restored.snapshot()).toEqual(after.snapshot);
 });
 
+test("pending action follows actual continuation execution or successful cancellation", () => {
+  const alreadyExecuted = new IncrementalKernelSession(
+    resume(),
+    (event) => [
+      traceCommand(event),
+      {
+        schemaVersion: 1,
+        kind: "cancel-event",
+        commandId: "cancel-current",
+        issuedAtMs: event.timeMs,
+        causeEventIds: [event.eventId],
+        eventId: event.eventId,
+      },
+    ],
+    view,
+  );
+  const executed = alreadyExecuted.step({ maxEvents: 1, untilTimeMs: null });
+  expect(executed.snapshot.pendingActions[0]?.state).toBe("complete");
+  expect(executed.emittedEvents.map((event) => event.eventId)).toEqual(["event-003"]);
+
+  const cancellation = EngineSnapshotSchema.parse({
+    ...sampleSnapshot,
+    allocatedEventIds: [...sampleSnapshot.allocatedEventIds, "cancel-root"],
+    queue: {
+      ...sampleSnapshot.queue,
+      nextSequence: 5,
+      entries: [
+        {
+          eventId: "cancel-root",
+          sequence: 4,
+          timeMs: 200,
+          phase: "input",
+          kind: "cancel-continuation",
+          payload: null,
+          causeEventIds: ["event-002"],
+        },
+        ...sampleSnapshot.queue.entries,
+      ],
+    },
+  });
+  const dispatch = (event: ScheduledEvent): EngineCommand[] => [
+    traceCommand(event),
+    {
+      schemaVersion: 1,
+      kind: "cancel-event",
+      commandId: "cancel-pending",
+      issuedAtMs: event.timeMs,
+      causeEventIds: [event.eventId],
+      eventId: "event-003",
+    },
+  ];
+  const session = new IncrementalKernelSession(resume(cancellation), dispatch, view);
+  const cancelled = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(cancelled.snapshot.pendingActions[0]?.state).toBe("interrupted");
+  expect(cancelled.snapshot.queue.entries).toEqual([]);
+  const restored = new IncrementalKernelSession(resume(cancelled.snapshot), dispatch, view);
+  expect(restored.snapshot()).toEqual(cancelled.snapshot);
+});
+
 test("policy view cannot replace the verified scenario visibility with a narrower schema-valid view", () => {
   const restrictedView = (snapshot: typeof sampleSnapshot): PolicyVisibleState => {
     const full = view(snapshot);

@@ -160,7 +160,6 @@ export class IncrementalKernelSession implements EngineSession {
     const budget = StepBudgetSchema.parse(rawBudget);
     const traceEvents: TraceEvent[] = [];
     const emittedEvents: EngineEvent[] = [];
-    const cancelledIds = new Set<string>();
     const workingEntities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
     const workingQueue = new EventQueue(
       this.state.currentTimeMs,
@@ -251,7 +250,6 @@ export class IncrementalKernelSession implements EngineSession {
           throw new TypeError("damage command requires the P05 damage service");
         if (command.kind === "cancel-event") {
           queueCommands.push({ kind: "cancel", eventId: command.eventId });
-          cancelledIds.add(command.eventId);
         }
         if (command.kind === "schedule-event") {
           if (command.event.timeMs > this.horizonMs)
@@ -291,6 +289,7 @@ export class IncrementalKernelSession implements EngineSession {
     // A batch is atomic at the session boundary. The queue and trace are only
     // committed after the entire bounded step has passed contract validation.
     if (step.status === "event-limit") throw new KernelWorkLimitError();
+    const cancelledIds = new Set(step.cancelledEventIds);
     const nextState = EngineSnapshotSchema.parse({
       ...this.state,
       currentTimeMs: workingQueue.currentTimeMs,

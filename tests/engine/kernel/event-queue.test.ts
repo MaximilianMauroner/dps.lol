@@ -81,6 +81,28 @@ test("cancel, same-time child, checkpoint, and resume preserve event order", () 
   expect(run(true)).toEqual(run(false));
 });
 
+test("step reports only cancellations that removed pending events", () => {
+  const queue = new EventQueue();
+  queue.schedule(event("root", 0));
+  queue.schedule(event("pending", 10));
+  const step = queue.step(1, null, () => [
+    { kind: "cancel", eventId: "root" },
+    { kind: "cancel", eventId: "missing" },
+    { kind: "cancel", eventId: "pending" },
+    { kind: "cancel", eventId: "pending" },
+  ]);
+  expect(step.cancelledEventIds).toEqual(["pending"]);
+  expect(step.processed.map((entry) => entry.eventId)).toEqual(["root"]);
+  expect(queue.snapshot().entries).toEqual([]);
+  const restored = new EventQueue(
+    queue.currentTimeMs,
+    100_000,
+    queue.snapshot(),
+    queue.allocatedEventIds(),
+  );
+  expect(restored.allocatedEventIds()).toEqual(["root", "pending"]);
+});
+
 test("self-trigger loop reaches a typed limit rather than a completed score", () => {
   const queue = new EventQueue(0, 3);
   queue.schedule(event("root", 0));
