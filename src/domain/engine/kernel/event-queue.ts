@@ -151,10 +151,23 @@ export class EventQueue {
   }
 
   cancel(eventId: string): boolean {
-    const index = this.entries.findIndex((event) => event.eventId === eventId);
-    if (index < 0) return false;
-    this.entries.splice(index, 1);
-    return true;
+    return this.cancelBatch([eventId]).length > 0;
+  }
+
+  private cancelBatch(eventIds: readonly string[]): readonly string[] {
+    const requested = new Set(eventIds);
+    const cancelled = this.entries.filter((event) => requested.has(event.eventId));
+    const cancelledIds = new Set(cancelled.map((event) => event.eventId));
+    if (
+      this.entries.some(
+        (event) =>
+          !cancelledIds.has(event.eventId) &&
+          event.causeEventIds.some((cause) => cancelledIds.has(cause)),
+      )
+    )
+      throw new TypeError("cannot cancel a pending cause while its descendant remains queued");
+    this.entries = this.entries.filter((event) => !cancelledIds.has(event.eventId));
+    return cancelled.map((event) => event.eventId);
   }
 
   replace(replacesEventId: string, draft: EventDraft): ScheduledEvent {
@@ -210,16 +223,20 @@ export class EventQueue {
       trial.lastProcessedSequence = Math.max(trial.lastProcessedSequence, event.sequence);
       trial.currentTimeSequence = event.sequence;
       const scheduled: EventDraft[] = [];
-      const cancelledInEvent: string[] = [];
+      const cancellations: string[] = [];
       for (const command of dispatch(structuredClone(event))) {
-        if (command.kind === "cancel") {
-          if (trial.cancel(command.eventId)) cancelledInEvent.push(command.eventId);
-        } else {
+        if (command.kind === "cancel") cancellations.push(command.eventId);
+        else {
           if (!command.event.causeEventIds.includes(event.eventId))
             throw new TypeError("scheduled descendants must cite the dispatching event");
           scheduled.push(command.event);
         }
       }
+      const cancelledInEvent = trial.cancelBatch(cancellations);
+      if (
+        scheduled.some((draft) => draft.causeEventIds.some((id) => cancelledInEvent.includes(id)))
+      )
+        throw new TypeError("scheduled descendant cannot cite a cancelled event");
       trial.scheduleBatch(scheduled, DEFAULT_PHASE_ORDER);
       this.entries = trial.entries;
       this.clockMs = trial.clockMs;

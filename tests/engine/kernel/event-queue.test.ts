@@ -103,6 +103,65 @@ test("step reports only cancellations that removed pending events", () => {
   expect(restored.allocatedEventIds()).toEqual(["root", "pending"]);
 });
 
+test("pending causes cannot be cancelled or replaced while descendants remain", () => {
+  const queue = new EventQueue();
+  queue.schedule(event("parent", 10));
+  queue.schedule(event("child", 20, "impact", ["parent"]));
+  const before = queue.snapshot();
+  expect(() => queue.cancel("parent")).toThrow("descendant remains queued");
+  expect(() => queue.replace("parent", event("replacement", 10))).toThrow(
+    "descendant remains queued",
+  );
+  expect(queue.snapshot()).toEqual(before);
+  expect(queue.allocatedEventIds()).toEqual(["parent", "child"]);
+  expect(queue.cancel("child")).toBe(true);
+  expect(queue.cancel("parent")).toBe(true);
+});
+
+test("one dispatch cancels a pending causal group regardless of command order", () => {
+  const run = (reverse: boolean) => {
+    const queue = new EventQueue();
+    queue.schedule(event("root", 0, "input"));
+    queue.schedule(event("parent", 10, "impact", ["root"]));
+    queue.schedule(event("child", 20, "impact", ["parent", "root"]));
+    const commands = [
+      { kind: "cancel" as const, eventId: "parent" },
+      { kind: "cancel" as const, eventId: "child" },
+    ];
+    const result = queue.step(1, null, () => (reverse ? [...commands].reverse() : commands));
+    const restored = new EventQueue(
+      queue.currentTimeMs,
+      100_000,
+      queue.snapshot(),
+      queue.allocatedEventIds(),
+    );
+    return { cancelled: result.cancelledEventIds, snapshot: restored.snapshot() };
+  };
+  expect(run(false)).toEqual(run(true));
+  expect(run(false).cancelled).toEqual(["parent", "child"]);
+});
+
+test("failed partial causal cancellation and new child of cancelled cause leave queue unchanged", () => {
+  const queue = new EventQueue();
+  queue.schedule(event("root", 0, "input"));
+  queue.schedule(event("parent", 10, "impact", ["root"]));
+  queue.schedule(event("child", 20, "impact", ["parent"]));
+  const before = queue.snapshot();
+  expect(() => queue.step(1, null, () => [{ kind: "cancel", eventId: "parent" }])).toThrow(
+    "descendant remains queued",
+  );
+  expect(queue.snapshot()).toEqual(before);
+  expect(() =>
+    queue.step(1, null, () => [
+      { kind: "cancel", eventId: "child" },
+      { kind: "cancel", eventId: "parent" },
+      { kind: "schedule", event: event("replacement-child", 30, "impact", ["root", "parent"]) },
+    ]),
+  ).toThrow("cite a cancelled event");
+  expect(queue.snapshot()).toEqual(before);
+  expect(queue.allocatedEventIds()).toEqual(["root", "parent", "child"]);
+});
+
 test("self-trigger loop reaches a typed limit rather than a completed score", () => {
   const queue = new EventQueue(0, 3);
   queue.schedule(event("root", 0));
