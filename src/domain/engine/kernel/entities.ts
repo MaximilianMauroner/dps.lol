@@ -64,6 +64,15 @@ export class EntityRegistry {
     );
   }
 
+  firstExpiredBuffAt(timeMs: number): string | null {
+    for (const entity of this.entities.values()) {
+      for (const buff of entity.buffs) {
+        if (buff.expiresAtMs !== null && buff.expiresAtMs < timeMs) return buff.buffId;
+      }
+    }
+    return null;
+  }
+
   spawn(entity: EntityState): void {
     const parsed = EntityStateSchema.parse(entity);
     if (this.entities.has(parsed.entityId) || this.retiredIds.has(parsed.entityId))

@@ -373,6 +373,89 @@ test("dispatch cannot place a future effect beyond the objective horizon", () =>
   expect(session.snapshot()).toEqual(before);
 });
 
+test("expired buffs stop time advancement before dispatch without changing the checkpoint", () => {
+  const dispatched: string[] = [];
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) => {
+      dispatched.push(event.eventId);
+      return event.eventId === "event-003"
+        ? [
+            traceCommand(event),
+            {
+              schemaVersion: 1,
+              kind: "schedule-event",
+              commandId: "schedule-after-expiry",
+              issuedAtMs: event.timeMs,
+              causeEventIds: [event.eventId],
+              event: {
+                eventId: "event-004",
+                sequence: 4,
+                timeMs: 3001,
+                phase: "checkpoint",
+                kind: "later-checkpoint",
+                payload: null,
+                causeEventIds: [event.eventId],
+              },
+            },
+          ]
+        : [traceCommand(event)];
+    },
+    view,
+  );
+  const first = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(first.snapshot.currentTimeMs).toBe(1000);
+  const checkpoint = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "expiry service must resolve it first",
+  );
+  expect(dispatched).toEqual(["event-003"]);
+  expect(session.snapshot()).toEqual(checkpoint);
+  const restored = new IncrementalKernelSession(
+    resume(checkpoint),
+    () => {
+      throw new Error("expired event must never dispatch after resume");
+    },
+    view,
+  );
+  expect(() => restored.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "expiry service must resolve it first",
+  );
+});
+
+test("a buff remains valid at its exact expiry timestamp under P01 snapshot rules", () => {
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) =>
+      event.eventId === "event-003"
+        ? [
+            traceCommand(event),
+            {
+              schemaVersion: 1,
+              kind: "schedule-event",
+              commandId: "schedule-expiry-boundary",
+              issuedAtMs: event.timeMs,
+              causeEventIds: [event.eventId],
+              event: {
+                eventId: "event-004",
+                sequence: 4,
+                timeMs: 3000,
+                phase: "expiry",
+                kind: "expiry-boundary",
+                payload: null,
+                causeEventIds: [event.eventId],
+              },
+            },
+          ]
+        : [traceCommand(event)],
+    view,
+  );
+  const step = session.step({ maxEvents: 2, untilTimeMs: null });
+  expect(step.snapshot.currentTimeMs).toBe(3000);
+  expect(step.emittedEvents.map((event) => event.eventId)).toEqual(["event-003", "event-004"]);
+  expect(step.snapshot.buffs[0]?.expiresAtMs).toBe(3000);
+});
+
 test("a trace cannot claim damage before the damage service changes entity state", () => {
   const session = new IncrementalKernelSession(
     resume(),

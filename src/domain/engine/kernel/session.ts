@@ -159,6 +159,11 @@ export class IncrementalKernelSession implements EngineSession {
     const step = workingQueue.step(budget.maxEvents, budget.untilTimeMs, (event) => {
       if (event.timeMs > this.horizonMs)
         throw new RangeError("kernel event exceeds the objective horizon");
+      const expiredBuffId = workingEntities.firstExpiredBuffAt(event.timeMs);
+      if (expiredBuffId !== null)
+        throw new TypeError(
+          `buff ${expiredBuffId} expired before event ${event.eventId}; expiry service must resolve it first`,
+        );
       const context: PortContext = {
         runId: this.state.runId,
         timeMs: event.timeMs,
