@@ -178,6 +178,51 @@ test("failed command dispatch leaves queue and snapshot unchanged", () => {
   expect(() => session.step({ maxEvents: 0, untilTimeMs: null })).toThrow();
 });
 
+test("service dispatch rejects missing, unrelated, and stripped causal provenance atomically", () => {
+  const invalidCauses = [[], ["event-003", "unrelated"]];
+  for (const causeEventIds of invalidCauses) {
+    const session = new IncrementalKernelSession(
+      resume(),
+      (event) => [
+        traceCommand(event),
+        {
+          schemaVersion: 1,
+          kind: "cancel-event",
+          commandId: "cancel-future",
+          issuedAtMs: event.timeMs,
+          causeEventIds,
+          eventId: "future-event",
+        },
+      ],
+      view,
+    );
+    const before = session.snapshot();
+    expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+      "service commands must cite only the processed event and its causes",
+    );
+    expect(session.snapshot()).toEqual(before);
+  }
+
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) => [{ ...traceCommand(event), causeEventIds: [] }],
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "trace command causes must match the processed event",
+  );
+  expect(session.snapshot()).toEqual(before);
+  const restored = new IncrementalKernelSession(
+    resume(before),
+    (event) => [traceCommand(event)],
+    view,
+  );
+  expect(restored.step({ maxEvents: 1, untilTimeMs: null }).emittedEvents[0]?.eventId).toBe(
+    "event-003",
+  );
+});
+
 test("session dispatch schedules a causal future event and replays it after resume", () => {
   const dispatch = (event: (typeof sampleSnapshot.queue.entries)[number]): EngineCommand[] =>
     event.eventId === "event-003"

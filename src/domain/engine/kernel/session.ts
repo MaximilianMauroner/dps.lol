@@ -182,6 +182,18 @@ export class IncrementalKernelSession implements EngineSession {
       const traces = commands.filter((command) => command.kind === "trace");
       if (traces.length !== 1)
         throw new TypeError("each processed event requires one trace command");
+      const allowedCauses = new Set([...event.causeEventIds, event.eventId]);
+      for (const command of commands) {
+        if (command.kind === "trace") {
+          if (JSON.stringify(command.causeEventIds) !== JSON.stringify(event.causeEventIds))
+            throw new TypeError("trace command causes must match the processed event");
+        } else if (
+          !command.causeEventIds.includes(event.eventId) ||
+          command.causeEventIds.some((cause) => !allowedCauses.has(cause))
+        ) {
+          throw new TypeError("service commands must cite only the processed event and its causes");
+        }
+      }
       const trace = traces[0]!.event;
       const lifecycle = lifecycleTransitionFromEvent(event);
       if (lifecycle === null) {
