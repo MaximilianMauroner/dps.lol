@@ -150,6 +150,36 @@ test("batch rejects descendants sorted before their causes without partial alloc
   expect(queue.allocatedEventIds()).toEqual([]);
 });
 
+test("queue rejects unknown and future pending causes before allocating a descendant", () => {
+  const queue = new EventQueue();
+  expect(() => queue.schedule(event("orphan", 10, "impact", ["missing"]))).toThrow(
+    "cause must already be allocated",
+  );
+  expect(() =>
+    queue.scheduleBatch(
+      [event("root", 0, "input"), event("orphan", 10, "impact", ["missing"])],
+      phases,
+    ),
+  ).toThrow("cause must already be allocated");
+  expect(queue.snapshot().entries).toEqual([]);
+  expect(queue.allocatedEventIds()).toEqual([]);
+
+  queue.schedule(event("parent", 100));
+  const before = queue.snapshot();
+  expect(() => queue.schedule(event("early-child", 50, "impact", ["parent"]))).toThrow(
+    "cannot follow its descendant",
+  );
+  expect(queue.snapshot()).toEqual(before);
+  expect(queue.allocatedEventIds()).toEqual(["parent"]);
+
+  queue.schedule(event("child", 150, "impact", ["parent"]));
+  const restored = new EventQueue(0, 100_000, queue.snapshot(), queue.allocatedEventIds());
+  expect(restored.step(2, null, () => []).processed.map((entry) => entry.eventId)).toEqual([
+    "parent",
+    "child",
+  ]);
+});
+
 test("separate same-time scheduling is rejected; canonical batch is required", () => {
   const queue = new EventQueue();
   queue.schedule(event("z", 0));

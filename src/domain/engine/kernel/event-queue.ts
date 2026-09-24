@@ -111,6 +111,11 @@ export class EventQueue {
         const causeIndex = indexById.get(cause);
         if (causeIndex !== undefined && causeIndex >= index)
           throw new TypeError("batch cause must precede its descendant");
+        if (causeIndex === undefined && !this.allocatedIds.has(cause))
+          throw new TypeError("event cause must already be allocated or precede it in the batch");
+        const pendingCause = this.entries.find((entry) => entry.eventId === cause);
+        if (pendingCause && pendingCause.timeMs > event.timeMs)
+          throw new TypeError("pending event cause cannot follow its descendant");
       }
     }
     for (const [index, event] of ordered.entries())
@@ -127,6 +132,13 @@ export class EventQueue {
   private allocate(draft: EventDraft): ScheduledEvent {
     if (this.allocatedIds.has(draft.eventId)) throw new TypeError("event ID was already allocated");
     if (draft.timeMs < this.clockMs) throw new RangeError("cannot schedule into the past");
+    for (const cause of draft.causeEventIds) {
+      if (!this.allocatedIds.has(cause))
+        throw new TypeError("event cause must already be allocated or precede it in the batch");
+      const pendingCause = this.entries.find((entry) => entry.eventId === cause);
+      if (pendingCause && pendingCause.timeMs > draft.timeMs)
+        throw new TypeError("pending event cause cannot follow its descendant");
+    }
     if (!Number.isSafeInteger(this.nextSequence + 1))
       throw new RangeError("event sequence exhausted");
     const event = ScheduledEventSchema.parse({ ...draft, sequence: this.nextSequence });
