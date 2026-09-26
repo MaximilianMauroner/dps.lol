@@ -312,6 +312,62 @@ test("policy adapter cannot forge visible values by mutating its input snapshot"
   }
 });
 
+test("dispatch cannot rewrite queued causal identity through its event copy", () => {
+  const session = new IncrementalKernelSession(
+    resume(),
+    (event) => {
+      event.causeEventIds.length = 0;
+      return [traceCommand(event)];
+    },
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "trace command causes must match the processed event",
+  );
+  expect(session.snapshot()).toEqual(before);
+  const restored = new IncrementalKernelSession(
+    resume(before),
+    (event) => [traceCommand(event)],
+    view,
+  );
+  expect(
+    restored.step({ maxEvents: 1, untilTimeMs: null }).emittedEvents[0]?.causeEventIds,
+  ).toEqual(["event-002"]);
+});
+
+test("dispatch context and lifecycle payload mutations cannot alter the retained transition", () => {
+  const checkpoint = deathCheckpoint();
+  const dispatch = (event: ScheduledEvent): EngineCommand[] => [
+    lifecycleTrace(event, "enemy", "death"),
+  ];
+  const baseline = new IncrementalKernelSession(resume(checkpoint), dispatch, view);
+  const session = new IncrementalKernelSession(
+    resume(checkpoint),
+    (event, context) => {
+      Reflect.set(context.causeEventIds, "length", 0);
+      if (
+        event.payload !== null &&
+        typeof event.payload === "object" &&
+        !Array.isArray(event.payload)
+      )
+        event.payload.entityId = "actor";
+      return dispatch(event);
+    },
+    view,
+  );
+  const expected = baseline.step({ maxEvents: 1, untilTimeMs: null });
+  expect(session.step({ maxEvents: 1, untilTimeMs: null })).toEqual(expected);
+  const restored = new IncrementalKernelSession(resume(session.snapshot()), dispatch, view);
+  expect(restored.snapshot()).toEqual(expected.snapshot);
+  expect(restored.snapshot().entities.find((entity) => entity.entityId === "actor")?.alive).toBe(
+    true,
+  );
+  expect(restored.snapshot().entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(
+    false,
+  );
+});
+
 test("failed command dispatch leaves queue and snapshot unchanged", () => {
   const session = new IncrementalKernelSession(
     resume(),

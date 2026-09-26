@@ -221,8 +221,9 @@ export class IncrementalKernelSession implements EngineSession {
         nextEventSequence: workingQueue.nextEventSequence,
         allocatedEventIds: workingQueue.allocatedEventIds(),
       };
-      const commands = this.dispatch(event, context).map((command) =>
-        EngineCommandSchema.parse(command),
+      // Handlers cannot rewrite the queued event or its shared causal context.
+      const commands = this.dispatch(structuredClone(event), structuredClone(context)).map(
+        (command) => EngineCommandSchema.parse(command),
       );
       if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
         throw new TypeError("command IDs must be unique within one dispatch");
