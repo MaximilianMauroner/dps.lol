@@ -1,4 +1,6 @@
 import { readFile, realpath } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { ValidationRecordSchema, assertObservationForPatch } from "../tests/observations/records";
 import { assertMechanicTrace, TraceExpectationsSchema } from "../tests/engine-harness/harness";
@@ -8,6 +10,7 @@ export async function validateMechanicFiles(
   tracePath: string,
   expectationsPath: string,
   target?: { patch: string; clientVersion: string; hotfixId: string },
+  capturePath?: string,
 ): Promise<string> {
   const [record, trace, expectations] = await Promise.all(
     [recordPath, tracePath, expectationsPath].map(async (path) =>
@@ -22,18 +25,23 @@ export async function validateMechanicFiles(
     if (!target)
       throw new Error("Observed records require target patch, client version, and hotfix");
     assertObservationForPatch(parsed, target.patch, target.clientVersion, target.hotfixId);
+    if (!capturePath) throw new Error("Observed records require retained capture bytes");
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(capturePath)) hash.update(chunk);
+    if (`sha256:${hash.digest("hex")}` !== parsed.source.contentHash)
+      throw new Error("Retained capture SHA-256 does not match observation source");
   }
   assertMechanicTrace(trace, TraceExpectationsSchema.parse(expectations));
   if (parsed.discrepancy !== "none")
     throw new Error(`${parsed.fixtureId} has unresolved ${parsed.discrepancy} discrepancy`);
-  return `${parsed.fixtureId}: ${parsed.evidenceKind} fixture passed; discrepancy=none`;
+  return `${parsed.fixtureId}: ${parsed.evidenceKind} fixture passed; discrepancy=none${parsed.evidenceKind === "observed" ? "; capture sha256 verified" : ""}`;
 }
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (args.length !== 3 && args.length !== 6) {
+  if (args.length !== 3 && args.length !== 7) {
     console.error(
-      "Usage: bun scripts/validate-mechanics.ts <record.json> <trace.json> <expectations.json> [<patch> <client-version> <hotfix-id>]",
+      "Usage: bun scripts/validate-mechanics.ts <record.json> <trace.json> <expectations.json> [<capture-file> <patch> <client-version> <hotfix-id>]",
     );
     process.exit(2);
   }
@@ -43,9 +51,10 @@ if (import.meta.main) {
         args[0]!,
         args[1]!,
         args[2]!,
-        args.length === 6
-          ? { patch: args[3]!, clientVersion: args[4]!, hotfixId: args[5]! }
+        args.length === 7
+          ? { patch: args[4]!, clientVersion: args[5]!, hotfixId: args[6]! }
           : undefined,
+        args.length === 7 ? args[3]! : undefined,
       ),
     );
   } catch (error) {

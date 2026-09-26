@@ -26,8 +26,11 @@ mechanics therefore retain an observation collection and independent review task
 reports empirical readiness separately from functional implementation.
 
 Run `bun test tests/engine-harness tests/observations` for the synthetic assertion layer. The CLI
-`bun scripts/validate-mechanics.ts <record.json> <trace.json> <expectations.json> [<patch> <client-version> <hotfix-id>]`
+`bun scripts/validate-mechanics.ts <record.json> <trace.json> <expectations.json> [<capture-file> <patch> <client-version> <hotfix-id>]`
 validates a record and its linked trace. The target triple is mandatory for observed records.
+Observed records also require a local retained capture file whose SHA-256 matches the declared
+source hash. The capture stays outside the repository; a matching hash verifies file identity,
+not the authenticity of the game session or the interpretation of its events.
 The command fails on unresolved discrepancies and prints the evidence category only for a passing
 record. Numeric assertions identify a specific event and effect index; count assertions identify
 a specific event. Aggregate assertions require a complete trace. Integrators pass their engine's
