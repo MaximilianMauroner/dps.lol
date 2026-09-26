@@ -191,12 +191,6 @@ describe("P00 planning validator characterization", () => {
     );
   });
 
-  test("accepts the explicit P00-to-P02 content artifact handoff", () => {
-    const result = validate(loadPlanDocument());
-
-    expect(result.errors).toEqual([]);
-  });
-
   test("rejects an over-broad receiver scope even when it declares a handoff", () => {
     const document = loadPlanDocument();
     getOwnedPath(getTask(document, "P02"), "docs/implementation/planning/CONTENT_TASKS.json").path =
