@@ -144,8 +144,7 @@ export class IncrementalKernelSession implements EngineSession {
   }
 
   policyView(): PolicyVisibleState {
-    const snapshot = this.snapshot();
-    const value = PolicyVisibleStateSchema.parse(this.view(snapshot));
+    const value = PolicyVisibleStateSchema.parse(this.view(this.snapshot()));
     if (value.atTimeMs !== this.state.currentTimeMs)
       throw new TypeError("policy view must match the session clock");
     if (
@@ -154,7 +153,9 @@ export class IncrementalKernelSession implements EngineSession {
         JSON.stringify(this.visibleEntityIds)
     )
       throw new TypeError("policy view actor and visibility must match the verified scenario");
-    const entities = new Map(snapshot.entities.map((entity) => [entity.entityId, entity]));
+    // Adapters can mutate their detached input despite its shallow Readonly type.
+    // Only retained session state is authoritative for validating their output.
+    const entities = new Map(this.state.entities.map((entity) => [entity.entityId, entity]));
     for (const visible of value.entities) {
       const entity = entities.get(visible.entityId);
       if (

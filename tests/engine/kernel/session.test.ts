@@ -272,6 +272,46 @@ test("policy view rejects stale visible entity values without changing the sessi
   expect(restored.policyView().entities[0]?.health).toEqual(sampleSnapshot.entities[0]?.health);
 });
 
+test("policy adapter cannot forge visible values by mutating its input snapshot", () => {
+  const mutations: Array<(snapshot: typeof sampleSnapshot) => void> = [
+    (snapshot) => {
+      snapshot.entities[0]!.health.current -= 1;
+    },
+    (snapshot) => {
+      snapshot.entities[0]!.position.x += 1;
+    },
+    (snapshot) => {
+      snapshot.entities[0]!.resources[0]!.current -= 1;
+    },
+    (snapshot) => {
+      snapshot.entities[0]!.buffs[0]!.stacks += 1;
+    },
+  ];
+  for (const mutate of mutations) {
+    const session = new IncrementalKernelSession(
+      resume(),
+      (event) => [traceCommand(event)],
+      (snapshot) => {
+        mutate(snapshot);
+        return view(snapshot);
+      },
+    );
+    const before = session.snapshot();
+    expect(() => session.policyView()).toThrow("differs from the kernel snapshot");
+    expect(session.snapshot()).toEqual(before);
+
+    const restored = new IncrementalKernelSession(
+      resume(before),
+      (event) => [traceCommand(event)],
+      view,
+    );
+    expect(restored.policyView()).toEqual(view(before));
+    expect(restored.step({ maxEvents: 1, untilTimeMs: null })).toEqual(
+      session.step({ maxEvents: 1, untilTimeMs: null }),
+    );
+  }
+});
+
 test("failed command dispatch leaves queue and snapshot unchanged", () => {
   const session = new IncrementalKernelSession(
     resume(),
