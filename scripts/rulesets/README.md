@@ -32,3 +32,17 @@ The report only covers the explicitly declared and selected sources.
 CLI limits are 1 MiB for the manifest, 16 MiB per artifact and 64 MiB total retained
 bytes. Programmatic callers can supply artifact/total limits. No decompression or
 production database/bucket writes occur.
+
+# Source mapping verification
+
+`bun scripts/rulesets/verify-source-mapping.ts <source-set.json> <retained-directory> <source-mapping.json>`
+checks every declared retained file before validating the source mapping. The mapping binds one
+PC patch, Data Dragon version, CommunityDragon revision, regional hotfix assignments, and explicit
+mode/map/queue assignments to the verified source-set hash. Each region and mode names retained
+artifact IDs as evidence. The command prints a compact hash and count report only after all checks
+pass; it does not fetch, archive, publish, or certify complete mode or mechanic coverage.
+
+Create a mapping through `buildSourceMapping` after `assertPinnedSourceSet`, then retain both
+manifests and the raw artifact bytes. Reverify through `assertSourceMapping` or this command before
+using an assignment. The current 26.18/16.18.1 source inventory has no accepted CommunityDragon
+and mode/hotfix evidence bundle, so no real mapping manifest is published here.
