@@ -50,6 +50,12 @@ function unique<T>(values: readonly T[], label: string): void {
   if (new Set(values).size !== values.length) throw new TypeError(`${label} must be unique`);
 }
 
+function deepFreeze(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  for (const child of Object.values(value)) deepFreeze(child);
+  Object.freeze(value);
+}
+
 function assertSorted<T extends string | number>(values: readonly T[], label: string): void {
   if (canonicalJson(values) !== canonicalJson(sorted(values)))
     throw new TypeError(`${label} must use canonical order`);
@@ -111,7 +117,7 @@ function assertMappingContents(mapping: SourceMapping, sourceSet: VerifiedPinned
     throw new TypeError("source mapping regions must match pinned region applicability exactly");
   const referencedArtifactIds = new Set<string>();
   for (const entry of mapping.regions) {
-    if (/^(latest|current)$/i.test(entry.hotfixRevision))
+    if (/(^|[./_-])(?:latest|current)(?:$|[./_-])/i.test(entry.hotfixRevision))
       throw new TypeError(`region ${entry.regionId} must use an explicit hotfix revision`);
     assertEvidence(entry.evidenceArtifactIds, artifactIds, `region ${entry.regionId}`);
     entry.evidenceArtifactIds.forEach((id) => referencedArtifactIds.add(id));
@@ -175,5 +181,6 @@ export async function assertSourceMapping(
   assertMappingContents(mapping, sourceSet);
   if (mapping.mappingHash !== (await hashCanonical(hashInput(mapping))))
     throw new TypeError("source mapping hash does not match canonical mapping");
-  return Object.freeze(mapping);
+  deepFreeze(mapping);
+  return mapping;
 }

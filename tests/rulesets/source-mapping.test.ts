@@ -110,6 +110,14 @@ test("identical retained bytes and reordered mapping inputs produce one canonica
   expect(first.mappingHash).toMatch(/^sha256:[0-9a-f]{64}$/);
   expect(first.regions.map((entry) => entry.regionId)).toEqual(["EUW1", "NA1"]);
   expect(first.modes[0]!.queueIds).toEqual([400, 420]);
+  const checked = await assertSourceMapping(first, verified);
+  expect(Object.isFrozen(checked.regions[0])).toBe(true);
+  expect(Object.isFrozen(checked.modes[0]!.queueIds)).toBe(true);
+  expect(() => checked.modes[0]!.queueIds.push(999)).toThrow();
+  expect(() => {
+    checked.regions[0]!.hotfixRevision = "forged";
+  }).toThrow();
+  expect(checked.mappingHash).toBe(first.mappingHash);
   await writeFile(join(root, "mapping.json"), JSON.stringify(first));
   expect(
     await verifySourceMappingFiles(join(root, "source-set.json"), root, join(root, "mapping.json")),
@@ -211,10 +219,10 @@ test("missing evidence, conflicting patch, region, mode and queue IDs block mapp
     { ...draft, pcPatch: "26.19" },
     { ...draft, regions: draft.regions.slice(0, 1) },
     { ...draft, regions: [...draft.regions, draft.regions[0]!] },
-    {
+    ...["latest", "26.18-latest", "current-hotfix"].map((hotfixRevision) => ({
       ...draft,
-      regions: draft.regions.map((entry) => ({ ...entry, hotfixRevision: "latest" })),
-    },
+      regions: draft.regions.map((entry) => ({ ...entry, hotfixRevision })),
+    })),
     { ...draft, modes: [...draft.modes, draft.modes[0]!] },
     {
       ...draft,
@@ -244,6 +252,9 @@ test("missing evidence, conflicting patch, region, mode and queue IDs block mapp
   await expect(
     assertSourceMapping({ ...valid, sourceSetHash: `sha256:${"0".repeat(64)}` }, verified),
   ).rejects.toThrow(/identity/);
+  const rollingAlias = structuredClone(valid);
+  rollingAlias.regions[0]!.hotfixRevision = "current-hotfix";
+  await expect(assertSourceMapping(rollingAlias, verified)).rejects.toThrow(/explicit hotfix/);
   await expect(
     assertSourceMapping(
       { ...valid, modes: [{ ...valid.modes[0]!, queueIds: [420, 400] }] },
