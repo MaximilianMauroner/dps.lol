@@ -100,6 +100,12 @@ function assertOfficialArtifactLocation(artifact: SourceArtifact, url: URL): voi
   }
 }
 
+export function assertPinnedSourceArtifactUrl(artifact: SourceArtifact): URL {
+  const url = parsePinnedArtifactUrl(artifact);
+  assertOfficialArtifactLocation(artifact, url);
+  return url;
+}
+
 export const RetainedSourceArtifactSchema = z
   .object({
     artifact: SourceArtifactSchema,
@@ -250,8 +256,7 @@ function assertExplicitVersionPin(value: PinnedSourceSet): void {
         `source artifact ${artifact.artifactId} version must use canonical literal spelling`,
       );
     }
-    const url = parsePinnedArtifactUrl(artifact);
-    assertOfficialArtifactLocation(artifact, url);
+    const url = assertPinnedSourceArtifactUrl(artifact);
     const pathSegments = url.pathname.split("/");
     if (
       artifact.kind === "data-dragon" &&
@@ -295,6 +300,8 @@ async function hashBytes(bytes: Uint8Array): Promise<ContentHash> {
     .join("");
   return `sha256:${hex}`;
 }
+
+export { hashBytes as hashRetainedSourceBytes };
 
 function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
