@@ -114,26 +114,6 @@ describe("optimizer Worker protocol", () => {
     expect(secondResults[0]!.contextHash).toBe(firstResults[0]!.contextHash);
   });
 
-  test("cancels at a chunk boundary and never caches a partial ranking", async () => {
-    const cache = new OptimizerMemoCache();
-    const progress: OptimizerWorkerProgress[] = [];
-    const results: OptimizerWorkerResult[] = [];
-    const cancelled: string[] = [];
-    let activeToken = "search-1";
-    const callbacks = callbacksFor(() => activeToken === "search-1", progress, results, cancelled);
-    const onProgress = callbacks.onProgress;
-    callbacks.onProgress = (message) => {
-      onProgress(message);
-      if (message.evaluatedCount === 2) activeToken = "new-search";
-    };
-    const outcome = await runOptimizerInChunks(request("search-1"), cache, callbacks);
-    expect(outcome.status).toBe("cancelled");
-    expect(results).toHaveLength(0);
-    expect(cancelled).toEqual(["search-1"]);
-    expect(progress.map((message) => message.evaluatedCount)).toEqual([0, 2]);
-    expect(cache.size).toBe(0);
-  });
-
   test("rejects stale token/context messages on the receiving side", () => {
     const message: OptimizerWorkerResult = {
       type: OPTIMIZER_RESULT,
@@ -191,6 +171,8 @@ describe("optimizer Worker protocol", () => {
     expect(oldOutcome.status).toBe("cancelled");
     expect(oldResults).toHaveLength(0);
     expect(oldCancelled).toEqual(["old-token"]);
+    expect(oldProgress.map((message) => message.evaluatedCount)).toEqual([0, 2]);
+    expect(cache.size).toBe(0);
 
     const newProgress: OptimizerWorkerProgress[] = [];
     const newResults: OptimizerWorkerResult[] = [];
