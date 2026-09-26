@@ -41,7 +41,7 @@ async function readBoundedFile(path: string, limit: number): Promise<Uint8Array>
 }
 
 /** Offline verification of declared raw artifact bytes; no decompression, fetch or publication. */
-export async function verifyRetainedSourceFiles(
+export async function loadVerifiedRetainedSourceFiles(
   value: unknown,
   directory: string,
   limits: RetainedFileLimits = defaultLimits,
@@ -70,13 +70,25 @@ export async function verifyRetainedSourceFiles(
     totalBytes += bytes.byteLength;
     retained.push({ artifactId: entry.artifact.artifactId, bytes });
   }
-  return { sourceSet: await assertPinnedSourceSet(sourceSet, retained), totalBytes };
+  return { sourceSet: await assertPinnedSourceSet(sourceSet, retained), totalBytes, retained };
+}
+
+export async function verifyRetainedSourceFiles(
+  value: unknown,
+  directory: string,
+  limits: RetainedFileLimits = defaultLimits,
+) {
+  const { sourceSet, totalBytes } = await loadVerifiedRetainedSourceFiles(value, directory, limits);
+  return { sourceSet, totalBytes };
+}
+
+export async function readRetainedManifest(manifestPath: string): Promise<unknown> {
+  const bytes = await readBoundedFile(manifestPath, 1024 * 1024);
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 export async function verifyRetainedManifest(manifestPath: string, directory: string) {
-  const bytes = await readBoundedFile(manifestPath, 1024 * 1024);
-  const manifest: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  return verifyRetainedSourceFiles(manifest, directory);
+  return verifyRetainedSourceFiles(await readRetainedManifest(manifestPath), directory);
 }
 
 if (import.meta.main) {
