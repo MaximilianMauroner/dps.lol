@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { sampleTrace } from "../contracts/fixtures";
 import { validateMechanicFiles } from "../../scripts/validate-mechanics";
 
@@ -11,6 +12,8 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
   const tracePath = join(directory, "trace.json");
   const otherTracePath = join(directory, "other.json");
   const assertionsPath = join(directory, "assertions.json");
+  const capturePath = join(directory, "retained-capture.bin");
+  const captureBytes = Buffer.from("sanitized controlled capture bytes\n");
   const record = {
     fixtureId: "fixture-1",
     mechanicId: "attack",
@@ -24,6 +27,7 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
     await writeFile(otherTracePath, JSON.stringify(sampleTrace));
     await writeFile(assertionsPath, JSON.stringify({ eventOrder: ["event-001", "event-002"] }));
     await writeFile(recordPath, JSON.stringify(record));
+    await writeFile(capturePath, captureBytes);
     expect(await validateMechanicFiles(recordPath, tracePath, assertionsPath)).toContain(
       "synthetic fixture passed",
     );
@@ -42,7 +46,7 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
       observationId: "observation-1",
       source: {
         sourceId: "capture-1",
-        contentHash: `sha256:${"a".repeat(64)}`,
+        contentHash: `sha256:${createHash("sha256").update(captureBytes).digest("hex")}`,
         locator: "frame-1",
         category: "client-capture",
       },
@@ -69,19 +73,53 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
       "require target",
     );
     expect(
-      validateMechanicFiles(recordPath, tracePath, assertionsPath, {
-        patch: "26.18",
-        clientVersion: "26.19.1",
-        hotfixId: "cutoff-1",
-      }),
+      validateMechanicFiles(
+        recordPath,
+        tracePath,
+        assertionsPath,
+        {
+          patch: "26.18",
+          clientVersion: "26.19.1",
+          hotfixId: "cutoff-1",
+        },
+        capturePath,
+      ),
     ).rejects.toThrow("does not match");
     expect(
-      await validateMechanicFiles(recordPath, tracePath, assertionsPath, {
+      validateMechanicFiles(recordPath, tracePath, assertionsPath, {
         patch: "26.18",
         clientVersion: "26.18.1",
         hotfixId: "cutoff-1",
       }),
-    ).toContain("observed fixture passed");
+    ).rejects.toThrow("require retained capture bytes");
+    await writeFile(capturePath, "different capture");
+    expect(
+      validateMechanicFiles(
+        recordPath,
+        tracePath,
+        assertionsPath,
+        {
+          patch: "26.18",
+          clientVersion: "26.18.1",
+          hotfixId: "cutoff-1",
+        },
+        capturePath,
+      ),
+    ).rejects.toThrow("SHA-256 does not match");
+    await writeFile(capturePath, captureBytes);
+    expect(
+      await validateMechanicFiles(
+        recordPath,
+        tracePath,
+        assertionsPath,
+        {
+          patch: "26.18",
+          clientVersion: "26.18.1",
+          hotfixId: "cutoff-1",
+        },
+        capturePath,
+      ),
+    ).toContain("capture sha256 verified");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
