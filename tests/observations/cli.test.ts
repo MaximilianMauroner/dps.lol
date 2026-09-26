@@ -31,11 +31,11 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
     expect(await validateMechanicFiles(recordPath, tracePath, assertionsPath)).toContain(
       "synthetic fixture passed",
     );
-    expect(validateMechanicFiles(recordPath, otherTracePath, assertionsPath)).rejects.toThrow(
+    await expect(validateMechanicFiles(recordPath, otherTracePath, assertionsPath)).rejects.toThrow(
       "does not match",
     );
     await writeFile(recordPath, JSON.stringify({ ...record, discrepancy: "implementation" }));
-    expect(validateMechanicFiles(recordPath, tracePath, assertionsPath)).rejects.toThrow(
+    await expect(validateMechanicFiles(recordPath, tracePath, assertionsPath)).rejects.toThrow(
       "unresolved implementation",
     );
 
@@ -69,10 +69,10 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
     };
     delete (observed as Partial<typeof observed>).purpose;
     await writeFile(recordPath, JSON.stringify(observed));
-    expect(validateMechanicFiles(recordPath, tracePath, assertionsPath)).rejects.toThrow(
+    await expect(validateMechanicFiles(recordPath, tracePath, assertionsPath)).rejects.toThrow(
       "require target",
     );
-    expect(
+    await expect(
       validateMechanicFiles(
         recordPath,
         tracePath,
@@ -85,7 +85,7 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
         capturePath,
       ),
     ).rejects.toThrow("does not match");
-    expect(
+    await expect(
       validateMechanicFiles(recordPath, tracePath, assertionsPath, {
         patch: "26.18",
         clientVersion: "26.18.1",
@@ -93,7 +93,7 @@ test("CLI binds a trace, rejects unresolved discrepancies, and checks observed t
       }),
     ).rejects.toThrow("require retained capture bytes");
     await writeFile(capturePath, "different capture");
-    expect(
+    await expect(
       validateMechanicFiles(
         recordPath,
         tracePath,
