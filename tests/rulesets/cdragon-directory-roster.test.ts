@@ -271,7 +271,7 @@ test("directory anchors outside body rows and hidden listings fail closed", asyn
         source.directory,
         source.directoryBytes,
       ),
-    ).rejects.toThrow("hidden elements");
+    ).rejects.toThrow("hidden or styled elements");
   }
   const canvas = await sources(
     directoryHtml().replace("<body>", "<body><canvas>").replace("</body>", "</canvas></body>"),
@@ -340,6 +340,39 @@ test("a second listing table or heading cannot disappear behind stricter selecto
       duplicateHeading.directoryBytes,
     ),
   ).rejects.toThrow("heading conflicts");
+});
+
+test("listing structure cannot be inline-hidden or collapse distinct row roles", async () => {
+  for (const html of [
+    directoryHtml().replace("<html>", '<html style="display:none">'),
+    directoryHtml().replace("<body>", '<body style="display:none">'),
+    directoryHtml().replace("<main>", '<main style="visibility:hidden">'),
+    directoryHtml().replace('<table id="list">', '<table id="list" style="display:none">'),
+  ]) {
+    const source = await sources(html);
+    await expect(
+      discoverCommunityDragonDirectoryRoster(
+        source.index,
+        source.indexBytes,
+        source.directory,
+        source.directoryBytes,
+      ),
+    ).rejects.toThrow("styled elements");
+  }
+  const conflictingCells = await sources(
+    directoryHtml()
+      .replace('<td class="link">', '<td class="link size date">')
+      .replace('<td class="size">', "<td>")
+      .replace('<td class="date">', "<td>"),
+  );
+  await expect(
+    discoverCommunityDragonDirectoryRoster(
+      conflictingCells.index,
+      conflictingCells.indexBytes,
+      conflictingCells.directory,
+      conflictingCells.directoryBytes,
+    ),
+  ).rejects.toThrow("malformed listing row");
 });
 
 test("artifact identity, provider, revision, byte hash and role conflicts fail", async () => {

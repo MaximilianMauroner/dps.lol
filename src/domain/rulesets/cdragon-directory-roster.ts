@@ -8,6 +8,7 @@ function compare(left: string, right: string): number {
 
 type ListingRow = {
   cellCount: number;
+  cellRoles: Array<string | null>;
   linkCellCount: number;
   linkCellText: string;
   sizeCellCount: number;
@@ -33,6 +34,7 @@ async function parsedListing(html: string) {
   let canvasCount = 0;
   let baseCount = 0;
   let hiddenCount = 0;
+  let styledStructureCount = 0;
   let order = 0;
   const rows: ListingRow[] = [];
   function currentRow(): ListingRow {
@@ -46,9 +48,17 @@ async function parsedListing(html: string) {
   const rewriter = new HTMLRewriter()
     .on("*", {
       element: (element) => {
+        const attributes = [...element.attributes];
         // Bun returns null for valueless boolean attributes via getAttribute.
-        if ([...element.attributes].some(([name]) => name.toLowerCase() === "hidden"))
-          hiddenCount++;
+        if (attributes.some(([name]) => name.toLowerCase() === "hidden")) hiddenCount++;
+        if (
+          (element.tagName === "html" ||
+            element.tagName === "body" ||
+            element.tagName === "main" ||
+            (element.tagName === "table" && element.getAttribute("id") === "list")) &&
+          attributes.some(([name]) => name.toLowerCase() === "style")
+        )
+          styledStructureCount++;
       },
     })
     .on("body", {
@@ -120,6 +130,7 @@ async function parsedListing(html: string) {
       element: () => {
         rows.push({
           cellCount: 0,
+          cellRoles: [],
           linkCellCount: 0,
           linkCellText: "",
           sizeCellCount: 0,
@@ -130,13 +141,15 @@ async function parsedListing(html: string) {
       },
     })
     .on(`${selector} > td`, {
-      element: () => {
+      element: (element) => {
         currentRow().cellCount++;
+        currentRow().cellRoles.push(element.getAttribute("class"));
       },
     })
     .on(`${selector} > th`, {
       element: () => {
         currentRow().cellCount++;
+        currentRow().cellRoles.push("#th");
       },
     })
     .on(`${selector} > td.link`, {
@@ -196,6 +209,7 @@ async function parsedListing(html: string) {
     canvasCount,
     baseCount,
     hiddenCount,
+    styledStructureCount,
     rows,
   };
 }
@@ -218,8 +232,14 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
     throw new TypeError("CommunityDragon character directory bytes do not match the artifact hash");
   const html = new TextDecoder("utf-8", { fatal: true }).decode(retained);
   const listing = await parsedListing(html);
-  if (listing.templateCount || listing.canvasCount || listing.baseCount || listing.hiddenCount)
-    throw new TypeError("character directory contains inert, base URL or hidden elements");
+  if (
+    listing.templateCount ||
+    listing.canvasCount ||
+    listing.baseCount ||
+    listing.hiddenCount ||
+    listing.styledStructureCount
+  )
+    throw new TypeError("character directory contains inert, base URL, hidden or styled elements");
   if (
     listing.bodyCount !== 1 ||
     listing.mainCount !== 1 ||
@@ -259,6 +279,7 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
   for (const row of listing.rows) {
     if (
       row.cellCount !== 3 ||
+      row.cellRoles.join(",") !== "link,size,date" ||
       row.linkCellCount !== 1 ||
       row.sizeCellCount !== 1 ||
       row.dateCellCount !== 1 ||
