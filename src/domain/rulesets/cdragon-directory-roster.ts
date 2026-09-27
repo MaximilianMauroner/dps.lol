@@ -341,6 +341,8 @@ export async function discoverCommunityDragonDirectoryRoster(
   ]);
   if (index.kind !== "champion-index")
     throw new TypeError("directory roster requires a Data Dragon champion index");
+  if (index.artifact.uri.includes("?"))
+    throw new TypeError("directory roster requires a query-free Data Dragon champion index URL");
   if (index.artifact.artifactId === listing.artifact.artifactId)
     throw new TypeError("directory roster requires distinct source artifact IDs");
   const available = new Set(listing.directories);

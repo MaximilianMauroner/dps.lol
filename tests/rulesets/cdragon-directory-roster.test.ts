@@ -405,6 +405,11 @@ test("artifact identity, provider, revision, byte hash and role conflicts fail",
     await expect(run(source.index, directory)).rejects.toThrow();
   const item = await sources(directoryHtml(), { ...championIndex(), type: "item" });
   await expect(run(item.index, source.directory, item.indexBytes)).rejects.toThrow();
+  for (const query of ["?variant=1", "?"]) {
+    await expect(
+      run({ ...source.index, uri: `${source.index.uri}${query}` }, source.directory),
+    ).rejects.toThrow("query-free Data Dragon champion index URL");
+  }
   const corrupt = Uint8Array.from(source.indexBytes);
   corrupt[0] = 0;
   await expect(run(source.index, source.directory, corrupt)).rejects.toThrow("artifact hash");

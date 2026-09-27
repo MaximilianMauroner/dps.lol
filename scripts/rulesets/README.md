@@ -71,9 +71,11 @@ bun scripts/rulesets/compile-retained-cdragon-roster.ts source-set.json retained
 The command verifies every declared source file before parsing the two selected
 artifacts. It requires every Data Dragon champion slug to have one exact directory
 link and reports every other directory as unclassified. A directory link is only
-an available source path: it does not prove a `.bin.json` file exists, identify
+a source path in the retained listing: it does not prove a `.bin.json` file exists, identify
 alternate forms or mode assets, or establish a PC patch/CommunityDragon revision
-mapping. Missing, duplicate or conflicting links fail without partial stdout.
+mapping. This is an inventory of links in retained HTML source bytes; it does not
+execute page scripts or certify the browser-rendered page. Missing, duplicate or
+conflicting links fail without partial stdout.
 
 CLI limits are 1 MiB for the manifest, 16 MiB per artifact and 64 MiB total retained
 bytes. Programmatic callers can supply artifact/total limits. No decompression or
