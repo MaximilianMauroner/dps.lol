@@ -1,8 +1,10 @@
 # Storage architecture decision
 
 **Date:** 2026-09-17  
-**Status:** accepted as the minimal direction; implementation is deliberately deferred to a
-follow-up change  
+**Status:** accepted decision record. The implementation now lives in `src/storage/`,
+`src/data/`, `src/workers/`, and `migrations/`; remaining work is tracked in GitHub Issues
+#22, #23, #26, #30, #32, #34, and #54.
+
 **Scope:** the existing `dps.lol` Railway project, patch-pinned Riot ingestion, and the
 interactive target-distribution simulator
 
@@ -320,30 +322,6 @@ repeated cohort rebuilds justify it. It is not required by the current 230-snaps
 workflow. Revisit at measured multi-million-row or multi-gigabyte history, keeping the original
 gzip source and a reproducible export version so columnar files remain derived data rather than the
 only copy.
-
-## Smallest implementation sequence (next instruction)
-
-1. Make cohort retrieval separate from build changes: return summary-only cohort results, keep a
-   detailed event log only for selected traces, enforce byte limits as well as target counts, and
-   move repeated pure simulation to a Web Worker/browser cache. Do not add an always-on Redis/cache
-   service.
-2. Add typed `archive_objects` and `cohort_manifests` migrations plus a narrow S3 adapter. Capture
-   the original match and timeline responses, gzip them, checksum/size them, and publish immutable
-   versioned keys before lossy extraction.
-3. Add reconciliation and a bounded, match-balanced cohort builder that preserves complete joint
-   vectors, item IDs, weights, `matchCount`, `snapshotCount`, phase/fallback, and provenance.
-4. Keep compact typed phase/target rows in Postgres. Retain extra per-minute hot snapshots only
-   when supported queries justify them and a configurable byte/patch budget allows them; do not
-   duplicate unbounded minutes alongside scenarios.
-5. Store source schema/extractor/dataset versions separately from engine/mechanics versions. Raw
-   objects should not be reuploaded for a math-only change; result keys must include engine version
-   and the full scenario configuration.
-6. After checksum verification and a successful rebuild/restore test, consider metadata-only
-   `matches` rows for new data and conservative hot retention. Do not enable deletion/pruning until
-   the recovery path is proven. Measure p50/p95 original archive sizes and resource usage before
-   revisiting sleep policy.
-
-No step requires Kubernetes, Redis, Kafka, ClickHouse, or a second database.
 
 ## Risks and hard objection
 
