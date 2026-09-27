@@ -27,6 +27,7 @@ async function parsedListing(html: string) {
   let tableAnchorCount = 0;
   const sortHrefs: Array<string | null> = [];
   let templateCount = 0;
+  let canvasCount = 0;
   let baseCount = 0;
   let hiddenCount = 0;
   let order = 0;
@@ -54,6 +55,11 @@ async function parsedListing(html: string) {
     .on("template", {
       element: () => {
         templateCount++;
+      },
+    })
+    .on("canvas", {
+      element: () => {
+        canvasCount++;
       },
     })
     .on("base", {
@@ -160,6 +166,7 @@ async function parsedListing(html: string) {
     tableAnchorCount,
     sortHrefs,
     templateCount,
+    canvasCount,
     baseCount,
     hiddenCount,
     rows,
@@ -184,8 +191,8 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
     throw new TypeError("CommunityDragon character directory bytes do not match the artifact hash");
   const html = new TextDecoder("utf-8", { fatal: true }).decode(retained);
   const listing = await parsedListing(html);
-  if (listing.templateCount || listing.baseCount || listing.hiddenCount)
-    throw new TypeError("character directory contains template, base URL or hidden elements");
+  if (listing.templateCount || listing.canvasCount || listing.baseCount || listing.hiddenCount)
+    throw new TypeError("character directory contains inert, base URL or hidden elements");
   if (
     listing.bodyCount !== 1 ||
     listing.headingCount !== 1 ||

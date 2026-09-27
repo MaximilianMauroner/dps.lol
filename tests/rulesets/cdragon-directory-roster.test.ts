@@ -273,6 +273,17 @@ test("directory anchors outside body rows and hidden listings fail closed", asyn
       ),
     ).rejects.toThrow("hidden elements");
   }
+  const canvas = await sources(
+    directoryHtml().replace("<body>", "<body><canvas>").replace("</body>", "</canvas></body>"),
+  );
+  await expect(
+    discoverCommunityDragonDirectoryRoster(
+      canvas.index,
+      canvas.indexBytes,
+      canvas.directory,
+      canvas.directoryBytes,
+    ),
+  ).rejects.toThrow("inert");
 });
 
 test("artifact identity, provider, revision, byte hash and role conflicts fail", async () => {
