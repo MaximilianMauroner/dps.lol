@@ -61,6 +61,22 @@ mapping as unreviewed and combat completeness as false; extracted record links
 alone do not determine spell behavior, forms, active game modes, or regional
 hotfix application.
 
+Match a retained CommunityDragon character directory listing to a retained Data
+Dragon champion index:
+
+```sh
+bun scripts/rulesets/compile-retained-cdragon-roster.ts source-set.json retained-directory champion-index-id character-directory-id
+```
+
+The command verifies every declared source file before parsing the two selected
+artifacts. It requires every Data Dragon champion slug to have one exact directory
+link and reports every other directory as unclassified. A directory link is only
+a source path in the retained listing: it does not prove a `.bin.json` file exists, identify
+alternate forms or mode assets, or establish a PC patch/CommunityDragon revision
+mapping. This is an inventory of links in retained HTML source bytes; it does not
+execute page scripts or certify the browser-rendered page. Missing, duplicate or
+conflicting links fail without partial stdout.
+
 CLI limits are 1 MiB for the manifest, 16 MiB per artifact and 64 MiB total retained
 bytes. Programmatic callers can supply artifact/total limits. No decompression or
 production database/bucket writes occur.
