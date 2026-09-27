@@ -29,6 +29,22 @@ Neither a successful report nor an empty undiscovered list proves a complete
 ruleset inventory, legality, implemented mechanics or combat-complete coverage.
 The report only covers the explicitly declared and selected sources.
 
+Compile the selected pinned Data Dragon champion index, `championFull` detail,
+and item index into one partial source catalog:
+
+```sh
+bun scripts/rulesets/compile-retained-ddragon.ts source-set.json retained-directory champion-index champion-detail item-index
+```
+
+Every declared retained file is verified before output, including unselected
+artifacts. The catalog includes numeric champion/item IDs, source pointers,
+passive and four primary spell slots, empty-name gaps, selected artifact paths
+and hashes, undiscovered artifact IDs, and a deterministic catalog hash. Changed
+source bytes or source-set hotfix identity change that hash. The output is
+explicitly `data-dragon-index-and-primary-slots-only` and `combatComplete:false`;
+it does not supply alternate forms, mechanics, mode legality, regional hotfix
+evidence, or a complete P02 inventory. Errors leave stdout empty.
+
 CLI limits are 1 MiB for the manifest, 16 MiB per artifact and 64 MiB total retained
 bytes. Programmatic callers can supply artifact/total limits. No decompression or
 production database/bucket writes occur.
