@@ -6,19 +6,115 @@ function compare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function visibleListingHtml(html: string): string {
-  // The pinned listing uses scripts in its page chrome. Their contents are not
-  // directory markup, even when they contain literal <h1> or <table> strings.
-  const visible = html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "");
-  if (
-    /<\/?script\b/i.test(visible) ||
-    /<!--|-->/.test(visible) ||
-    /<\/?(?:style|template|textarea|noscript|xmp|iframe|noembed|noframes|plaintext)\b/i.test(
-      visible,
-    )
-  )
-    throw new TypeError("character directory contains unsupported or unclosed HTML containers");
-  return visible;
+type ListingRow = {
+  cellCount: number;
+  linkCellCount: number;
+  sizeCellCount: number;
+  dateCellCount: number;
+  links: Array<{ href: string | null; title: string | null; label: string }>;
+};
+
+async function parsedListing(html: string) {
+  let bodyCount = 0;
+  let headingCount = 0;
+  let heading = "";
+  let headingOrder = 0;
+  let tableCount = 0;
+  let tableOrder = 0;
+  let tableBodyCount = 0;
+  let order = 0;
+  const rows: ListingRow[] = [];
+  function currentRow(): ListingRow {
+    const current = rows.at(-1);
+    if (!current)
+      throw new TypeError("character directory contains a cell outside its listing row");
+    return current;
+  }
+  const selector = "body table#list > tbody > tr";
+  const rewriter = new HTMLRewriter()
+    .on("body", {
+      element: () => {
+        bodyCount++;
+      },
+    })
+    .on("body h1", {
+      element: () => {
+        headingCount++;
+        headingOrder = ++order;
+      },
+      text: (chunk) => {
+        heading += chunk.text;
+      },
+    })
+    .on("body table#list", {
+      element: () => {
+        tableCount++;
+        tableOrder = ++order;
+      },
+    })
+    .on("body table#list > tbody", {
+      element: () => {
+        tableBodyCount++;
+      },
+    })
+    .on(selector, {
+      element: () => {
+        rows.push({
+          cellCount: 0,
+          linkCellCount: 0,
+          sizeCellCount: 0,
+          dateCellCount: 0,
+          links: [],
+        });
+      },
+    })
+    .on(`${selector} > td`, {
+      element: () => {
+        currentRow().cellCount++;
+      },
+    })
+    .on(`${selector} > td.link`, {
+      element: () => {
+        currentRow().linkCellCount++;
+      },
+    })
+    .on(`${selector} > td.size`, {
+      element: () => {
+        currentRow().sizeCellCount++;
+      },
+    })
+    .on(`${selector} > td.date`, {
+      element: () => {
+        currentRow().dateCellCount++;
+      },
+    })
+    .on(`${selector} > td.link > a`, {
+      element: (element) => {
+        currentRow().links.push({
+          href: element.getAttribute("href"),
+          title: element.getAttribute("title"),
+          label: "",
+        });
+      },
+      text: (chunk) => {
+        const link = currentRow().links.at(-1);
+        if (!link) throw new TypeError("character directory link text lacks a listing anchor");
+        link.label += chunk.text;
+      },
+    });
+  // HTMLRewriter distinguishes elements from comments, attributes and raw text.
+  // Draining the response is required for all parser callbacks to run.
+  await rewriter.transform(new Response(html)).text();
+  return {
+    bodyCount,
+    headingCount,
+    heading,
+    headingOrder,
+    tableCount,
+    tableOrder,
+    tableBodyCount,
+    rows,
+  };
 }
 
 /** Parse only the revision-pinned CommunityDragon character directory table. */
@@ -37,40 +133,40 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
   const retained = Uint8Array.from(bytes);
   if ((await hashRetainedSourceBytes(retained)) !== artifact.contentHash)
     throw new TypeError("CommunityDragon character directory bytes do not match the artifact hash");
-  const html = visibleListingHtml(new TextDecoder("utf-8", { fatal: true }).decode(retained));
-  const bodies = [...html.matchAll(/<body(?:\s[^>]*)?>([\s\S]*?)<\/body>/gi)];
-  if (bodies.length !== 1) throw new TypeError("character directory requires one HTML body");
-  const body = bodies[0]![1]!;
-  if (/<\/?title\b/i.test(body))
-    throw new TypeError("character directory body contains unsupported raw text");
-  const headings = [...body.matchAll(/<h1>\s*([^<]*?)\s*<\/h1>/g)];
-  if (headings.length !== 1 || headings[0]![1]!.trim() !== url.pathname)
+  const html = new TextDecoder("utf-8", { fatal: true }).decode(retained);
+  const listing = await parsedListing(html);
+  if (
+    listing.bodyCount !== 1 ||
+    listing.headingCount !== 1 ||
+    listing.heading.trim() !== url.pathname
+  )
     throw new TypeError("CommunityDragon directory heading conflicts with its pinned URL");
-  const listings = [...body.matchAll(/<table id="list">([\s\S]*?)<\/table>/g)];
-  if (listings.length !== 1 || listings[0]!.index! < headings[0]!.index!)
+  if (
+    listing.tableCount !== 1 ||
+    listing.tableBodyCount !== 1 ||
+    listing.tableOrder <= listing.headingOrder
+  )
     throw new TypeError("character directory requires one listing table after its heading");
-  const tables = [...listings[0]![1]!.matchAll(/<tbody>([\s\S]*?)<\/tbody>/g)];
-  if (tables.length !== 1) throw new TypeError("character directory requires one table body");
-  const table = tables[0]![1]!;
-  const rowPattern = /<tr>[\s\S]*?<\/tr>/g;
-  const rows = [...table.matchAll(rowPattern)].map((match) => match[0]);
-  if (rows.length < 2 || table.replace(rowPattern, "").trim())
-    throw new TypeError("character directory has missing or malformed listing rows");
-  const rowShape =
-    /^<tr><td class="link"><a href="([^"]+)"(?: title="([^"]+)")?>([^<]+)<\/a><\/td><td class="size">[^<]*<\/td><td class="date">[^<]*<\/td><\/tr>$/;
+  if (listing.rows.length < 2) throw new TypeError("character directory has missing listing rows");
   const directories: string[] = [];
   let parentCount = 0;
-  for (const row of rows) {
-    const fields = rowShape.exec(row);
-    if (!fields) throw new TypeError("character directory contains a malformed listing row");
-    const [, href, title, label] = fields;
-    if (href === "../" && title === undefined && label === "Parent directory/") {
+  for (const row of listing.rows) {
+    if (
+      row.cellCount !== 3 ||
+      row.linkCellCount !== 1 ||
+      row.sizeCellCount !== 1 ||
+      row.dateCellCount !== 1 ||
+      row.links.length !== 1
+    )
+      throw new TypeError("character directory contains a malformed listing row");
+    const { href, title, label } = row.links[0]!;
+    if (href === "../" && title === null && label === "Parent directory/") {
       parentCount++;
       continue;
     }
-    if (!/^[a-z0-9_]+\/$/.test(href!) || title !== href!.slice(0, -1) || label !== href)
+    if (!href || !/^[a-z0-9_]+\/$/.test(href) || title !== href.slice(0, -1) || label !== href)
       throw new TypeError(`character directory contains an unsafe or conflicting link ${href}`);
-    directories.push(href!.slice(0, -1));
+    directories.push(href.slice(0, -1));
   }
   if (
     parentCount !== 1 ||

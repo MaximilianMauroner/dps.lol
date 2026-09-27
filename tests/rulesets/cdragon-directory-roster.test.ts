@@ -183,6 +183,9 @@ test("changed source bytes change roster identity; missing and conflicting links
       )
     ).rosterHash,
   ).not.toBe(first.rosterHash);
+  const listingFragment = directoryHtml()
+    .replace("<!DOCTYPE html><html><body>", "")
+    .replace("</body></html>", "");
   for (const html of [
     directoryHtml(["aatrox", "annietibbers"]),
     directoryHtml(["aatrox", "yunara", "yunara"]),
@@ -196,6 +199,8 @@ test("changed source bytes change roster identity; missing and conflicting links
     `<!DOCTYPE html><html><body><!-- ${directoryHtml()} --></body></html>`,
     `<!DOCTYPE html><html><body><script type="text/plain">${directoryHtml()}</script></body></html>`,
     `<!DOCTYPE html><html><body><xmp>${directoryHtml()}</xmp></body></html>`,
+    `<html><body><div data-example='${listingFragment}'></div></body></html>`,
+    `<html><head><title><body>${listingFragment}</body></title></head></html>`,
     directoryHtml().replace('<table id="list">', '<div id="list">').replace("</table>", "</div>"),
   ]) {
     const invalid = await sources(html);
