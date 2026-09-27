@@ -314,6 +314,34 @@ test("listing cannot hide inside a closed dialog or contain extra header cells",
   ).rejects.toThrow("malformed listing row");
 });
 
+test("a second listing table or heading cannot disappear behind stricter selectors", async () => {
+  const duplicateTable = await sources(
+    directoryHtml().replace(
+      "</main>",
+      '<div><table id="list"><tbody><tr><td class="link"><a href="shadow/" title="shadow">shadow/</a></td></tr></tbody></table></div></main>',
+    ),
+  );
+  await expect(
+    discoverCommunityDragonDirectoryRoster(
+      duplicateTable.index,
+      duplicateTable.indexBytes,
+      duplicateTable.directory,
+      duplicateTable.directoryBytes,
+    ),
+  ).rejects.toThrow("one listing table");
+  const duplicateHeading = await sources(
+    directoryHtml().replace("</main>", "<div><h1>shadow heading</h1></div></main>"),
+  );
+  await expect(
+    discoverCommunityDragonDirectoryRoster(
+      duplicateHeading.index,
+      duplicateHeading.indexBytes,
+      duplicateHeading.directory,
+      duplicateHeading.directoryBytes,
+    ),
+  ).rejects.toThrow("heading conflicts");
+});
+
 test("artifact identity, provider, revision, byte hash and role conflicts fail", async () => {
   const source = await sources();
   const run = (

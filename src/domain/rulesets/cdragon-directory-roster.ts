@@ -19,10 +19,12 @@ type ListingRow = {
 async function parsedListing(html: string) {
   let bodyCount = 0;
   let mainCount = 0;
+  let allHeadingCount = 0;
   let headingCount = 0;
   let heading = "";
   let headingOrder = 0;
   let tableCount = 0;
+  let allTableCount = 0;
   let tableOrder = 0;
   let tableBodyCount = 0;
   let tableAnchorCount = 0;
@@ -74,6 +76,11 @@ async function parsedListing(html: string) {
         baseCount++;
       },
     })
+    .on("body h1", {
+      element: () => {
+        allHeadingCount++;
+      },
+    })
     .on("body > main > h1", {
       element: () => {
         headingCount++;
@@ -87,6 +94,11 @@ async function parsedListing(html: string) {
       element: () => {
         tableCount++;
         tableOrder = ++order;
+      },
+    })
+    .on("body table#list", {
+      element: () => {
+        allTableCount++;
       },
     })
     .on(`${tableSelector} > tbody`, {
@@ -170,10 +182,12 @@ async function parsedListing(html: string) {
   return {
     bodyCount,
     mainCount,
+    allHeadingCount,
     headingCount,
     heading,
     headingOrder,
     tableCount,
+    allTableCount,
     tableOrder,
     tableBodyCount,
     tableAnchorCount,
@@ -209,12 +223,14 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
   if (
     listing.bodyCount !== 1 ||
     listing.mainCount !== 1 ||
+    listing.allHeadingCount !== 1 ||
     listing.headingCount !== 1 ||
     listing.heading.trim() !== url.pathname
   )
     throw new TypeError("CommunityDragon directory heading conflicts with its pinned URL");
   if (
     listing.tableCount !== 1 ||
+    listing.allTableCount !== 1 ||
     listing.tableBodyCount !== 1 ||
     listing.tableOrder <= listing.headingOrder
   )
