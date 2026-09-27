@@ -45,6 +45,22 @@ explicitly `data-dragon-index-and-primary-slots-only` and `combatComplete:false`
 it does not supply alternate forms, mechanics, mode legality, regional hotfix
 evidence, or a complete P02 inventory. Errors leave stdout empty.
 
+Inventory one retained CommunityDragon character `.bin.json` source:
+
+```sh
+bun scripts/rulesets/discover-retained-cdragon.ts source-set.json retained-directory cdragon-character-id
+```
+
+The command verifies every source-set file, then records every typed top-level
+record path and its JSON pointer. It checks the character record's explicit
+`mAbilities` links and each ability's `mRootSpell`/`mChildSpells` references
+against the same retained bytes. Missing or conflicting referenced paths fail.
+The report includes the CommunityDragon revision, URL, byte hash, retained
+path, undiscovered artifact IDs and canonical report hash. It labels PC patch
+mapping as unreviewed and combat completeness as false; extracted record links
+alone do not determine spell behavior, forms, active game modes, or regional
+hotfix application.
+
 CLI limits are 1 MiB for the manifest, 16 MiB per artifact and 64 MiB total retained
 bytes. Programmatic callers can supply artifact/total limits. No decompression or
 production database/bucket writes occur.
