@@ -18,6 +18,7 @@ type ListingRow = {
 
 async function parsedListing(html: string) {
   let bodyCount = 0;
+  let mainCount = 0;
   let headingCount = 0;
   let heading = "";
   let headingOrder = 0;
@@ -38,7 +39,8 @@ async function parsedListing(html: string) {
       throw new TypeError("character directory contains a cell outside its listing row");
     return current;
   }
-  const selector = "body table#list > tbody > tr";
+  const tableSelector = "body > main > table#list";
+  const selector = `${tableSelector} > tbody > tr`;
   const rewriter = new HTMLRewriter()
     .on("*", {
       element: (element) => {
@@ -50,6 +52,11 @@ async function parsedListing(html: string) {
     .on("body", {
       element: () => {
         bodyCount++;
+      },
+    })
+    .on("body > main", {
+      element: () => {
+        mainCount++;
       },
     })
     .on("template", {
@@ -67,7 +74,7 @@ async function parsedListing(html: string) {
         baseCount++;
       },
     })
-    .on("body h1", {
+    .on("body > main > h1", {
       element: () => {
         headingCount++;
         headingOrder = ++order;
@@ -76,23 +83,23 @@ async function parsedListing(html: string) {
         heading += chunk.text;
       },
     })
-    .on("body table#list", {
+    .on(tableSelector, {
       element: () => {
         tableCount++;
         tableOrder = ++order;
       },
     })
-    .on("body table#list > tbody", {
+    .on(`${tableSelector} > tbody`, {
       element: () => {
         tableBodyCount++;
       },
     })
-    .on("body table#list a", {
+    .on(`${tableSelector} a`, {
       element: () => {
         tableAnchorCount++;
       },
     })
-    .on("body table#list > thead > tr > th > a", {
+    .on(`${tableSelector} > thead > tr > th > a`, {
       element: (element) => {
         sortHrefs.push(element.getAttribute("href"));
       },
@@ -111,6 +118,11 @@ async function parsedListing(html: string) {
       },
     })
     .on(`${selector} > td`, {
+      element: () => {
+        currentRow().cellCount++;
+      },
+    })
+    .on(`${selector} > th`, {
       element: () => {
         currentRow().cellCount++;
       },
@@ -157,6 +169,7 @@ async function parsedListing(html: string) {
   await rewriter.transform(new Response(html)).text();
   return {
     bodyCount,
+    mainCount,
     headingCount,
     heading,
     headingOrder,
@@ -195,6 +208,7 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
     throw new TypeError("character directory contains inert, base URL or hidden elements");
   if (
     listing.bodyCount !== 1 ||
+    listing.mainCount !== 1 ||
     listing.headingCount !== 1 ||
     listing.heading.trim() !== url.pathname
   )

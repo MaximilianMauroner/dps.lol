@@ -18,7 +18,7 @@ afterEach(async () => {
 function directoryHtml(slugs = ["yunara", "aatrox", "annietibbers", "tft16_yunara"]) {
   const row = (href: string) =>
     `<tr><td class="link"><a href="${href}" title="${href.slice(0, -1)}">${href}</a></td><td class="size">-</td><td class="date">2026-Sep-10 05:57</td></tr>`;
-  return `<!DOCTYPE html><html><body><h1>\n/16.18/game/data/characters/</h1><table id="list"><tbody><tr><td class="link"><a href="../">Parent directory/</a></td><td class="size">-</td><td class="date">-</td></tr>\r\n${slugs.map((slug) => row(`${slug}/`)).join("\r\n")}\r\n</tbody></table></body></html>`;
+  return `<!DOCTYPE html><html><body><main><h1>\n/16.18/game/data/characters/</h1><table id="list"><tbody><tr><td class="link"><a href="../">Parent directory/</a></td><td class="size">-</td><td class="date">-</td></tr>\r\n${slugs.map((slug) => row(`${slug}/`)).join("\r\n")}\r\n</tbody></table></main></body></html>`;
 }
 
 function championIndex() {
@@ -284,6 +284,34 @@ test("directory anchors outside body rows and hidden listings fail closed", asyn
       canvas.directoryBytes,
     ),
   ).rejects.toThrow("inert");
+});
+
+test("listing cannot hide inside a closed dialog or contain extra header cells", async () => {
+  const closedDialog = await sources(
+    directoryHtml().replace("<body>", "<body><dialog>").replace("</body>", "</dialog></body>"),
+  );
+  await expect(
+    discoverCommunityDragonDirectoryRoster(
+      closedDialog.index,
+      closedDialog.indexBytes,
+      closedDialog.directory,
+      closedDialog.directoryBytes,
+    ),
+  ).rejects.toThrow("heading conflicts");
+  const extraHeaderCell = await sources(
+    directoryHtml().replace(
+      '<td class="size">-</td>',
+      '<td class="size">-</td><th>unexpected</th>',
+    ),
+  );
+  await expect(
+    discoverCommunityDragonDirectoryRoster(
+      extraHeaderCell.index,
+      extraHeaderCell.indexBytes,
+      extraHeaderCell.directory,
+      extraHeaderCell.directoryBytes,
+    ),
+  ).rejects.toThrow("malformed listing row");
 });
 
 test("artifact identity, provider, revision, byte hash and role conflicts fail", async () => {
