@@ -9,8 +9,10 @@ function compare(left: string, right: string): number {
 type ListingRow = {
   cellCount: number;
   linkCellCount: number;
+  linkCellText: string;
   sizeCellCount: number;
   dateCellCount: number;
+  anchorCount: number;
   links: Array<{ href: string | null; title: string | null; label: string }>;
 };
 
@@ -22,6 +24,8 @@ async function parsedListing(html: string) {
   let tableCount = 0;
   let tableOrder = 0;
   let tableBodyCount = 0;
+  let templateCount = 0;
+  let baseCount = 0;
   let order = 0;
   const rows: ListingRow[] = [];
   function currentRow(): ListingRow {
@@ -35,6 +39,16 @@ async function parsedListing(html: string) {
     .on("body", {
       element: () => {
         bodyCount++;
+      },
+    })
+    .on("template", {
+      element: () => {
+        templateCount++;
+      },
+    })
+    .on("base", {
+      element: () => {
+        baseCount++;
       },
     })
     .on("body h1", {
@@ -62,8 +76,10 @@ async function parsedListing(html: string) {
         rows.push({
           cellCount: 0,
           linkCellCount: 0,
+          linkCellText: "",
           sizeCellCount: 0,
           dateCellCount: 0,
+          anchorCount: 0,
           links: [],
         });
       },
@@ -77,6 +93,9 @@ async function parsedListing(html: string) {
       element: () => {
         currentRow().linkCellCount++;
       },
+      text: (chunk) => {
+        currentRow().linkCellText += chunk.text;
+      },
     })
     .on(`${selector} > td.size`, {
       element: () => {
@@ -86,6 +105,11 @@ async function parsedListing(html: string) {
     .on(`${selector} > td.date`, {
       element: () => {
         currentRow().dateCellCount++;
+      },
+    })
+    .on(`${selector} a`, {
+      element: () => {
+        currentRow().anchorCount++;
       },
     })
     .on(`${selector} > td.link > a`, {
@@ -113,6 +137,8 @@ async function parsedListing(html: string) {
     tableCount,
     tableOrder,
     tableBodyCount,
+    templateCount,
+    baseCount,
     rows,
   };
 }
@@ -135,6 +161,8 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
     throw new TypeError("CommunityDragon character directory bytes do not match the artifact hash");
   const html = new TextDecoder("utf-8", { fatal: true }).decode(retained);
   const listing = await parsedListing(html);
+  if (listing.templateCount || listing.baseCount)
+    throw new TypeError("character directory contains template or base URL elements");
   if (
     listing.bodyCount !== 1 ||
     listing.headingCount !== 1 ||
@@ -156,7 +184,9 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
       row.linkCellCount !== 1 ||
       row.sizeCellCount !== 1 ||
       row.dateCellCount !== 1 ||
-      row.links.length !== 1
+      row.anchorCount !== 1 ||
+      row.links.length !== 1 ||
+      row.linkCellText !== row.links[0]!.label
     )
       throw new TypeError("character directory contains a malformed listing row");
     const { href, title, label } = row.links[0]!;

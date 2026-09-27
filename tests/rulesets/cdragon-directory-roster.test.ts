@@ -201,6 +201,13 @@ test("changed source bytes change roster identity; missing and conflicting links
     `<!DOCTYPE html><html><body><xmp>${directoryHtml()}</xmp></body></html>`,
     `<html><body><div data-example='${listingFragment}'></div></body></html>`,
     `<html><head><title><body>${listingFragment}</body></title></head></html>`,
+    directoryHtml().replace(
+      "yunara/</a></td>",
+      'yunara/</a><span><a href="hidden/">hidden/</a></span></td>',
+    ),
+    directoryHtml().replace("yunara/</a></td>", "yunara/</a>extra</td>"),
+    directoryHtml().replace("<body>", "<body><template>").replace("</body>", "</template></body>"),
+    directoryHtml().replace("<body>", '<head><base href="https://example.invalid/"></head><body>'),
     directoryHtml().replace('<table id="list">', '<div id="list">').replace("</table>", "</div>"),
   ]) {
     const invalid = await sources(html);
