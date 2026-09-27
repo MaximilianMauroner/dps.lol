@@ -18,7 +18,7 @@ afterEach(async () => {
 function directoryHtml(slugs = ["yunara", "aatrox", "annietibbers", "tft16_yunara"]) {
   const row = (href: string) =>
     `<tr><td class="link"><a href="${href}" title="${href.slice(0, -1)}">${href}</a></td><td class="size">-</td><td class="date">2026-Sep-10 05:57</td></tr>`;
-  return `<!DOCTYPE html><html><h1>\n/16.18/game/data/characters/</h1><table id="list"><tbody><tr><td class="link"><a href="../">Parent directory/</a></td><td class="size">-</td><td class="date">-</td></tr>\r\n${slugs.map((slug) => row(`${slug}/`)).join("\r\n")}\r\n</tbody></table></html>`;
+  return `<!DOCTYPE html><html><body><h1>\n/16.18/game/data/characters/</h1><table id="list"><tbody><tr><td class="link"><a href="../">Parent directory/</a></td><td class="size">-</td><td class="date">-</td></tr>\r\n${slugs.map((slug) => row(`${slug}/`)).join("\r\n")}\r\n</tbody></table></body></html>`;
 }
 
 function championIndex() {
@@ -193,6 +193,10 @@ test("changed source bytes change roster identity; missing and conflicting links
       "/latest/game/data/characters/</h1>",
     ),
     directoryHtml().replace("<tbody>", "<tbody><tr>broken</tr>"),
+    `<!DOCTYPE html><html><body><!-- ${directoryHtml()} --></body></html>`,
+    `<!DOCTYPE html><html><body><script type="text/plain">${directoryHtml()}</script></body></html>`,
+    `<!DOCTYPE html><html><body><xmp>${directoryHtml()}</xmp></body></html>`,
+    directoryHtml().replace('<table id="list">', '<div id="list">').replace("</table>", "</div>"),
   ]) {
     const invalid = await sources(html);
     await expect(
@@ -208,8 +212,12 @@ test("changed source bytes change roster identity; missing and conflicting links
 
 test("artifact identity, provider, revision, byte hash and role conflicts fail", async () => {
   const source = await sources();
-  const run = (index: unknown, directory: unknown, indexBytes = source.indexBytes) =>
-    discoverCommunityDragonDirectoryRoster(index, indexBytes, directory, source.directoryBytes);
+  const run = (
+    index: unknown,
+    directory: unknown,
+    indexBytes = source.indexBytes,
+    directoryBytes = source.directoryBytes,
+  ) => discoverCommunityDragonDirectoryRoster(index, indexBytes, directory, directoryBytes);
   for (const directory of [
     { ...source.directory, kind: "data-dragon" },
     { ...source.directory, version: "16.17" },
@@ -219,6 +227,7 @@ test("artifact identity, provider, revision, byte hash and role conflicts fail",
     },
     { ...source.directory, uri: source.directory.uri.replace("/16.18/", "/pbe/") },
     { ...source.directory, uri: `${source.directory.uri}?latest=1` },
+    { ...source.directory, uri: `${source.directory.uri}?` },
     { ...source.directory, contentHash: source.index.contentHash },
   ])
     await expect(run(source.index, directory)).rejects.toThrow();
@@ -227,6 +236,27 @@ test("artifact identity, provider, revision, byte hash and role conflicts fail",
   const corrupt = Uint8Array.from(source.indexBytes);
   corrupt[0] = 0;
   await expect(run(source.index, source.directory, corrupt)).rejects.toThrow("artifact hash");
+  await expect(
+    run(source.index, { ...source.directory, artifactId: source.index.artifactId }),
+  ).rejects.toThrow("distinct source artifact IDs");
+  const nested = await sources(
+    directoryHtml().replace(
+      "/16.18/game/data/characters/</h1>",
+      "/16.18/extra/game/data/characters/</h1>",
+    ),
+  );
+  await expect(
+    run(
+      source.index,
+      {
+        ...nested.directory,
+        version: "16.18/extra",
+        uri: "https://raw.communitydragon.org/16.18/extra/game/data/characters/",
+      },
+      source.indexBytes,
+      nested.directoryBytes,
+    ),
+  ).rejects.toThrow();
 });
 
 test("offline report checks all retained bytes, source-set identity and CLI output", async () => {
