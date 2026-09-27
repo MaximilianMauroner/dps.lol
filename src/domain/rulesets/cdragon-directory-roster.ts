@@ -24,8 +24,11 @@ async function parsedListing(html: string) {
   let tableCount = 0;
   let tableOrder = 0;
   let tableBodyCount = 0;
+  let tableAnchorCount = 0;
+  const sortHrefs: Array<string | null> = [];
   let templateCount = 0;
   let baseCount = 0;
+  let hiddenCount = 0;
   let order = 0;
   const rows: ListingRow[] = [];
   function currentRow(): ListingRow {
@@ -36,6 +39,13 @@ async function parsedListing(html: string) {
   }
   const selector = "body table#list > tbody > tr";
   const rewriter = new HTMLRewriter()
+    .on("*", {
+      element: (element) => {
+        // Bun returns null for valueless boolean attributes via getAttribute.
+        if ([...element.attributes].some(([name]) => name.toLowerCase() === "hidden"))
+          hiddenCount++;
+      },
+    })
     .on("body", {
       element: () => {
         bodyCount++;
@@ -69,6 +79,16 @@ async function parsedListing(html: string) {
     .on("body table#list > tbody", {
       element: () => {
         tableBodyCount++;
+      },
+    })
+    .on("body table#list a", {
+      element: () => {
+        tableAnchorCount++;
+      },
+    })
+    .on("body table#list > thead > tr > th > a", {
+      element: (element) => {
+        sortHrefs.push(element.getAttribute("href"));
       },
     })
     .on(selector, {
@@ -137,8 +157,11 @@ async function parsedListing(html: string) {
     tableCount,
     tableOrder,
     tableBodyCount,
+    tableAnchorCount,
+    sortHrefs,
     templateCount,
     baseCount,
+    hiddenCount,
     rows,
   };
 }
@@ -161,8 +184,8 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
     throw new TypeError("CommunityDragon character directory bytes do not match the artifact hash");
   const html = new TextDecoder("utf-8", { fatal: true }).decode(retained);
   const listing = await parsedListing(html);
-  if (listing.templateCount || listing.baseCount)
-    throw new TypeError("character directory contains template or base URL elements");
+  if (listing.templateCount || listing.baseCount || listing.hiddenCount)
+    throw new TypeError("character directory contains template, base URL or hidden elements");
   if (
     listing.bodyCount !== 1 ||
     listing.headingCount !== 1 ||
@@ -176,6 +199,24 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
   )
     throw new TypeError("character directory requires one listing table after its heading");
   if (listing.rows.length < 2) throw new TypeError("character directory has missing listing rows");
+  const expectedSortHrefs = [
+    "?C=M&amp;O=A",
+    "?C=M&amp;O=D",
+    "?C=N&amp;O=A",
+    "?C=N&amp;O=D",
+    "?C=S&amp;O=A",
+    "?C=S&amp;O=D",
+  ];
+  if (
+    listing.tableAnchorCount !== listing.rows.length + listing.sortHrefs.length ||
+    (listing.sortHrefs.length !== 0 &&
+      (listing.sortHrefs.length !== expectedSortHrefs.length ||
+        listing.sortHrefs
+          .map((href) => href ?? "")
+          .sort(compare)
+          .join("\n") !== expectedSortHrefs.join("\n")))
+  )
+    throw new TypeError("character directory contains anchors outside its listing rows");
   const directories: string[] = [];
   let parentCount = 0;
   for (const row of listing.rows) {

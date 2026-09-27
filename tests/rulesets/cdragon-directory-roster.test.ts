@@ -222,6 +222,59 @@ test("changed source bytes change roster identity; missing and conflicting links
   }
 });
 
+test("directory anchors outside body rows and hidden listings fail closed", async () => {
+  const sortHeader = `<thead><tr>${["N", "S", "M"]
+    .map(
+      (column) =>
+        `<th><a href="?C=${column}&amp;O=A">sort</a><a href="?C=${column}&amp;O=D">sort</a></th>`,
+    )
+    .join("")}</tr></thead>`;
+  const withSortHeader = directoryHtml().replace("<tbody>", `${sortHeader}<tbody>`);
+  const valid = await sources(withSortHeader);
+  expect(
+    (
+      await discoverCommunityDragonDirectoryRoster(
+        valid.index,
+        valid.indexBytes,
+        valid.directory,
+        valid.directoryBytes,
+      )
+    ).rosterDirectories,
+  ).toHaveLength(2);
+  const extraRow = '<tr><td class="link"><a href="shadow/" title="shadow">shadow/</a></td></tr>';
+  for (const section of ["thead", "tfoot"]) {
+    const html =
+      section === "thead"
+        ? withSortHeader.replace("</thead>", `${extraRow}</thead>`)
+        : withSortHeader.replace("</table>", `<tfoot>${extraRow}</tfoot></table>`);
+    const source = await sources(html);
+    await expect(
+      discoverCommunityDragonDirectoryRoster(
+        source.index,
+        source.indexBytes,
+        source.directory,
+        source.directoryBytes,
+      ),
+    ).rejects.toThrow("anchors outside its listing rows");
+  }
+  for (const html of [
+    directoryHtml().replace('<table id="list">', '<table id="list" hidden>'),
+    directoryHtml()
+      .replace('<table id="list">', '<div hidden><table id="list">')
+      .replace("</table>", "</table></div>"),
+  ]) {
+    const source = await sources(html);
+    await expect(
+      discoverCommunityDragonDirectoryRoster(
+        source.index,
+        source.indexBytes,
+        source.directory,
+        source.directoryBytes,
+      ),
+    ).rejects.toThrow("hidden elements");
+  }
+});
+
 test("artifact identity, provider, revision, byte hash and role conflicts fail", async () => {
   const source = await sources();
   const run = (
