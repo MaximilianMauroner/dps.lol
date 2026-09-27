@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  assertEngineStepResult,
   assertResumeCompatible,
   EngineSnapshotSchema,
   PolicyVisibleStateSchema,
@@ -474,11 +475,63 @@ test("session dispatch schedules a causal future event and replays it after resu
   expect(second.snapshot.trace.events.at(-1)?.causeEventIds).toEqual(["event-003"]);
 });
 
-test("session work limit fails before the next event and retains the checkpoint", () => {
+test("session event limit returns a terminal, scoreless incomplete result", () => {
   const session = new IncrementalKernelSession(resume(), (event) => [traceCommand(event)], view, 2);
-  const before = session.snapshot();
-  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("no combat score");
-  expect(session.snapshot()).toEqual(before);
+  const step = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(step.status).toBe("incomplete");
+  expect(step.reason).toContain("event allocation limit");
+  expect(step.emittedEvents).toEqual([]);
+  expect(step.snapshot.currentTimeMs).toBe(100);
+  expect(step.snapshot.queue.entries).toEqual([]);
+  expect(step.snapshot.pendingActions).toEqual([]);
+  expect(step.snapshot.resumability).toBe("non-resumable");
+  expect(step.result?.status).toBe("incomplete");
+  expect(step.result?.metrics.dps.status).toBe("undefined");
+  expect(step.result?.metrics.ttk.status).toBe("undefined");
+  expect(step.result?.censoring).toBe("invalid");
+  expect(step.snapshot.result).toEqual(step.result);
+  expect(JSON.parse(JSON.stringify(step))).toEqual(step);
+  expect(
+    assertEngineStepResult(
+      { scenario: sampleResolvedScenario, run: sampleRunningRun, ports: createMockPorts() },
+      step,
+      HASH_A,
+    ),
+  ).toEqual(step);
+  expect(session.snapshot()).toEqual(step.snapshot);
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("terminal");
+});
+
+test("event limit commits already processed events before returning incomplete", () => {
+  const dispatch = (event: ScheduledEvent): EngineCommand[] => [
+    traceCommand(event),
+    {
+      schemaVersion: 1,
+      kind: "schedule-event",
+      commandId: "schedule-child",
+      issuedAtMs: event.timeMs,
+      causeEventIds: [event.eventId],
+      event: {
+        eventId: "child-after-limit",
+        sequence: 4,
+        timeMs: event.timeMs,
+        phase: "checkpoint",
+        kind: "child-after-limit",
+        payload: null,
+        causeEventIds: [event.eventId],
+      },
+    },
+  ];
+  const session = new IncrementalKernelSession(resume(), dispatch, view, 3);
+  const step = session.step({ maxEvents: 2, untilTimeMs: null });
+  expect(step.status).toBe("incomplete");
+  expect(step.emittedEvents.map((event) => event.eventId)).toEqual(["event-003"]);
+  expect(step.snapshot.trace.events.at(-1)?.eventId).toBe("event-003");
+  expect(step.snapshot.currentTimeMs).toBe(1000);
+  expect(step.snapshot.allocatedEventIds).toContain("child-after-limit");
+  expect(step.snapshot.queue.entries).toEqual([]);
+  expect(step.result?.metrics.damage.status).toBe("undefined");
+  expect(session.snapshot()).toEqual(step.snapshot);
 });
 
 test("session keeps entity revision counters from a validated checkpoint", () => {
