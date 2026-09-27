@@ -55,6 +55,7 @@ async function parsedListing(html: string) {
           (element.tagName === "html" ||
             element.tagName === "body" ||
             element.tagName === "main" ||
+            element.tagName === "h1" ||
             (element.tagName === "table" && element.getAttribute("id") === "list")) &&
           attributes.some(([name]) => name.toLowerCase() === "style")
         )
@@ -104,6 +105,17 @@ async function parsedListing(html: string) {
       element: () => {
         tableCount++;
         tableOrder = ++order;
+      },
+    })
+    .on(`${tableSelector} *`, {
+      element: (element) => {
+        // Authentic header th cells declare widths; body rows and other table
+        // descendants must not override whether source links are displayed.
+        if (
+          element.tagName !== "th" &&
+          [...element.attributes].some(([name]) => name.toLowerCase() === "style")
+        )
+          styledStructureCount++;
       },
     })
     .on("body table#list", {
