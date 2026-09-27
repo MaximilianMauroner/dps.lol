@@ -33,6 +33,7 @@ async function parsedListing(html: string) {
   let templateCount = 0;
   let canvasCount = 0;
   let baseCount = 0;
+  let styleElementCount = 0;
   let hiddenCount = 0;
   let styledStructureCount = 0;
   let order = 0;
@@ -85,6 +86,11 @@ async function parsedListing(html: string) {
     .on("base", {
       element: () => {
         baseCount++;
+      },
+    })
+    .on("style", {
+      element: () => {
+        styleElementCount++;
       },
     })
     .on("body h1", {
@@ -220,6 +226,7 @@ async function parsedListing(html: string) {
     templateCount,
     canvasCount,
     baseCount,
+    styleElementCount,
     hiddenCount,
     styledStructureCount,
     rows,
@@ -248,6 +255,7 @@ async function discoverCharacterDirectories(rawArtifact: unknown, bytes: Uint8Ar
     listing.templateCount ||
     listing.canvasCount ||
     listing.baseCount ||
+    listing.styleElementCount ||
     listing.hiddenCount ||
     listing.styledStructureCount
   )

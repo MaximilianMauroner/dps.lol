@@ -354,6 +354,7 @@ test("listing structure cannot be inline-hidden or collapse distinct row roles",
       '<tr><td class="link"><a href="yunara/"',
       '<tr style="display:none"><td class="link"><a href="yunara/"',
     ),
+    directoryHtml().replace("<body>", "<head><style>#list { display:none }</style></head><body>"),
   ]) {
     const source = await sources(html);
     await expect(
