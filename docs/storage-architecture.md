@@ -274,8 +274,8 @@ This is workload-driven: the live UI needs recent patches and indexed filters, w
 rebuilds need the cold source. A longer hot window can be enabled when usage data shows that old
 patch filters are common.
 
-There is currently no second service to sleep. The existing Postgres is a persistent database and
-the Railway deployment reports `sleepApplication: false`. Keeping it warm has a hidden baseline:
+The existing Postgres is a persistent database and the Railway deployment reports
+`sleepApplication: false`; the web service has a separate sleep policy. Keeping it warm has a hidden baseline:
 RAM includes the database process, OS, and filesystem cache; CPU and memory are metered while idle,
 not just when a query is active. The supplied Railway rates are $10/GB-month RAM and $20/vCPU-month
 CPU, so even a small always-on database can cost more than a few gigabytes of bucket storage.
@@ -286,18 +286,22 @@ internet or private-network traffic. The existing `sleepApplication: false` obse
 does not prove that sleep/wake is unavailable. However, this specific Postgres has not had sleep,
 wake, reconnect, recovery, or first-query latency safely verified, and Railway's
 [cut-idle-costs guide](https://docs.railway.com/guides/cut-idle-costs-serverless) lists databases
-as a poor fit for this pattern. Budget this database as warm for now; make no stop/start automation
-or service change in this task. A future worker/ingestion process should run on demand or as a
-bounded cron job and exit when idle. If a web service is added, test its sleep policy separately.
-Bucket storage persists while compute sleeps, but bucket requests from Railway services still use
-public network paths.
+as a poor fit for this pattern. The [original archive measurements](archive-size-measurement.md)
+quantify source storage, while rebuild discrepancies block pruning and untested sleep recovery keeps
+Postgres warm. Make no stop/start automation or service change from this measurement. A future worker/ingestion
+process should run on demand or as a bounded cron job and exit when idle. Evaluate the existing
+web service sleep policy separately. Bucket storage persists while compute sleeps, but bucket
+requests from Railway services still use public network paths.
 
 ## Illustrative monthly cost model (not a bill)
 
 The 24,185-byte value above is a **reconstructed** object, not a complete original Riot
 match-plus-timeline archive. It must not be used to estimate corpus storage, compression savings,
-or upload volume. Until original source archives have been captured and measured across a useful
-sample, use variables rather than a scale table.
+or upload volume. [Original archive measurements](archive-size-measurement.md) now cover all 1,139
+verified 26.18/EUW1 match-plus-timeline objects in the bounded prototype corpus: p50 72,799
+compressed bytes and p95 96,578 compressed bytes. That census is patch, region and collection
+specific; derived cohort contribution size and metered service egress remain unmeasured. Keep the
+variables below for other workloads and for the unknown derived contribution.
 
 ```text
 A = verified compressed bytes per original match-details + original timeline object
