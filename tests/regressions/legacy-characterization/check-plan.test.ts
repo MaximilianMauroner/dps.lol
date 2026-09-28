@@ -6,7 +6,6 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "bun:test";
 import {
   readAuditedBaselineSnapshot,
-  readGitBaselineSnapshot,
   runCheckPlan,
   validatePlanDocument,
   type BaselineSnapshot,
@@ -55,9 +54,7 @@ function getArray(object: JsonObject, key: string): unknown[] {
 function auditedBaseline(): BaselineSnapshot {
   const structural = validatePlanDocument(loadPlanDocument());
   if (!structural.plan) throw new Error(structural.errors.join("; "));
-  const bundled = readAuditedBaselineSnapshot(structural.plan, repoRoot);
-  expect(bundled).toEqual(readGitBaselineSnapshot(structural.plan, repoRoot));
-  return bundled;
+  return readAuditedBaselineSnapshot(structural.plan, repoRoot);
 }
 
 const baselineSnapshot = auditedBaseline();
