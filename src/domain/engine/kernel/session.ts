@@ -5,6 +5,7 @@ import {
   PolicyVisibleStateSchema,
   StepBudgetSchema,
   assertEngineInputCompatible,
+  assertLifecycleResolution,
   type EngineCommand,
   type EngineEvent,
   type EngineInput,
@@ -108,6 +109,7 @@ export class IncrementalKernelSession implements EngineSession {
   private readonly objectiveKind: EngineInput["run"]["objective"]["kind"];
   private readonly actorEntityId: string;
   private readonly visibleEntityIds: readonly string[];
+  private readonly lifecyclePort: EngineInput["ports"]["lifecycle"];
 
   constructor(
     start: ValidatedResume | FreshKernelStart,
@@ -117,6 +119,7 @@ export class IncrementalKernelSession implements EngineSession {
   ) {
     this.horizonMs = start.input.run.objective.horizonMs;
     this.objectiveKind = start.input.run.objective.kind;
+    this.lifecyclePort = start.input.ports.lifecycle;
     this.actorEntityId = start.input.scenario.effective.actorEntityId;
     this.visibleEntityIds = [
       ...start.input.scenario.effective.policy.visibility.visibleEntityIds,
@@ -307,7 +310,16 @@ export class IncrementalKernelSession implements EngineSession {
           });
         }
       }
-      if (lifecycle !== null) workingEntities.applyInPlace(lifecycle);
+      if (lifecycle !== null) {
+        const resolution = assertLifecycleResolution(
+          lifecycle,
+          workingEntities.active(),
+          this.lifecyclePort.apply(structuredClone(lifecycle), structuredClone(context)),
+        );
+        if (!resolution.accepted)
+          throw new TypeError(`lifecycle service rejected transition: ${resolution.reason}`);
+        workingEntities.applyInPlace(lifecycle);
+      }
       traceEvents.push(structuredClone(trace));
       emittedEvents.push({
         schemaVersion: 1,

@@ -8,7 +8,9 @@ import {
   PolicyVisibleStateSchema,
   RunManifestSchema,
   type EngineCommand,
+  type LifecycleTransition,
   type PolicyVisibleState,
+  type PortContext,
   type ScheduledEvent,
 } from "../../../src/domain/contracts";
 import { createMockPorts } from "../../contracts/mock-ports";
@@ -963,6 +965,82 @@ test("scheduled death waits for its timestamp and revival survives checkpoint re
   expect(revival.snapshot.trace.events.at(-1)?.effects).toEqual([
     { kind: "lifecycle", entityId: "enemy", transition: "revive" },
   ]);
+});
+
+test("lifecycle events use the shared port at their event frontier", () => {
+  const checkpoint = deathCheckpoint();
+  const calls: Array<{ transition: LifecycleTransition; context: PortContext }> = [];
+  const ports = {
+    ...createMockPorts(),
+    lifecycle: {
+      apply: (transition: LifecycleTransition, context: PortContext) => {
+        calls.push({ transition: structuredClone(transition), context: structuredClone(context) });
+        return {
+          accepted: true,
+          entityId: transition.entityId,
+          transition: transition.transition,
+          state: transition.replacement,
+          reason: null,
+        };
+      },
+    },
+  };
+  const start = assertResumeCompatible(
+    { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+    checkpoint,
+    HASH_A,
+  );
+  const session = new IncrementalKernelSession(
+    start,
+    (event) => [lifecycleTrace(event, "enemy", "death")],
+    view,
+  );
+  const result = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.transition.entityId).toBe("enemy");
+  expect(calls[0]?.transition.transition).toBe("death");
+  expect(calls[0]?.transition.replacement?.alive).toBe(false);
+  expect(calls[0]?.context.timeMs).toBe(1000);
+  expect(calls[0]?.context.sequence).toBe(checkpoint.queue.entries[0]?.sequence);
+  expect(result.snapshot.entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(false);
+});
+
+test("forged or rejected lifecycle port responses leave the checkpoint unchanged", () => {
+  const checkpoint = deathCheckpoint();
+  for (const apply of [
+    (transition: LifecycleTransition) => ({
+      accepted: true,
+      entityId: transition.entityId,
+      transition: transition.transition,
+      state: checkpoint.entities.find((entity) => entity.entityId === "enemy")!,
+      reason: null,
+    }),
+    (transition: LifecycleTransition) => ({
+      accepted: false,
+      entityId: transition.entityId,
+      transition: transition.transition,
+      state: null,
+      reason: "lifecycle service rejected transition",
+    }),
+  ]) {
+    const start = assertResumeCompatible(
+      {
+        scenario: sampleResolvedScenario,
+        run: sampleRunningRun,
+        ports: { ...createMockPorts(), lifecycle: { apply } },
+      },
+      checkpoint,
+      HASH_A,
+    );
+    const session = new IncrementalKernelSession(
+      start,
+      (event) => [lifecycleTrace(event, "enemy", "death")],
+      view,
+    );
+    const before = session.snapshot();
+    expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow();
+    expect(session.snapshot()).toEqual(before);
+  }
 });
 
 test("invalid lifecycle trace or replacement rolls back the whole session step", () => {
