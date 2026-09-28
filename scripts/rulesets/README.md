@@ -45,6 +45,21 @@ explicitly `data-dragon-index-and-primary-slots-only` and `combatComplete:false`
 it does not supply alternate forms, mechanics, mode legality, regional hotfix
 evidence, or a complete P02 inventory. Errors leave stdout empty.
 
+Inventory retained Data Dragon rune trees and runes, summoner spells, and maps:
+
+```sh
+bun scripts/rulesets/compile-retained-ddragon-auxiliary.ts source-set.json retained-directory runes-id summoner-id map-id
+```
+
+The command verifies every declared retained file before parsing the three
+selected, pinned, same-version and same-locale sources. It preserves numeric IDs,
+rune hierarchy, raw summoner mode tags, source pointers and empty-name gaps.
+Changed selected or unselected bytes and changed source-set hotfix identity change
+the canonical report hash. Missing, conflicting or corrupt sources fail without
+partial stdout. Mode tags are source strings, including work-in-progress tags;
+they do not establish active PC queues or maps. The report explicitly leaves PC
+patch and active mode mapping unreviewed and combat completeness false.
+
 Inventory one retained CommunityDragon character `.bin.json` source:
 
 ```sh
