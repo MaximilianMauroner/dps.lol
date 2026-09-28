@@ -60,6 +60,23 @@ partial stdout. Mode tags are source strings, including work-in-progress tags;
 they do not establish active PC queues or maps. The report explicitly leaves PC
 patch and active mode mapping unreviewed and combat completeness false.
 
+Inventory raw item recipe links and source field names from a retained Data
+Dragon item index:
+
+```sh
+bun scripts/rulesets/compile-retained-ddragon-item-structure.ts source-set.json retained-directory item-index-id
+```
+
+The command verifies every declared source file, requires the selected pinned
+Data Dragon item index, and reports every item ID and source pointer. `from`
+preserves repeated components because the repetitions may express recipe
+quantity; `into` links, raw effect keys and stat keys are recorded without
+interpreting their values. Missing referenced item IDs and conflicting reverse
+recipe links fail. One-sided `into` links remain explicit `linkGaps`, matching
+what the source actually declares. The report hash includes the source-set
+identity; failure leaves stdout empty. This inventory cannot certify item
+mechanics, recipe availability, active maps or combat completeness.
+
 Inventory one retained CommunityDragon character `.bin.json` source:
 
 ```sh
