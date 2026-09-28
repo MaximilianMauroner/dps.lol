@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import {
   assertEngineStepResult,
+  assertResolvedScenarioPolicyHash,
   assertResumeCompatible,
   EngineSnapshotSchema,
+  hashCanonical,
   PolicyVisibleStateSchema,
   RunManifestSchema,
   type EngineCommand,
@@ -500,6 +502,39 @@ test("session event limit returns a terminal, scoreless incomplete result", () =
   ).toEqual(step);
   expect(session.snapshot()).toEqual(step.snapshot);
   expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("terminal");
+});
+
+test("coverage-first event exhaustion validates without inventing kill coverage", async () => {
+  const scenarioDraft = structuredClone(sampleResolvedScenario);
+  scenarioDraft.effective.objective.aggregation = "coverage-then-ttk";
+  scenarioDraft.resolvedScenarioHash = await hashCanonical(scenarioDraft.effective);
+  const scenario = await assertResolvedScenarioPolicyHash(scenarioDraft);
+  const run = structuredClone(sampleRunningRun);
+  run.objective = structuredClone(scenario.effective.objective);
+  run.resolvedScenarioHash = scenario.resolvedScenarioHash;
+  run.cohortHash = scenario.effective.cohort.contentHash;
+  run.policyHash = scenario.policyHash;
+  run.candidateInputHash = scenario.candidateInputHash;
+  const snapshot = structuredClone(sampleSnapshot);
+  snapshot.resolvedScenarioHash = run.resolvedScenarioHash;
+  snapshot.cohortHash = run.cohortHash;
+  snapshot.policyHash = run.policyHash;
+  snapshot.candidateInputHash = run.candidateInputHash;
+  const input = { scenario, run, ports: createMockPorts() };
+  const session = new IncrementalKernelSession(
+    assertResumeCompatible(input, snapshot, HASH_A),
+    (event) => [traceCommand(event)],
+    view,
+    2,
+  );
+
+  const step = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(step.status).toBe("incomplete");
+  expect(step.result?.coverage).toBeNull();
+  expect(step.result?.metrics.ttk.status).toBe("undefined");
+  expect(assertEngineStepResult(input, step, HASH_A)).toEqual(step);
+  expect(assertEngineStepResult(input, JSON.parse(JSON.stringify(step)), HASH_A)).toEqual(step);
+  expect(session.snapshot()).toEqual(step.snapshot);
 });
 
 test("event limit commits already processed events before returning incomplete", () => {
