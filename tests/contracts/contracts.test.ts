@@ -866,6 +866,119 @@ describe("P01 versioned contract fixtures", () => {
     );
   });
 
+  test("rolls back when transaction-handle inspection throws", () => {
+    for (const property of ["then", "apply", "commit"] as const) {
+      for (const malformedRollback of [false, true]) {
+        const inspectionError = new Error(`${property} inspection failed`);
+        let rollbacks = 0;
+        let commits = 0;
+        const handle = {
+          get then() {
+            if (property === "then") throw inspectionError;
+            return undefined;
+          },
+          get apply() {
+            if (property === "apply") throw inspectionError;
+            return () => {
+              throw new Error("not used");
+            };
+          },
+          get commit() {
+            if (property === "commit") throw inspectionError;
+            return () => {
+              commits += 1;
+              return undefined;
+            };
+          },
+          rollback: () => {
+            rollbacks += 1;
+            return malformedRollback ? (false as unknown as undefined) : undefined;
+          },
+        };
+        const port: LifecyclePort = {
+          protocolVersion: 2,
+          beginBatch: () => handle,
+        };
+        let caught: unknown;
+        try {
+          withLifecycleBatch(port, sampleSnapshot, () => null);
+        } catch (error) {
+          caught = error;
+        }
+        expect(rollbacks).toBe(1);
+        expect(commits).toBe(0);
+        if (malformedRollback) {
+          expect(caught).toBeInstanceOf(AggregateError);
+          const errors = (caught as AggregateError).errors;
+          expect(errors[0]).toBe(inspectionError);
+          expect(errors[1]).toBeInstanceOf(TypeError);
+        } else {
+          expect(caught).toBe(inspectionError);
+        }
+      }
+    }
+  });
+
+  test("rejects generator batch callbacks before publication", () => {
+    for (const generator of [
+      function* () {
+        yield "deferred work";
+      },
+      async function* () {
+        yield "deferred work";
+      },
+    ]) {
+      let commits = 0;
+      let rollbacks = 0;
+      const port: LifecyclePort = {
+        protocolVersion: 2,
+        beginBatch: () => ({
+          apply: () => {
+            throw new Error("not used");
+          },
+          commit: () => {
+            commits += 1;
+            return undefined;
+          },
+          rollback: () => {
+            rollbacks += 1;
+            return undefined;
+          },
+        }),
+      };
+      expect(() =>
+        withLifecycleBatch(port, sampleSnapshot, generator as unknown as () => null),
+      ).toThrow(/synchronously/);
+      expect(commits).toBe(0);
+      expect(rollbacks).toBe(1);
+    }
+  });
+
+  test("observes async rollback cleanup after rejecting a transaction", async () => {
+    let cleanupStarted = 0;
+    let cleanupFinished = 0;
+    const port: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () => {
+          throw new Error("not used");
+        },
+        commit: () => undefined,
+        rollback: (async () => {
+          cleanupStarted += 1;
+          await Promise.resolve();
+          cleanupFinished += 1;
+        }) as unknown as () => undefined,
+      }),
+    };
+    expect(() => withLifecycleBatch(port, sampleSnapshot, () => null)).toThrow(
+      /rollback must be synchronous/,
+    );
+    expect(cleanupStarted).toBe(1);
+    await Promise.resolve();
+    expect(cleanupFinished).toBe(1);
+  });
+
   test("rejects trace sequence reuse across different timestamps", () => {
     const duplicate = clone(sampleTrace);
     duplicate.events.push({

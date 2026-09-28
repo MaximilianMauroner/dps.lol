@@ -166,13 +166,18 @@ A failed `apply` poisons the batch even if a caller catches the error. The
 staging handle closes before commit, so synchronous reentrant code cannot add
 another transition during publication. A partially formed transaction with a
 usable rollback method is rolled back before rejection.
+A handle that throws while its `then`, `apply`, or `commit` property is inspected
+is also rolled back using the previously captured rollback method; the original
+inspection error is preserved when cleanup succeeds and paired with the cleanup
+error when it fails. Generator callbacks cannot stand in for executed work.
 A throwing `commit` must publish none; `rollback` discards every staged effect
 and must not throw. Any callback error, including a later event or result
 validation failure, rolls back and preserves the session checkpoint. The batch
 is synchronous: native async methods are rejected before invocation, and
 unexpected promise-like returns are observed and rejected. If a non-native
 async `beginBatch` eventually resolves to a transaction, its rollback method
-is invoked as best-effort cleanup; the adapter remains rejected. Commit and
+is invoked as best-effort cleanup; an exposed native async rollback is also
+invoked and observed before its adapter is rejected. Commit and
 rollback must return exactly `undefined`; the helper checks this at runtime
 so false or generator-returning methods cannot be mistaken for publication. A
 nonconforming adapter that starts

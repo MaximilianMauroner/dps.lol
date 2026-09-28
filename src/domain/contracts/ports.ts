@@ -501,74 +501,88 @@ export function withLifecycleBatch<T>(
   if (isNativeAsyncFunction(port.beginBatch))
     throw new TypeError("lifecycle beginBatch must be synchronous");
   const batch = port.beginBatch(structuredClone(snapshot));
-  rejectThenable(batch, "lifecycle beginBatch must be synchronous", (opened) => {
-    if (opened === null || typeof opened !== "object") return;
-    const rollback = (opened as Partial<LifecycleBatch>).rollback;
-    if (typeof rollback !== "function") return;
-    try {
-      const result = rollback.call(opened);
-      if (isThenable(result)) void Promise.resolve(result).catch(() => undefined);
-    } catch {
-      // The invalid async adapter is already rejected; cleanup is best effort.
-    }
-  });
-  if (
-    batch === null ||
-    typeof batch !== "object" ||
-    typeof batch.apply !== "function" ||
-    typeof batch.commit !== "function" ||
-    typeof batch.rollback !== "function"
-  ) {
-    const error = new TypeError("lifecycle port must open a complete transaction");
-    const rollback = (batch as Partial<LifecycleBatch> | null)?.rollback;
-    if (typeof rollback === "function") {
-      try {
-        if (isNativeAsyncFunction(rollback))
-          throw new TypeError("lifecycle rollback must be synchronous");
-        requireUndefinedLifecycleReturn(rollback.call(batch), "rollback");
-      } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
-      }
-    }
-    throw error;
-  }
-  if (isNativeAsyncFunction(batch.rollback))
-    throw new TypeError("lifecycle rollback must be synchronous");
-  const asyncCommit = isNativeAsyncFunction(batch.commit);
+  // Capture rollback before inspecting any other handle property. A getter may
+  // throw after beginBatch has allocated private resources.
+  const rollback =
+    batch !== null && typeof batch === "object"
+      ? (batch as Partial<LifecycleBatch>).rollback
+      : undefined;
   let open = true;
   let failed = false;
   let firstFailure: unknown;
-  const stage = Object.freeze({
-    apply: (transition: LifecycleTransition, context: PortContext) => {
-      if (!open) throw new TypeError("lifecycle batch is closed");
-      if (failed) throw new TypeError("lifecycle batch has already failed");
-      try {
-        if (context.runId !== snapshot.runId)
-          throw new TypeError("lifecycle batch context must match the snapshot run");
-        if (isNativeAsyncFunction(batch.apply))
-          throw new TypeError("lifecycle apply must finish synchronously");
-        const resolution = batch.apply(structuredClone(transition), structuredClone(context));
-        rejectThenable(resolution, "lifecycle apply must finish synchronously");
-        return resolution;
-      } catch (error) {
-        failed = true;
-        firstFailure = error;
-        throw error;
-      }
-    },
-  });
   try {
+    rejectThenable(batch, "lifecycle beginBatch must be synchronous", (opened) => {
+      if (opened === null || typeof opened !== "object") return;
+      try {
+        const lateRollback = (opened as Partial<LifecycleBatch>).rollback;
+        if (typeof lateRollback !== "function") return;
+        const result = lateRollback.call(opened);
+        if (isThenable(result)) void Promise.resolve(result).catch(() => undefined);
+      } catch {
+        // The invalid async adapter is already rejected; cleanup is best effort.
+      }
+    });
+    if (batch === null || typeof batch !== "object")
+      throw new TypeError("lifecycle port must open a complete transaction");
+    const apply = batch.apply;
+    const commit = batch.commit;
+    if (
+      typeof apply !== "function" ||
+      typeof commit !== "function" ||
+      typeof rollback !== "function"
+    )
+      throw new TypeError("lifecycle port must open a complete transaction");
+    if (isNativeAsyncFunction(rollback))
+      throw new TypeError("lifecycle rollback must be synchronous");
+    const asyncCommit = isNativeAsyncFunction(commit);
+    const stage = Object.freeze({
+      apply: (transition: LifecycleTransition, context: PortContext) => {
+        if (!open) throw new TypeError("lifecycle batch is closed");
+        if (failed) throw new TypeError("lifecycle batch has already failed");
+        try {
+          if (context.runId !== snapshot.runId)
+            throw new TypeError("lifecycle batch context must match the snapshot run");
+          if (isNativeAsyncFunction(apply))
+            throw new TypeError("lifecycle apply must finish synchronously");
+          const resolution = apply.call(
+            batch,
+            structuredClone(transition),
+            structuredClone(context),
+          );
+          rejectThenable(resolution, "lifecycle apply must finish synchronously");
+          return resolution;
+        } catch (error) {
+          failed = true;
+          firstFailure = error;
+          throw error;
+        }
+      },
+    });
     if (asyncCommit) throw new TypeError("lifecycle commit must be synchronous");
+    if (
+      /^\[object (?:GeneratorFunction|AsyncGeneratorFunction)\]$/.test(
+        Object.prototype.toString.call(work),
+      )
+    )
+      throw new TypeError("lifecycle batches must finish synchronously");
     const result = work(stage);
     rejectThenable(result, "lifecycle batches must finish synchronously");
+    if (/^\[object (?:Generator|AsyncGenerator)\]$/.test(Object.prototype.toString.call(result)))
+      throw new TypeError("lifecycle batches must finish synchronously");
     if (failed) throw firstFailure;
     open = false;
-    requireUndefinedLifecycleReturn(batch.commit(), "commit");
+    requireUndefinedLifecycleReturn(commit.call(batch), "commit");
     return result;
   } catch (error) {
     open = false;
+    if (typeof rollback !== "function") throw error;
     try {
-      requireUndefinedLifecycleReturn(batch.rollback(), "rollback");
+      const result = rollback.call(batch);
+      if (isNativeAsyncFunction(rollback)) {
+        if (isThenable(result)) void Promise.resolve(result).catch(() => undefined);
+      } else {
+        requireUndefinedLifecycleReturn(result, "rollback");
+      }
     } catch (rollbackError) {
       throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
     }
