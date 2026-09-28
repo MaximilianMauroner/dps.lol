@@ -17,11 +17,11 @@ function isRecord(value: unknown): value is JsonObject {
 
 function loadPlanDocument(): JsonObject {
   const parsed: unknown = JSON.parse(
-    readFileSync(resolve(repoRoot, "docs/implementation/planning/TASKS.json"), "utf8"),
+    readFileSync(resolve(repoRoot, "scripts/plan-contract.json"), "utf8"),
   );
-  if (!isRecord(parsed)) throw new Error("TASKS.json fixture must be an object");
+  if (!isRecord(parsed)) throw new Error("plan-contract.json fixture must be an object");
   const clone: unknown = structuredClone(parsed);
-  if (!isRecord(clone)) throw new Error("cloned TASKS.json fixture must be an object");
+  if (!isRecord(clone)) throw new Error("cloned plan-contract.json fixture must be an object");
   return clone;
 }
 
@@ -59,16 +59,14 @@ function validate(document: unknown) {
   return validatePlanDocument(document, { baselineSnapshot, repoRoot });
 }
 
-describe("P00 planning validator characterization", () => {
+describe("offline ownership contract validator", () => {
   test("reports malformed top-level and nested schema types without throwing", () => {
     const malformed: JsonObject = {
       schemaVersion: "one",
       repository: 42,
       baselineCommit: null,
       roadmapIssue: [],
-      integrationOwner: "not-an-object",
-      contentWorkOrderTemplate: false,
-      pathStateDefinition: { existsAtAuditedBaseline: true },
+      integrationOwner: "stale status snapshot",
       tasks: [
         {
           id: 0,
@@ -95,13 +93,11 @@ describe("P00 planning validator characterization", () => {
       "top-level.baselineCommit must be a string",
       "top-level.baselineTree is required",
       "roadmapIssue must be an object",
-      "integrationOwner must be an object",
-      "top-level.contentWorkOrderTemplate must be a string",
-      "pathStateDefinition.existsAtAuditedBaseline must be a string",
-      "pathStateDefinition.excludes is required",
+      "top-level.integrationOwner is not part of the ownership contract",
       "tasks[0].id must be a string",
       "tasks[0].issue must be a finite integer",
       "tasks[0].url is required",
+      "tasks[0].prerequisites[1] must be a string",
       "tasks[0].ownedPaths[0].existsAtAuditedBaseline must be a boolean",
       "tasks[0].ownedPaths[0].excludes must be an array of strings",
       "tasks[0].ownedPaths[0].handoffFrom[0] must be a string",
@@ -134,6 +130,57 @@ describe("P00 planning validator characterization", () => {
         expect.stringContaining(
           "P02 owned path scripts/sync-static.ts declares future but matches 1 audited-tree path(s)",
         ),
+      ]),
+    );
+  });
+
+  test("rejects missing and duplicate slice IDs and incorrect issue mapping", () => {
+    const duplicate = loadPlanDocument();
+    getArray(duplicate, "tasks").push(structuredClone(getTask(duplicate, "P02")));
+    expect(validate(duplicate).errors).toEqual(
+      expect.arrayContaining(["duplicate task id: P02", "expected 31 parent tasks, found 32"]),
+    );
+
+    const missing = loadPlanDocument();
+    missing.tasks = getArray(missing, "tasks").filter(
+      (task) => !isRecord(task) || task.id !== "P04",
+    );
+    expect(validate(missing).errors).toContain("missing parent task: P04");
+
+    const wrongIssue = loadPlanDocument();
+    getTask(wrongIssue, "P02").issue = 8;
+    expect(validate(wrongIssue).errors).toEqual(
+      expect.arrayContaining([
+        "P02 must map to issue 6, found 8",
+        "issue 8 is mapped by both P02 and P04",
+      ]),
+    );
+
+    const wrongUrl = loadPlanDocument();
+    getTask(wrongUrl, "P04").url = "https://github.com/MaximilianMauroner/dps.lol/issues/6";
+    expect(validate(wrongUrl).errors).toContain("P04 has incorrect issue URL");
+  });
+
+  test("rejects missing prerequisites and dependency cycles", () => {
+    const missing = loadPlanDocument();
+    getArray(getTask(missing, "P02"), "prerequisites").push("P99");
+    expect(validate(missing).errors).toContain("P02 has missing prerequisite P99");
+
+    const cycle = loadPlanDocument();
+    getArray(getTask(cycle, "P00"), "prerequisites").push("P02");
+    expect(validate(cycle).errors.some((error) => error.startsWith("dependency cycle:"))).toBe(
+      true,
+    );
+  });
+
+  test("rejects copied work-order and live status fields", () => {
+    const document = loadPlanDocument();
+    getTask(document, "P02").scope = "stale scope copy";
+    getTask(document, "P02").issueUpdatedAt = "2026-09-18T20:10:14Z";
+    expect(validate(document).errors).toEqual(
+      expect.arrayContaining([
+        "tasks[2].scope is not part of the ownership contract",
+        "tasks[2].issueUpdatedAt is not part of the ownership contract",
       ]),
     );
   });
@@ -291,6 +338,24 @@ describe("P00 planning validator characterization", () => {
         ),
         expect.stringContaining(
           "conflicting owned paths: P24 src/app/page.tsx <> P29 src/app/page.tsx",
+        ),
+      ]),
+    );
+  });
+
+  test("rejects an orphan sender handoff and a partial carve-out transfer", () => {
+    const document = loadPlanDocument();
+    delete getOwnedPath(
+      getTask(document, "P02"),
+      "docs/implementation/planning/CONTENT_MANIFEST.json",
+    ).handoffFrom;
+
+    const result = validate(document);
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "P00 handoffTo P02 for docs/implementation/planning/CONTENT_MANIFEST.json is missing a matching receiver handoffFrom",
         ),
       ]),
     );
