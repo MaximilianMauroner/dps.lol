@@ -15,6 +15,10 @@ export function createMockPorts(): CombatKernelPorts {
   >();
   const resourceValues = new Map<string, { current: number; maximum: number }>();
   const rngDrawCounts = new Map<string, number>();
+  const lifecycleEntitiesByRunId = new Map<
+    string,
+    Map<string, import("../../src/domain/contracts").EntityState>
+  >();
   const cloneTrace = (trace: Trace): Trace => structuredClone(trace);
   const timersFor = (runId: string) => {
     const existing = scheduledByRunId.get(runId);
@@ -132,13 +136,36 @@ export function createMockPorts(): CombatKernelPorts {
       },
     },
     lifecycle: {
-      apply: (transition: LifecycleTransition) => ({
-        accepted: true,
-        entityId: transition.entityId,
-        transition: transition.transition,
-        state: transition.replacement,
-        reason: null,
-      }),
+      protocolVersion: 2,
+      beginBatch: (snapshot) => {
+        const staged = new Map(
+          snapshot.entities.map((entity) => [entity.entityId, structuredClone(entity)]),
+        );
+        let open = true;
+        return {
+          apply: (transition: LifecycleTransition, context: PortContext) => {
+            if (!open || context.runId !== snapshot.runId)
+              throw new TypeError("lifecycle batch is closed or belongs to another run");
+            if (transition.replacement === null) staged.delete(transition.entityId);
+            else staged.set(transition.entityId, structuredClone(transition.replacement));
+            return {
+              accepted: true,
+              entityId: transition.entityId,
+              transition: transition.transition,
+              state: transition.replacement,
+              reason: null,
+            };
+          },
+          commit: () => {
+            if (!open) throw new TypeError("lifecycle batch is closed");
+            lifecycleEntitiesByRunId.set(snapshot.runId, staged);
+            open = false;
+          },
+          rollback: () => {
+            open = false;
+          },
+        };
+      },
     },
     triggers: {
       dispatch: () => ({ accepted: true, emittedCommands: [], reason: null }),
