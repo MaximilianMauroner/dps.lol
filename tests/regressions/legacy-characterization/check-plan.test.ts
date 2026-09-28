@@ -193,7 +193,10 @@ describe("offline ownership contract validator", () => {
       expect(runCheckPlan(shallow)).toBe(0);
 
       const bundledPath = join(shallow, "scripts/plan-baseline-files.txt");
-      writeFileSync(bundledPath, readFileSync(bundledPath, "utf8").replace(/\n/g, "\r\n"));
+      writeFileSync(
+        bundledPath,
+        readFileSync(bundledPath, "utf8").replace(/\r\n/g, "\n").replace(/\n/g, "\r\n"),
+      );
       expect(runCheckPlan(shallow)).toBe(0);
 
       writeFileSync(bundledPath, "changed\n");
