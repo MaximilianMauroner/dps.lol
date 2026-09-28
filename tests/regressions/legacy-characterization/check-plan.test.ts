@@ -1,8 +1,13 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "bun:test";
 import {
+  readAuditedBaselineSnapshot,
   readGitBaselineSnapshot,
+  runCheckPlan,
   validatePlanDocument,
   type BaselineSnapshot,
 } from "../../../scripts/check-plan";
@@ -50,7 +55,9 @@ function getArray(object: JsonObject, key: string): unknown[] {
 function auditedBaseline(): BaselineSnapshot {
   const structural = validatePlanDocument(loadPlanDocument());
   if (!structural.plan) throw new Error(structural.errors.join("; "));
-  return readGitBaselineSnapshot(structural.plan, repoRoot);
+  const bundled = readAuditedBaselineSnapshot(structural.plan, repoRoot);
+  expect(bundled).toEqual(readGitBaselineSnapshot(structural.plan, repoRoot));
+  return bundled;
 }
 
 const baselineSnapshot = auditedBaseline();
@@ -132,6 +139,71 @@ describe("offline ownership contract validator", () => {
         ),
       ]),
     );
+  });
+
+  test("does not accept a substituted audited commit or tree in the offline contract", () => {
+    const changed = loadPlanDocument();
+    changed.baselineCommit = "0".repeat(40);
+    changed.baselineTree = "1".repeat(40);
+    expect(validate(changed).errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "baselineCommit must remain f2747db43ca89d12338982b0e7ed2f700ee2b591",
+        ),
+        expect.stringContaining(
+          "baselineTree must remain c009c80956c8eb844dbbd8e75f6c820b89530d2b",
+        ),
+      ]),
+    );
+  });
+
+  test("runs offline in a real depth-1 checkout and rejects a changed bundled path list", () => {
+    const root = mkdtempSync(join(tmpdir(), "plan-contract-shallow-"));
+    const source = join(root, "source");
+    const shallow = join(root, "shallow");
+    try {
+      mkdirSync(join(source, "scripts"), { recursive: true });
+      copyFileSync(
+        join(repoRoot, "scripts/plan-contract.json"),
+        join(source, "scripts/plan-contract.json"),
+      );
+      copyFileSync(
+        join(repoRoot, "scripts/plan-baseline-files.txt"),
+        join(source, "scripts/plan-baseline-files.txt"),
+      );
+      execFileSync("git", ["init", "-q", source]);
+      execFileSync("git", ["add", "."], { cwd: source });
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-qm",
+          "fixture",
+        ],
+        { cwd: source },
+      );
+      execFileSync("git", ["clone", "-q", "--depth", "1", pathToFileURL(source).href, shallow]);
+      expect(
+        execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
+          cwd: shallow,
+          encoding: "utf8",
+        }).trim(),
+      ).toBe("true");
+      expect(runCheckPlan(shallow)).toBe(0);
+
+      writeFileSync(join(shallow, "scripts/plan-baseline-files.txt"), "changed\n");
+      const structural = validatePlanDocument(loadPlanDocument());
+      if (!structural.plan) throw new Error(structural.errors.join("; "));
+      expect(() => readAuditedBaselineSnapshot(structural.plan!, shallow)).toThrow(
+        "bundled audited path list has an unexpected SHA-256",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("rejects missing and duplicate slice IDs and incorrect issue mapping", () => {

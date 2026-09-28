@@ -9,6 +9,11 @@ coordination with that slice owner before editing this contract. In particular, 
 future `CONTENT_TASKS.json` and `CONTENT_MANIFEST.json` claims under the P00 carve-out; P04's
 kernel paths remain solely its own.
 
+The 93 path names from the immutable P00 Git tree are sealed in
+[`scripts/plan-baseline-files.txt`](../../scripts/plan-baseline-files.txt). A full checkout compares
+that list with the actual tree. A depth-1 checkout uses the sealed list so the normal gate stays
+offline; both modes reject changes to the baseline identity or path list.
+
 ## Field inventory from the P00 snapshot
 
 | Former `TASKS.json` field                                                                          | Disposition          | Reason                                                                                   |

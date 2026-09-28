@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
@@ -63,7 +64,11 @@ type PathClaim = { task: Task; owned: OwnedPath };
 type ParsedPattern = { segments: string[]; recursive: boolean };
 
 const PLAN_RELATIVE_PATH = "scripts/plan-contract.json";
+const BASELINE_FILES_RELATIVE_PATH = "scripts/plan-baseline-files.txt";
+const BASELINE_FILES_SHA256 = "bed903c39ded67b4731d225eb2b0aed462e373bcfd724cbdff93a08c2c92b061";
 const REPOSITORY = "MaximilianMauroner/dps.lol";
+const EXPECTED_BASELINE_COMMIT = "f2747db43ca89d12338982b0e7ed2f700ee2b591";
+const EXPECTED_BASELINE_TREE = "c009c80956c8eb844dbbd8e75f6c820b89530d2b";
 const EXPECTED_SCHEMA_VERSION = 2;
 const EXPECTED_TASK_IDS = Array.from({ length: 31 }, (_, index) => expectedTaskId(index));
 
@@ -135,6 +140,49 @@ export function readGitBaselineSnapshot(
   return { commit: resolvedCommit, tree: plan.baselineTree, files };
 }
 
+export function readAuditedBaselineSnapshot(
+  plan: Pick<Plan, "baselineCommit" | "baselineTree">,
+  repoRoot = resolve(process.cwd()),
+): BaselineSnapshot {
+  const contents = readFileSync(join(repoRoot, BASELINE_FILES_RELATIVE_PATH), "utf8");
+  const digest = createHash("sha256").update(contents).digest("hex");
+  if (digest !== BASELINE_FILES_SHA256) {
+    throw new Error(`bundled audited path list has an unexpected SHA-256: ${digest}`);
+  }
+  const files = contents.trimEnd().split("\n");
+  if (
+    files.length !== 93 ||
+    files.some((file) => !isSafeRelativePath(file)) ||
+    new Set(files).size !== files.length ||
+    files.some((file, index) => index > 0 && files[index - 1]! >= file)
+  ) {
+    throw new Error("bundled audited path list must contain 93 unique sorted safe paths");
+  }
+  if (!isFullSha(plan.baselineCommit) || !isFullSha(plan.baselineTree)) {
+    throw new Error("audited baseline commit and tree must be full 40-character SHAs");
+  }
+  if (
+    plan.baselineCommit !== EXPECTED_BASELINE_COMMIT ||
+    plan.baselineTree !== EXPECTED_BASELINE_TREE
+  ) {
+    throw new Error("audited baseline identity differs from the sealed P00 baseline");
+  }
+
+  if (gitObjectExists(repoRoot, `${plan.baselineCommit}^{commit}`)) {
+    const snapshot = readGitBaselineSnapshot(plan, repoRoot);
+    if (snapshot.files.join("\n") !== files.join("\n")) {
+      throw new Error("bundled audited path list differs from the immutable Git baseline tree");
+    }
+    return snapshot;
+  }
+  if (readGitCommand(repoRoot, ["rev-parse", "--is-shallow-repository"]).trim() !== "true") {
+    throw new Error(
+      `audited baseline commit ${plan.baselineCommit} is missing outside a shallow checkout`,
+    );
+  }
+  return { commit: plan.baselineCommit, tree: plan.baselineTree, files };
+}
+
 export function runCheckPlan(repoRoot = resolve(process.cwd())): number {
   const planPath = join(repoRoot, PLAN_RELATIVE_PATH);
   let document: unknown;
@@ -152,7 +200,7 @@ export function runCheckPlan(repoRoot = resolve(process.cwd())): number {
 
   if (structural.plan) {
     try {
-      const baselineSnapshot = readGitBaselineSnapshot(structural.plan, repoRoot);
+      const baselineSnapshot = readAuditedBaselineSnapshot(structural.plan, repoRoot);
       result = validatePlanDocument(document, {
         baselineSnapshot,
         repoRoot,
@@ -345,6 +393,12 @@ function validatePlanMetadata(plan: Plan, errors: string[]): void {
   if (!isFullSha(plan.baselineCommit))
     errors.push("baselineCommit must be a full 40-character SHA");
   if (!isFullSha(plan.baselineTree)) errors.push("baselineTree must be a full 40-character SHA");
+  if (plan.baselineCommit !== EXPECTED_BASELINE_COMMIT) {
+    errors.push(`baselineCommit must remain ${EXPECTED_BASELINE_COMMIT}`);
+  }
+  if (plan.baselineTree !== EXPECTED_BASELINE_TREE) {
+    errors.push(`baselineTree must remain ${EXPECTED_BASELINE_TREE}`);
+  }
   if (plan.roadmapIssue.number !== 3) {
     errors.push(`roadmapIssue.number must be 3, found ${String(plan.roadmapIssue.number)}`);
   }
@@ -872,10 +926,20 @@ function readGitRevision(repoRoot: string, revision: string, label: string): str
   }
 }
 
+function gitObjectExists(repoRoot: string, revision: string): boolean {
+  try {
+    readGitCommand(repoRoot, ["cat-file", "-e", revision]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readGitCommand(repoRoot: string, args: string[]): string {
   return execFileSync("git", args, {
     cwd: repoRoot,
     encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
