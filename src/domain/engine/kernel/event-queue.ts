@@ -88,7 +88,11 @@ export class EventQueue {
     phaseOrder: readonly ScheduledEvent["phase"][],
   ): readonly ScheduledEvent[] {
     const rank = new Map(phaseOrder.map((phase, index) => [phase, index]));
-    if (rank.size !== phaseOrder.length || rank.size !== 7)
+    if (
+      phaseOrder.length !== DEFAULT_PHASE_ORDER.length ||
+      rank.size !== phaseOrder.length ||
+      DEFAULT_PHASE_ORDER.some((phase) => !rank.has(phase))
+    )
       throw new TypeError("phase policy must rank all seven phases exactly once");
     const ordered = [...drafts].sort(
       (a, b) =>

@@ -53,6 +53,29 @@ test("batch phase and ID ties are independent of input order", () => {
   expect(run(drafts).map(([id]) => id)).toEqual(["b-input", "a-impact", "z-impact"]);
 });
 
+test("phase policy ranks every known phase exactly once before allocation", () => {
+  const queue = new EventQueue();
+  const drafts = [event("impact", 10), event("input", 10, "input")];
+  const malformed = [
+    "input",
+    "windup",
+    "impact",
+    "periodic",
+    "expiry",
+    "lifecycle",
+    "unrecognized",
+  ] as unknown as readonly EventDraft["phase"][];
+  expect(() => queue.scheduleBatch(drafts, malformed)).toThrow("rank all seven phases");
+  expect(queue.snapshot().entries).toEqual([]);
+  expect(queue.allocatedEventIds()).toEqual([]);
+
+  const reversed = [...phases].reverse();
+  expect(queue.scheduleBatch(drafts, reversed).map((entry) => entry.eventId)).toEqual([
+    "impact",
+    "input",
+  ]);
+});
+
 test("cancel, same-time child, checkpoint, and resume preserve event order", () => {
   const run = (pause: boolean) => {
     let queue = new EventQueue();
