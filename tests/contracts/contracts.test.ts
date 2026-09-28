@@ -725,6 +725,30 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => withLifecycleBatch(rejectedBegin, sampleSnapshot, () => null)).toThrow(
       /beginBatch must be synchronous/,
     );
+    let lateBeginRollback = 0;
+    const resolvedBegin: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () =>
+        Promise.resolve({
+          apply: () => {
+            throw new Error("not used");
+          },
+          commit: () => {
+            throw new Error("must not commit");
+          },
+          rollback: () => {
+            lateBeginRollback += 1;
+            return undefined;
+          },
+        }) as unknown as LifecycleBatch,
+    };
+    expect(() => withLifecycleBatch(resolvedBegin, sampleSnapshot, () => null)).toThrow(
+      /beginBatch must be synchronous/,
+    );
+    expect(lateBeginRollback).toBe(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lateBeginRollback).toBe(1);
     const rejectedApply: LifecyclePort = {
       protocolVersion: 2,
       beginBatch: () => ({
@@ -774,6 +798,72 @@ describe("P01 versioned contract fixtures", () => {
     ).toThrow(/rollback failed/);
     await Promise.resolve();
     await Promise.resolve();
+  });
+
+  test("rejects lifecycle commits that return without publishing", () => {
+    const transition = { entityId: "enemy", transition: "despawn" as const, replacement: null };
+    for (const mode of ["false", "generator", "async-generator"] as const) {
+      let published: string[] = [];
+      let rolledBack = 0;
+      const commit =
+        mode === "false"
+          ? () => false
+          : mode === "generator"
+            ? function* () {
+                published = ["enemy"];
+              }
+            : async function* () {
+                published = ["enemy"];
+              };
+      const port: LifecyclePort = {
+        protocolVersion: 2,
+        beginBatch: () => ({
+          apply: (request) => ({
+            accepted: true,
+            entityId: request.entityId,
+            transition: request.transition,
+            state: request.replacement,
+            reason: null,
+          }),
+          commit: commit as unknown as () => undefined,
+          rollback: () => {
+            rolledBack += 1;
+            return undefined;
+          },
+        }),
+      };
+      expect(() =>
+        withLifecycleBatch(port, sampleSnapshot, (stage) => {
+          stage.apply(transition, mockPortContext);
+          return "adopted";
+        }),
+      ).toThrow(/commit must be synchronous and return undefined/);
+      expect(published).toEqual([]);
+      expect(rolledBack).toBe(1);
+    }
+
+    const falseRollback: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () => {
+          throw new Error("not used");
+        },
+        commit: () => {
+          throw new Error("commit failed");
+        },
+        rollback: () => false as unknown as undefined,
+      }),
+    };
+    expect(() => withLifecycleBatch(falseRollback, sampleSnapshot, () => null)).toThrow(
+      /rollback failed/,
+    );
+    const partialFalseRollback: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({ rollback: () => false }) as unknown as LifecycleBatch,
+    };
+    expect(() => withLifecycleBatch(partialFalseRollback, sampleSnapshot, () => null)).toThrow(
+      /rollback failed/,
+    );
   });
 
   test("rejects trace sequence reuse across different timestamps", () => {

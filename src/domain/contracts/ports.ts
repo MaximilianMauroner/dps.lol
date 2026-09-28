@@ -469,11 +469,23 @@ function isNativeAsyncFunction(value: unknown): boolean {
   return Object.prototype.toString.call(value) === "[object AsyncFunction]";
 }
 
-function rejectThenable(value: unknown, message: string): void {
+function rejectThenable(
+  value: unknown,
+  message: string,
+  onFulfilled: (value: unknown) => void = () => undefined,
+): void {
   if (!isThenable(value)) return;
-  // Observe a rejected promise even though this synchronous boundary rejects it.
-  void Promise.resolve(value).catch(() => undefined);
+  // Observe both outcomes even though this synchronous boundary rejects the call.
+  void Promise.resolve(value)
+    .then(onFulfilled, () => undefined)
+    .catch(() => undefined);
   throw new TypeError(message);
+}
+
+function requireUndefinedLifecycleReturn(value: unknown, operation: "commit" | "rollback"): void {
+  const message = `lifecycle ${operation} must be synchronous and return undefined`;
+  rejectThenable(value, message);
+  if (value !== undefined) throw new TypeError(message);
 }
 
 /**
@@ -489,7 +501,17 @@ export function withLifecycleBatch<T>(
   if (isNativeAsyncFunction(port.beginBatch))
     throw new TypeError("lifecycle beginBatch must be synchronous");
   const batch = port.beginBatch(structuredClone(snapshot));
-  rejectThenable(batch, "lifecycle beginBatch must be synchronous");
+  rejectThenable(batch, "lifecycle beginBatch must be synchronous", (opened) => {
+    if (opened === null || typeof opened !== "object") return;
+    const rollback = (opened as Partial<LifecycleBatch>).rollback;
+    if (typeof rollback !== "function") return;
+    try {
+      const result = rollback.call(opened);
+      if (isThenable(result)) void Promise.resolve(result).catch(() => undefined);
+    } catch {
+      // The invalid async adapter is already rejected; cleanup is best effort.
+    }
+  });
   if (
     batch === null ||
     typeof batch !== "object" ||
@@ -503,7 +525,7 @@ export function withLifecycleBatch<T>(
       try {
         if (isNativeAsyncFunction(rollback))
           throw new TypeError("lifecycle rollback must be synchronous");
-        rejectThenable(rollback.call(batch), "lifecycle rollback must be synchronous");
+        requireUndefinedLifecycleReturn(rollback.call(batch), "rollback");
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
       }
@@ -541,12 +563,12 @@ export function withLifecycleBatch<T>(
     rejectThenable(result, "lifecycle batches must finish synchronously");
     if (failed) throw firstFailure;
     open = false;
-    rejectThenable(batch.commit(), "lifecycle commit must be synchronous");
+    requireUndefinedLifecycleReturn(batch.commit(), "commit");
     return result;
   } catch (error) {
     open = false;
     try {
-      rejectThenable(batch.rollback(), "lifecycle rollback must be synchronous");
+      requireUndefinedLifecycleReturn(batch.rollback(), "rollback");
     } catch (rollbackError) {
       throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
     }

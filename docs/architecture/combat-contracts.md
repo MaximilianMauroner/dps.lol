@@ -170,8 +170,12 @@ A throwing `commit` must publish none; `rollback` discards every staged effect
 and must not throw. Any callback error, including a later event or result
 validation failure, rolls back and preserves the session checkpoint. The batch
 is synchronous: native async methods are rejected before invocation, and
-unexpected promise-like returns are observed, rejected and rolled back. Commit
-and rollback return exactly `undefined`. A nonconforming adapter that starts
+unexpected promise-like returns are observed and rejected. If a non-native
+async `beginBatch` eventually resolves to a transaction, its rollback method
+is invoked as best-effort cleanup; the adapter remains rejected. Commit and
+rollback must return exactly `undefined`; the helper checks this at runtime
+so false or generator-returning methods cannot be mistaken for publication. A
+nonconforming adapter that starts
 delayed publication before returning cannot be repaired by the caller; its
 implementation must obey the synchronous atomic-commit rule. The caller
 must do no fallible work between successful commit and adopting its already
