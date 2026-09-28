@@ -449,7 +449,7 @@ export interface LifecyclePort {
 export function assertLifecyclePortProtocol(value: unknown): asserts value is LifecyclePort {
   if (
     value === null ||
-    typeof value !== "object" ||
+    (typeof value !== "object" && typeof value !== "function") ||
     (value as Partial<LifecyclePort>).protocolVersion !== LIFECYCLE_PORT_PROTOCOL_VERSION ||
     typeof (value as Partial<LifecyclePort>).beginBatch !== "function"
   ) {

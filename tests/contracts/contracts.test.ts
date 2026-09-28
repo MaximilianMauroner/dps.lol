@@ -1030,6 +1030,48 @@ describe("P01 versioned contract fixtures", () => {
     expect(rollbacks).toBe(1);
   });
 
+  test("accepts callable lifecycle ports at fresh and resume boundaries", () => {
+    let commits = 0;
+    const callablePort = Object.assign(() => undefined, {
+      protocolVersion: 2 as const,
+      beginBatch: () => ({
+        apply: (transition: LifecycleTransition) => ({
+          accepted: true,
+          entityId: transition.entityId,
+          transition: transition.transition,
+          state: transition.replacement,
+          reason: null,
+        }),
+        commit: () => {
+          commits += 1;
+          return undefined;
+        },
+        rollback: () => undefined,
+      }),
+    });
+    assertLifecyclePortProtocol(callablePort);
+    withLifecycleBatch(callablePort, sampleSnapshot, (stage) => {
+      stage.apply({ entityId: "enemy", transition: "despawn", replacement: null }, mockPortContext);
+    });
+    expect(commits).toBe(1);
+
+    const ports = { ...createMockPorts(), lifecycle: callablePort };
+    const plannedRun = clone(sampleRunningRun);
+    plannedRun.status = "planned";
+    expect(() =>
+      assertEngineInputCompatible(
+        { scenario: sampleResolvedScenario, run: plannedRun, ports },
+        plannedRun.engineHash,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+        sampleSnapshot,
+      ),
+    ).not.toThrow();
+  });
+
   test("rejects trace sequence reuse across different timestamps", () => {
     const duplicate = clone(sampleTrace);
     duplicate.events.push({
