@@ -155,6 +155,41 @@ frontier. Port return values are serializable and carry either
 an accepted/complete result or an explicit reason. Implementations must not
 read the wall clock, network, mutable UI state or hidden future state.
 
+Lifecycle service effects use port protocol `2` (the serialized combat and
+snapshot schema version remains `1`). A session passes its detached, authoritative
+checkpoint to `withLifecycleBatch`, then runs the entire speculative event batch
+and validates its result inside the callback. The callback can only call
+`stage.apply`; it cannot commit early. `beginBatch` and `apply` may update private
+staged state but must not publish it. A stateful port atomically publishes all
+staged transitions, in order and exactly once, only when `commit` succeeds.
+A failed `apply` poisons the batch even if a caller catches the error. The
+staging handle closes before commit, so synchronous reentrant code cannot add
+another transition during publication. A partially formed transaction with a
+usable rollback method is rolled back before rejection.
+A handle that throws while its `then`, `apply`, or `commit` property is inspected
+is also rolled back using the previously captured rollback method; the original
+inspection error is preserved when cleanup succeeds and paired with the cleanup
+error when it fails. Generator callbacks cannot stand in for executed work.
+A throwing `commit` must publish none; `rollback` discards every staged effect
+and must not throw. Any callback error, including a later event or result
+validation failure, rolls back and preserves the session checkpoint. The batch
+is synchronous: native async methods are rejected before invocation, and
+unexpected promise-like returns are observed and rejected. If a non-native
+async `beginBatch` eventually resolves to a transaction, its rollback method
+is invoked as best-effort cleanup; an exposed native async rollback is also
+invoked and observed before its adapter is rejected. Commit and
+rollback must return exactly `undefined`; the helper checks this at runtime
+so false or generator-returning methods cannot be mistaken for publication. A
+nonconforming adapter that starts
+delayed publication before returning cannot be repaired by the caller; its
+implementation must obey the synchronous atomic-commit rule. The caller
+must do no fallible work between successful commit and adopting its already
+validated in-memory result. A pure lifecycle adapter can use the same protocol
+with trivial staging. Old immediate-apply lifecycle ports are rejected by the
+fresh and resume input guards; P04 must migrate #65's call to this transaction
+boundary before the service wiring can merge. Other stateful services need their
+own rollback or staging contracts before they participate in speculative steps.
+
 `EngineCommand` and `EngineEvent` are versioned serializable envelopes. The
 command schema rejects scheduling work before the command's issue time, while
 complete traces require every causal ID to name an earlier event. Damage port

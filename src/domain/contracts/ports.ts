@@ -428,8 +428,166 @@ export type LifecycleResolution = Readonly<{
   reason: string | null;
 }>;
 
-export interface LifecyclePort {
+/** Port-only revision; serialized combat and snapshot schemas remain at version 1. */
+export const LIFECYCLE_PORT_PROTOCOL_VERSION = 2 as const;
+
+/** A single speculative engine step. Effects are private until commit succeeds. */
+export interface LifecycleBatch {
   apply(transition: LifecycleTransition, context: PortContext): LifecycleResolution;
+  /** Publishes every staged transition atomically, exactly once. A throwing commit publishes none. */
+  commit(): undefined;
+  /** Discards all staged transitions, including after a failed commit. */
+  rollback(): undefined;
+}
+
+export interface LifecyclePort {
+  readonly protocolVersion: typeof LIFECYCLE_PORT_PROTOCOL_VERSION;
+  /** Must not publish effects; the snapshot is detached from the session's retained state. */
+  beginBatch(snapshot: Readonly<EngineSnapshot>): LifecycleBatch;
+}
+
+export function assertLifecyclePortProtocol(value: unknown): asserts value is LifecyclePort {
+  if (
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function") ||
+    (value as Partial<LifecyclePort>).protocolVersion !== LIFECYCLE_PORT_PROTOCOL_VERSION ||
+    typeof (value as Partial<LifecyclePort>).beginBatch !== "function"
+  ) {
+    throw new TypeError("lifecycle port requires transaction protocol version 2");
+  }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function isNativeAsyncFunction(value: unknown): boolean {
+  return Object.prototype.toString.call(value) === "[object AsyncFunction]";
+}
+
+function rejectThenable(
+  value: unknown,
+  message: string,
+  onFulfilled: (value: unknown) => void = () => undefined,
+): void {
+  if (!isThenable(value)) return;
+  // Observe both outcomes even though this synchronous boundary rejects the call.
+  void Promise.resolve(value)
+    .then(onFulfilled, () => undefined)
+    .catch(() => undefined);
+  throw new TypeError(message);
+}
+
+function requireUndefinedLifecycleReturn(value: unknown, operation: "commit" | "rollback"): void {
+  const message = `lifecycle ${operation} must be synchronous and return undefined`;
+  rejectThenable(value, message);
+  if (value !== undefined) throw new TypeError(message);
+}
+
+/**
+ * Runs the entire speculative step, including result validation, before publishing
+ * lifecycle effects. The callback sees only apply, never commit or rollback.
+ */
+export function withLifecycleBatch<T>(
+  port: LifecyclePort,
+  snapshot: Readonly<EngineSnapshot>,
+  work: (stage: Pick<LifecycleBatch, "apply">) => T extends PromiseLike<unknown> ? never : T,
+): T {
+  assertLifecyclePortProtocol(port);
+  if (isNativeAsyncFunction(port.beginBatch))
+    throw new TypeError("lifecycle beginBatch must be synchronous");
+  const batch = port.beginBatch(structuredClone(snapshot));
+  // Capture rollback before inspecting any other handle property. A getter may
+  // throw after beginBatch has allocated private resources.
+  const rollback =
+    batch !== null && (typeof batch === "object" || typeof batch === "function")
+      ? (batch as Partial<LifecycleBatch>).rollback
+      : undefined;
+  let open = true;
+  let failed = false;
+  let firstFailure: unknown;
+  try {
+    rejectThenable(batch, "lifecycle beginBatch must be synchronous", (opened) => {
+      if (opened === null || (typeof opened !== "object" && typeof opened !== "function")) return;
+      try {
+        const lateRollback = (opened as Partial<LifecycleBatch>).rollback;
+        if (typeof lateRollback !== "function") return;
+        const result = lateRollback.call(opened);
+        if (isThenable(result)) void Promise.resolve(result).catch(() => undefined);
+      } catch {
+        // The invalid async adapter is already rejected; cleanup is best effort.
+      }
+    });
+    if (batch === null || (typeof batch !== "object" && typeof batch !== "function"))
+      throw new TypeError("lifecycle port must open a complete transaction");
+    const apply = batch.apply;
+    const commit = batch.commit;
+    if (
+      typeof apply !== "function" ||
+      typeof commit !== "function" ||
+      typeof rollback !== "function"
+    )
+      throw new TypeError("lifecycle port must open a complete transaction");
+    if (isNativeAsyncFunction(rollback))
+      throw new TypeError("lifecycle rollback must be synchronous");
+    const asyncCommit = isNativeAsyncFunction(commit);
+    const stage = Object.freeze({
+      apply: (transition: LifecycleTransition, context: PortContext) => {
+        if (!open) throw new TypeError("lifecycle batch is closed");
+        if (failed) throw new TypeError("lifecycle batch has already failed");
+        try {
+          if (context.runId !== snapshot.runId)
+            throw new TypeError("lifecycle batch context must match the snapshot run");
+          if (isNativeAsyncFunction(apply))
+            throw new TypeError("lifecycle apply must finish synchronously");
+          const resolution = apply.call(
+            batch,
+            structuredClone(transition),
+            structuredClone(context),
+          );
+          rejectThenable(resolution, "lifecycle apply must finish synchronously");
+          return resolution;
+        } catch (error) {
+          failed = true;
+          firstFailure = error;
+          throw error;
+        }
+      },
+    });
+    if (asyncCommit) throw new TypeError("lifecycle commit must be synchronous");
+    if (
+      /^\[object (?:GeneratorFunction|AsyncGeneratorFunction)\]$/.test(
+        Object.prototype.toString.call(work),
+      )
+    )
+      throw new TypeError("lifecycle batches must finish synchronously");
+    const result = work(stage);
+    rejectThenable(result, "lifecycle batches must finish synchronously");
+    if (/^\[object (?:Generator|AsyncGenerator)\]$/.test(Object.prototype.toString.call(result)))
+      throw new TypeError("lifecycle batches must finish synchronously");
+    if (failed) throw firstFailure;
+    open = false;
+    requireUndefinedLifecycleReturn(commit.call(batch), "commit");
+    return result;
+  } catch (error) {
+    open = false;
+    if (typeof rollback !== "function") throw error;
+    try {
+      const result = rollback.call(batch);
+      if (isNativeAsyncFunction(rollback)) {
+        if (isThenable(result)) void Promise.resolve(result).catch(() => undefined);
+      } else {
+        requireUndefinedLifecycleReturn(result, "rollback");
+      }
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
+    }
+    throw error;
+  }
 }
 
 export function assertLifecycleResolution(
@@ -729,6 +887,7 @@ export function assertEngineInputCompatible(
   input: EngineInput,
   expectedEngineHash: string,
 ): ValidatedEngineInput {
+  assertLifecyclePortProtocol(input.ports?.lifecycle);
   if (!isRuntimeVerifiedResolvedScenario(input.scenario))
     throw new ResumeCompatibilityError([
       "scenario must retain runtime-verified canonical hash identity",
@@ -756,6 +915,7 @@ function assertSnapshotCompatible(
   expectedEngineHash: string,
   requiredRunStatus: "planned" | "running",
 ): ValidatedResume {
+  assertLifecyclePortProtocol(input.ports?.lifecycle);
   if (!isRuntimeVerifiedResolvedScenario(input.scenario))
     throw new ResumeCompatibilityError([
       "scenario must retain runtime-verified canonical hash identity",
