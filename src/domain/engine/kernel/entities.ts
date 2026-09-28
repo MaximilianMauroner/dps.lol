@@ -65,12 +65,25 @@ export class EntityRegistry {
   }
 
   firstExpiredBuffAt(timeMs: number): string | null {
+    let earliest: { timeMs: number; ownerEntityId: string; buffId: string } | null = null;
     for (const entity of this.entities.values()) {
       for (const buff of entity.buffs) {
-        if (buff.expiresAtMs !== null && buff.expiresAtMs < timeMs) return buff.buffId;
+        if (buff.expiresAtMs === null || buff.expiresAtMs >= timeMs) continue;
+        if (
+          earliest === null ||
+          buff.expiresAtMs < earliest.timeMs ||
+          (buff.expiresAtMs === earliest.timeMs &&
+            (entity.entityId < earliest.ownerEntityId ||
+              (entity.entityId === earliest.ownerEntityId && buff.buffId < earliest.buffId)))
+        )
+          earliest = {
+            timeMs: buff.expiresAtMs,
+            ownerEntityId: entity.entityId,
+            buffId: buff.buffId,
+          };
       }
     }
-    return null;
+    return earliest?.buffId ?? null;
   }
 
   spawn(entity: EntityState): void {

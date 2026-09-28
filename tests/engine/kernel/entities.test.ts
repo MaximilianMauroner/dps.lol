@@ -57,6 +57,33 @@ test("callers cannot mutate registry state through returned entities", () => {
   expect(registry.get("actor")!.health.current).not.toBe(1);
 });
 
+test("expired buff diagnostics use earliest time and stable owner and ID ties", () => {
+  const actor = structuredClone(sampleScenario.entities[0]!);
+  const enemy = structuredClone(sampleScenario.entities[1]!);
+  const buff = actor.buffs[0]!;
+  actor.buffs = [
+    { ...buff, buffId: "late", expiresAtMs: 3000 },
+    { ...buff, buffId: "early-actor", expiresAtMs: 2500 },
+  ];
+  enemy.buffs = [
+    {
+      ...buff,
+      buffId: "early-enemy",
+      ownerEntityId: "enemy",
+      sourceEntityId: "enemy",
+      expiresAtMs: 2500,
+    },
+  ];
+  for (const entities of [
+    [actor, enemy],
+    [enemy, actor],
+  ]) {
+    const registry = new EntityRegistry(entities);
+    expect(registry.firstExpiredBuffAt(2500)).toBeNull();
+    expect(registry.firstExpiredBuffAt(2501)).toBe("early-actor");
+  }
+});
+
 test("death, revive, and transform preserve identity and revision through checkpoint restore", () => {
   const registry = new EntityRegistry(sampleScenario.entities, [], { actor: 4, enemy: 2 });
   const actor = registry.get("actor")!;
