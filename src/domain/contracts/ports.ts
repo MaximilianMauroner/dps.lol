@@ -994,7 +994,11 @@ function assertCombatResultMatchesInput(input: EngineInput, result: CombatResult
     )
       throw new TypeError("engine output coverage must match the requested cohort denominator");
   }
-  if (input.run.objective.aggregation === "coverage-then-ttk" && result.coverage === null)
+  if (
+    input.run.objective.aggregation === "coverage-then-ttk" &&
+    result.status === "complete" &&
+    result.coverage === null
+  )
     throw new TypeError("engine output coverage must match the requested cohort denominator");
 }
 

@@ -1290,6 +1290,121 @@ describe("P01 versioned contract fixtures", () => {
     );
   });
 
+  test("keeps unevaluated coverage absent on interrupted coverage-first steps", async () => {
+    const scenarioDraft = clone(sampleResolvedScenario);
+    scenarioDraft.effective.objective.aggregation = "coverage-then-ttk";
+    const scenario = await verifyScenarioForEngine(scenarioDraft);
+    const run = clone(sampleRunningRun);
+    run.objective = clone(scenario.effective.objective);
+    bindRunToScenario(run, scenario);
+    const input = { scenario, run, ports: createMockPorts() };
+
+    for (const [status, state, reason] of [
+      ["incomplete", "budget-exhausted", "event limit reached"],
+      ["cancelled", "cancelled", "cancelled before objective evaluation"],
+      ["invalid", "invalid", "objective evaluation unavailable"],
+    ] as const) {
+      const result = clone(censoredResult);
+      result.status = status;
+      result.censoring = "invalid";
+      result.coverage = null;
+      result.metrics = {
+        damage: { status: "undefined", reason },
+        dps: { status: "undefined", reason },
+        ttk: { status: "undefined", reason },
+        timeToFirstDeath: { status: "undefined", reason },
+        timeToElimination: { status: "undefined", reason },
+      };
+      result.resolvedScenarioHash = run.resolvedScenarioHash;
+      result.candidateInputHash = run.candidateInputHash;
+      const snapshot = completeSnapshotForTest();
+      snapshot.currentTimeMs = 100;
+      snapshot.status = status;
+      snapshot.interruption = { state, reason };
+      snapshot.result = result;
+      bindSnapshotToRun(snapshot, run);
+      const step = {
+        schemaVersion: 1 as const,
+        status,
+        snapshot,
+        emittedEvents: [],
+        result,
+        reason,
+      };
+
+      expect(parseContract(EngineStepResultSchema, step)).toEqual(step);
+      expect(assertEngineStepResult(input, step)).toEqual(step);
+      expect(assertEngineStepResult(input, JSON.parse(JSON.stringify(step)))).toEqual(step);
+      expect(assertEngineRun(input, { status, result, trace: sampleTrace }).result).toEqual(result);
+
+      const suppliedCoverage = clone(step);
+      suppliedCoverage.result.coverage = {
+        killedCount: 0,
+        totalCount: 99,
+        killedWeight: 0,
+        totalWeight: 99,
+        fraction: 0,
+      };
+      suppliedCoverage.snapshot.result = suppliedCoverage.result;
+      expect(() => assertEngineStepResult(input, suppliedCoverage)).toThrow(
+        /coverage.*cohort denominator/,
+      );
+      expect(() =>
+        assertEngineRun(input, { status, result: suppliedCoverage.result, trace: sampleTrace }),
+      ).toThrow(/coverage.*cohort denominator/);
+    }
+
+    const completeResult = clone(censoredResult);
+    completeResult.resolvedScenarioHash = run.resolvedScenarioHash;
+    completeResult.candidateInputHash = run.candidateInputHash;
+    const completeSnapshot = completeSnapshotForTest();
+    completeSnapshot.result = completeResult;
+    bindSnapshotToRun(completeSnapshot, run);
+    const completeStep = {
+      schemaVersion: 1,
+      status: "complete" as const,
+      snapshot: completeSnapshot,
+      emittedEvents: [],
+      result: completeResult,
+      reason: null,
+    };
+    expect(() => assertEngineStepResult(input, completeStep)).toThrow(
+      /coverage.*cohort denominator/,
+    );
+    expect(() =>
+      assertEngineRun(input, { status: "complete", result: completeResult, trace: sampleTrace }),
+    ).toThrow(/coverage.*cohort denominator/);
+
+    const transfer = clone(sampleTransfer);
+    transfer.resolvedScenario = scenario;
+    transfer.run.objective = clone(run.objective);
+    bindRunToScenario(transfer.run, scenario);
+    transfer.result.resolvedScenarioHash = run.resolvedScenarioHash;
+    transfer.result.candidateInputHash = run.candidateInputHash;
+    expect(() => parseContract(ExactComparisonTransferSchema, transfer)).toThrow(
+      /machine-readable kill coverage/,
+    );
+
+    const coverage = {
+      killedCount: 0,
+      totalCount: 1,
+      killedWeight: 0,
+      totalWeight: 1,
+      fraction: 0,
+    };
+    completeResult.coverage = coverage;
+    completeSnapshot.result = completeResult;
+    transfer.result.coverage = coverage;
+    expect(assertEngineStepResult(input, completeStep).result?.coverage).toEqual(coverage);
+    expect(
+      assertEngineRun(input, { status: "complete", result: completeResult, trace: sampleTrace })
+        .result.coverage,
+    ).toEqual(coverage);
+    expect(parseContract(ExactComparisonTransferSchema, transfer).result.coverage).toEqual(
+      coverage,
+    );
+  });
+
   test("validates stats snapshots and entity ownership at runtime boundaries", () => {
     expect(
       assertStatsSnapshot(
