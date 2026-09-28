@@ -47,6 +47,7 @@ import {
   parseContract,
   type LifecycleBatch,
   type LifecyclePort,
+  type LifecycleTransition,
 } from "../../src/domain/contracts";
 import { createMockPorts, mockPortContext } from "./mock-ports";
 import {
@@ -977,6 +978,56 @@ describe("P01 versioned contract fixtures", () => {
     expect(cleanupStarted).toBe(1);
     await Promise.resolve();
     expect(cleanupFinished).toBe(1);
+  });
+
+  test("accepts callable transaction handles and cleans up inspection errors", () => {
+    let commits = 0;
+    let rollbacks = 0;
+    const callable = Object.assign(() => undefined, {
+      apply: (transition: LifecycleTransition) => ({
+        accepted: true,
+        entityId: transition.entityId,
+        transition: transition.transition,
+        state: transition.replacement,
+        reason: null,
+      }),
+      commit: () => {
+        commits += 1;
+        return undefined;
+      },
+      rollback: () => {
+        rollbacks += 1;
+        return undefined;
+      },
+    });
+    const port: LifecyclePort = { protocolVersion: 2, beginBatch: () => callable };
+    withLifecycleBatch(port, sampleSnapshot, (stage) => {
+      stage.apply({ entityId: "enemy", transition: "despawn", replacement: null }, mockPortContext);
+    });
+    expect(commits).toBe(1);
+    expect(rollbacks).toBe(0);
+
+    const inspectionError = new Error("callable apply inspection failed");
+    const failingCallable = Object.assign(() => undefined, {
+      commit: () => undefined,
+      rollback: () => {
+        rollbacks += 1;
+        return undefined;
+      },
+    });
+    Object.defineProperty(failingCallable, "apply", {
+      get: () => {
+        throw inspectionError;
+      },
+    });
+    const failingPort: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => failingCallable as unknown as LifecycleBatch,
+    };
+    expect(() => withLifecycleBatch(failingPort, sampleSnapshot, () => null)).toThrow(
+      inspectionError,
+    );
+    expect(rollbacks).toBe(1);
   });
 
   test("rejects trace sequence reuse across different timestamps", () => {

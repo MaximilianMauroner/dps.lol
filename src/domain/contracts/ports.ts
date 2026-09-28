@@ -504,7 +504,7 @@ export function withLifecycleBatch<T>(
   // Capture rollback before inspecting any other handle property. A getter may
   // throw after beginBatch has allocated private resources.
   const rollback =
-    batch !== null && typeof batch === "object"
+    batch !== null && (typeof batch === "object" || typeof batch === "function")
       ? (batch as Partial<LifecycleBatch>).rollback
       : undefined;
   let open = true;
@@ -512,7 +512,7 @@ export function withLifecycleBatch<T>(
   let firstFailure: unknown;
   try {
     rejectThenable(batch, "lifecycle beginBatch must be synchronous", (opened) => {
-      if (opened === null || typeof opened !== "object") return;
+      if (opened === null || (typeof opened !== "object" && typeof opened !== "function")) return;
       try {
         const lateRollback = (opened as Partial<LifecycleBatch>).rollback;
         if (typeof lateRollback !== "function") return;
@@ -522,7 +522,7 @@ export function withLifecycleBatch<T>(
         // The invalid async adapter is already rejected; cleanup is best effort.
       }
     });
-    if (batch === null || typeof batch !== "object")
+    if (batch === null || (typeof batch !== "object" && typeof batch !== "function"))
       throw new TypeError("lifecycle port must open a complete transaction");
     const apply = batch.apply;
     const commit = batch.commit;
