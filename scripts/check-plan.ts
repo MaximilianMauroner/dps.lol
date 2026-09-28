@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
@@ -14,30 +15,13 @@ export type Task = {
   id: string;
   issue: number;
   url: string;
-  issueUpdatedAt: string;
-  title: string;
-  ownerLane: string;
   prerequisites: string[];
-  workOrder: string;
   ownedPaths: OwnedPath[];
-  scope: string;
 };
 
 export type RoadmapIssue = {
   number: number;
   url: string;
-  updatedAt: string;
-};
-
-export type IntegrationOwner = {
-  role: string;
-  reviewer: string;
-  note: string;
-};
-
-export type PathStateDefinition = {
-  existsAtAuditedBaseline: string;
-  excludes: string;
 };
 
 export type Plan = {
@@ -46,9 +30,6 @@ export type Plan = {
   baselineCommit: string;
   baselineTree: string;
   roadmapIssue: RoadmapIssue;
-  integrationOwner: IntegrationOwner;
-  contentWorkOrderTemplate: string;
-  pathStateDefinition: PathStateDefinition;
   tasks: Task[];
 };
 
@@ -75,7 +56,6 @@ export type ValidationResult = {
 
 export type ValidationOptions = {
   baselineSnapshot?: BaselineSnapshot;
-  checkArtifacts?: boolean;
   repoRoot?: string;
 };
 
@@ -83,9 +63,13 @@ type JsonObject = Record<string, unknown>;
 type PathClaim = { task: Task; owned: OwnedPath };
 type ParsedPattern = { segments: string[]; recursive: boolean };
 
-const PLAN_RELATIVE_PATH = "docs/implementation/planning/TASKS.json";
+const PLAN_RELATIVE_PATH = "scripts/plan-contract.json";
+const BASELINE_FILES_RELATIVE_PATH = "scripts/plan-baseline-files.txt";
+const BASELINE_FILES_SHA256 = "bed903c39ded67b4731d225eb2b0aed462e373bcfd724cbdff93a08c2c92b061";
 const REPOSITORY = "MaximilianMauroner/dps.lol";
-const EXPECTED_SCHEMA_VERSION = 1;
+const EXPECTED_BASELINE_COMMIT = "f2747db43ca89d12338982b0e7ed2f700ee2b591";
+const EXPECTED_BASELINE_TREE = "c009c80956c8eb844dbbd8e75f6c820b89530d2b";
+const EXPECTED_SCHEMA_VERSION = 2;
 const EXPECTED_TASK_IDS = Array.from({ length: 31 }, (_, index) => expectedTaskId(index));
 
 export function validatePlanDocument(
@@ -110,9 +94,6 @@ export function validatePlanDocument(
   const pathClaims = validateOwnedPaths(plan, tasksById, errors, options, pathStateCounts);
 
   validateOwnership(pathClaims, errors);
-  if (options.checkArtifacts)
-    validateCurrentArtifacts(plan, options.repoRoot ?? process.cwd(), errors);
-
   return { errors, plan, pathStateCounts };
 }
 
@@ -159,6 +140,55 @@ export function readGitBaselineSnapshot(
   return { commit: resolvedCommit, tree: plan.baselineTree, files };
 }
 
+export function readAuditedBaselineSnapshot(
+  plan: Pick<Plan, "baselineCommit" | "baselineTree">,
+  repoRoot = resolve(process.cwd()),
+): BaselineSnapshot {
+  const contents = readFileSync(join(repoRoot, BASELINE_FILES_RELATIVE_PATH), "utf8").replace(
+    /\r\n/g,
+    "\n",
+  );
+  if (contents.includes("\r")) {
+    throw new Error("bundled audited path list has invalid line endings");
+  }
+  const digest = createHash("sha256").update(contents).digest("hex");
+  if (digest !== BASELINE_FILES_SHA256) {
+    throw new Error(`bundled audited path list has an unexpected SHA-256: ${digest}`);
+  }
+  const files = contents.trimEnd().split("\n");
+  if (
+    files.length !== 93 ||
+    files.some((file) => !isSafeRelativePath(file)) ||
+    new Set(files).size !== files.length ||
+    files.some((file, index) => index > 0 && files[index - 1]! >= file)
+  ) {
+    throw new Error("bundled audited path list must contain 93 unique sorted safe paths");
+  }
+  if (!isFullSha(plan.baselineCommit) || !isFullSha(plan.baselineTree)) {
+    throw new Error("audited baseline commit and tree must be full 40-character SHAs");
+  }
+  if (
+    plan.baselineCommit !== EXPECTED_BASELINE_COMMIT ||
+    plan.baselineTree !== EXPECTED_BASELINE_TREE
+  ) {
+    throw new Error("audited baseline identity differs from the sealed P00 baseline");
+  }
+
+  if (gitObjectExists(repoRoot, `${plan.baselineCommit}^{commit}`)) {
+    const snapshot = readGitBaselineSnapshot(plan, repoRoot);
+    if (snapshot.files.join("\n") !== files.join("\n")) {
+      throw new Error("bundled audited path list differs from the immutable Git baseline tree");
+    }
+    return snapshot;
+  }
+  if (readGitCommand(repoRoot, ["rev-parse", "--is-shallow-repository"]).trim() !== "true") {
+    throw new Error(
+      `audited baseline commit ${plan.baselineCommit} is missing outside a shallow checkout`,
+    );
+  }
+  return { commit: plan.baselineCommit, tree: plan.baselineTree, files };
+}
+
 export function runCheckPlan(repoRoot = resolve(process.cwd())): number {
   const planPath = join(repoRoot, PLAN_RELATIVE_PATH);
   let document: unknown;
@@ -171,18 +201,14 @@ export function runCheckPlan(repoRoot = resolve(process.cwd())): number {
     return 1;
   }
 
-  const structural = validatePlanDocument(document, {
-    checkArtifacts: true,
-    repoRoot,
-  });
+  const structural = validatePlanDocument(document, { repoRoot });
   let result = structural;
 
   if (structural.plan) {
     try {
-      const baselineSnapshot = readGitBaselineSnapshot(structural.plan, repoRoot);
+      const baselineSnapshot = readAuditedBaselineSnapshot(structural.plan, repoRoot);
       result = validatePlanDocument(document, {
         baselineSnapshot,
-        checkArtifacts: true,
         repoRoot,
       });
     } catch (error) {
@@ -222,20 +248,18 @@ function parsePlanDocument(document: unknown, errors: string[]): Plan | undefine
     errors.push("document must be a JSON object");
     return undefined;
   }
+  rejectUnknownKeys(
+    document,
+    ["schemaVersion", "repository", "baselineCommit", "baselineTree", "roadmapIssue", "tasks"],
+    "top-level",
+    errors,
+  );
 
   const schemaVersion = requiredNumber(document, "schemaVersion", "top-level", errors);
   const repository = requiredString(document, "repository", "top-level", errors);
   const baselineCommit = requiredString(document, "baselineCommit", "top-level", errors);
   const baselineTree = requiredString(document, "baselineTree", "top-level", errors);
   const roadmapIssue = parseRoadmapIssue(document.roadmapIssue, errors);
-  const integrationOwner = parseIntegrationOwner(document.integrationOwner, errors);
-  const contentWorkOrderTemplate = requiredString(
-    document,
-    "contentWorkOrderTemplate",
-    "top-level",
-    errors,
-  );
-  const pathStateDefinition = parsePathStateDefinition(document.pathStateDefinition, errors);
   const tasks = parseTasks(document.tasks, errors);
 
   if (
@@ -244,9 +268,6 @@ function parsePlanDocument(document: unknown, errors: string[]): Plan | undefine
     baselineCommit === undefined ||
     baselineTree === undefined ||
     roadmapIssue === undefined ||
-    integrationOwner === undefined ||
-    contentWorkOrderTemplate === undefined ||
-    pathStateDefinition === undefined ||
     tasks === undefined
   ) {
     return undefined;
@@ -258,9 +279,6 @@ function parsePlanDocument(document: unknown, errors: string[]): Plan | undefine
     baselineCommit,
     baselineTree,
     roadmapIssue,
-    integrationOwner,
-    contentWorkOrderTemplate,
-    pathStateDefinition,
     tasks,
   };
 }
@@ -270,42 +288,11 @@ function parseRoadmapIssue(value: unknown, errors: string[]): RoadmapIssue | und
     errors.push("roadmapIssue must be an object");
     return undefined;
   }
+  rejectUnknownKeys(value, ["number", "url"], "roadmapIssue", errors);
   const number = requiredNumber(value, "number", "roadmapIssue", errors);
   const url = requiredString(value, "url", "roadmapIssue", errors);
-  const updatedAt = requiredString(value, "updatedAt", "roadmapIssue", errors);
-  if (number === undefined || url === undefined || updatedAt === undefined) return undefined;
-  return { number, url, updatedAt };
-}
-
-function parseIntegrationOwner(value: unknown, errors: string[]): IntegrationOwner | undefined {
-  if (!isRecord(value)) {
-    errors.push("integrationOwner must be an object");
-    return undefined;
-  }
-  const role = requiredString(value, "role", "integrationOwner", errors);
-  const reviewer = requiredString(value, "reviewer", "integrationOwner", errors);
-  const note = requiredString(value, "note", "integrationOwner", errors);
-  if (role === undefined || reviewer === undefined || note === undefined) return undefined;
-  return { role, reviewer, note };
-}
-
-function parsePathStateDefinition(
-  value: unknown,
-  errors: string[],
-): PathStateDefinition | undefined {
-  if (!isRecord(value)) {
-    errors.push("pathStateDefinition must be an object");
-    return undefined;
-  }
-  const existsAtAuditedBaseline = requiredString(
-    value,
-    "existsAtAuditedBaseline",
-    "pathStateDefinition",
-    errors,
-  );
-  const excludes = requiredString(value, "excludes", "pathStateDefinition", errors);
-  if (existsAtAuditedBaseline === undefined || excludes === undefined) return undefined;
-  return { existsAtAuditedBaseline, excludes };
+  if (number === undefined || url === undefined) return undefined;
+  return { number, url };
 }
 
 function parseTasks(value: unknown, errors: string[]): Task[] | undefined {
@@ -327,29 +314,20 @@ function parseTask(value: unknown, location: string, errors: string[]): Task | u
     errors.push(`${location} must be an object`);
     return undefined;
   }
+  rejectUnknownKeys(value, ["id", "issue", "url", "prerequisites", "ownedPaths"], location, errors);
 
   const id = requiredString(value, "id", location, errors);
   const issue = requiredNumber(value, "issue", location, errors);
   const url = requiredString(value, "url", location, errors);
-  const issueUpdatedAt = requiredString(value, "issueUpdatedAt", location, errors);
-  const title = requiredString(value, "title", location, errors);
-  const ownerLane = requiredString(value, "ownerLane", location, errors);
   const prerequisites = requiredStringArray(value, "prerequisites", location, errors);
-  const workOrder = requiredString(value, "workOrder", location, errors);
   const ownedPaths = parseOwnedPaths(value.ownedPaths, `${location}.ownedPaths`, errors);
-  const scope = requiredString(value, "scope", location, errors);
 
   if (
     id === undefined ||
     issue === undefined ||
     url === undefined ||
-    issueUpdatedAt === undefined ||
-    title === undefined ||
-    ownerLane === undefined ||
     prerequisites === undefined ||
-    workOrder === undefined ||
-    ownedPaths === undefined ||
-    scope === undefined
+    ownedPaths === undefined
   ) {
     return undefined;
   }
@@ -358,13 +336,8 @@ function parseTask(value: unknown, location: string, errors: string[]): Task | u
     id,
     issue,
     url,
-    issueUpdatedAt,
-    title,
-    ownerLane,
     prerequisites,
-    workOrder,
     ownedPaths,
-    scope,
   };
 }
 
@@ -392,6 +365,12 @@ function parseOwnedPath(value: unknown, location: string, errors: string[]): Own
     errors.push(`${location} must be an object`);
     return undefined;
   }
+  rejectUnknownKeys(
+    value,
+    ["path", "existsAtAuditedBaseline", "excludes", "handoffFrom", "handoffTo"],
+    location,
+    errors,
+  );
 
   const path = requiredString(value, "path", location, errors);
   const existsAtAuditedBaseline = requiredBoolean(
@@ -420,19 +399,17 @@ function validatePlanMetadata(plan: Plan, errors: string[]): void {
   if (!isFullSha(plan.baselineCommit))
     errors.push("baselineCommit must be a full 40-character SHA");
   if (!isFullSha(plan.baselineTree)) errors.push("baselineTree must be a full 40-character SHA");
+  if (plan.baselineCommit !== EXPECTED_BASELINE_COMMIT) {
+    errors.push(`baselineCommit must remain ${EXPECTED_BASELINE_COMMIT}`);
+  }
+  if (plan.baselineTree !== EXPECTED_BASELINE_TREE) {
+    errors.push(`baselineTree must remain ${EXPECTED_BASELINE_TREE}`);
+  }
   if (plan.roadmapIssue.number !== 3) {
     errors.push(`roadmapIssue.number must be 3, found ${String(plan.roadmapIssue.number)}`);
   }
   if (plan.roadmapIssue.url !== `https://github.com/${REPOSITORY}/issues/3`) {
     errors.push("roadmapIssue.url must point to GitHub issue #3");
-  }
-  if (!isTimestamp(plan.roadmapIssue.updatedAt)) {
-    errors.push(`roadmapIssue.updatedAt is not a valid timestamp: ${plan.roadmapIssue.updatedAt}`);
-  }
-  if (!isSafeRelativePath(plan.contentWorkOrderTemplate)) {
-    errors.push(
-      `contentWorkOrderTemplate is not a safe relative path: ${plan.contentWorkOrderTemplate}`,
-    );
   }
 }
 
@@ -467,22 +444,11 @@ function validateTasks(
 
     const expectedUrl = `https://github.com/${REPOSITORY}/issues/${String(task.issue)}`;
     if (task.url !== expectedUrl) errors.push(`${task.id} has incorrect issue URL`);
-    if (!isTimestamp(task.issueUpdatedAt)) {
-      errors.push(`${task.id} has invalid issueUpdatedAt: ${task.issueUpdatedAt}`);
-    }
-    if (task.workOrder !== `docs/implementation/planning/work-orders/${task.id}.md`) {
-      errors.push(`${task.id} has an unexpected workOrder path`);
-    }
-    if (!isSafeRelativePath(task.workOrder)) {
-      errors.push(`${task.id} workOrder is not a safe relative path: ${task.workOrder}`);
-    } else if (
-      options.checkArtifacts &&
-      !existsInsideRepository(options.repoRoot ?? process.cwd(), task.workOrder)
-    ) {
-      errors.push(`${task.id} work order is missing: ${task.workOrder}`);
-    }
     if (task.prerequisites.includes(task.id)) {
       errors.push(`${task.id} lists itself as a prerequisite`);
+    }
+    if (new Set(task.prerequisites).size !== task.prerequisites.length) {
+      errors.push(`${task.id} has duplicate prerequisites`);
     }
   }
 
@@ -595,8 +561,25 @@ function validateOwnedPaths(
       }
       if (owned.handoffTo) {
         for (const handoffTo of owned.handoffTo) {
-          if (!tasksById.has(handoffTo)) {
+          const receiver = tasksById.get(handoffTo);
+          if (!receiver) {
             errors.push(`${task.id} handoffTo references missing task ${handoffTo}`);
+            continue;
+          }
+          const transferredScopes = owned.excludes?.length ? owned.excludes : [owned.path];
+          for (const scope of transferredScopes) {
+            if (
+              !receiver.ownedPaths.some(
+                (claim) =>
+                  patternsEquivalent(claim.path, scope) &&
+                  claim.handoffFrom?.includes(task.id) === true &&
+                  handoffIsCoherent({ task: receiver, owned: claim }, task),
+              )
+            ) {
+              errors.push(
+                `${task.id} handoffTo ${handoffTo} for ${scope} is missing a matching receiver handoffFrom`,
+              );
+            }
           }
         }
       }
@@ -620,18 +603,6 @@ function validateOwnership(pathClaims: PathClaim[], errors: string[]): void {
         `conflicting owned paths: ${left.task.id} ${left.owned.path} <> ${right.task.id} ${right.owned.path}; add a valid handoff or a narrower sender exclusion`,
       );
     }
-  }
-}
-
-function validateCurrentArtifacts(plan: Plan, repoRoot: string, errors: string[]): void {
-  if (!existsInsideRepository(repoRoot, plan.contentWorkOrderTemplate)) {
-    errors.push(`content work-order template is missing: ${plan.contentWorkOrderTemplate}`);
-  }
-  if (!existsInsideRepository(repoRoot, "docs/implementation/planning/ROADMAP.md")) {
-    errors.push("reviewed roadmap artifact is missing: docs/implementation/planning/ROADMAP.md");
-  }
-  if (!existsInsideRepository(repoRoot, "docs/implementation/planning/COORDINATION.md")) {
-    errors.push("coordination artifact is missing: docs/implementation/planning/COORDINATION.md");
   }
 }
 
@@ -961,10 +932,20 @@ function readGitRevision(repoRoot: string, revision: string, label: string): str
   }
 }
 
+function gitObjectExists(repoRoot: string, revision: string): boolean {
+  try {
+    readGitCommand(repoRoot, ["cat-file", "-e", revision]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readGitCommand(repoRoot: string, args: string[]): string {
   return execFileSync("git", args, {
     cwd: repoRoot,
     encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
@@ -1080,8 +1061,16 @@ function isFullSha(value: string): boolean {
   return /^[0-9a-f]{40}$/.test(value);
 }
 
-function isTimestamp(value: string): boolean {
-  return Number.isFinite(Date.parse(value));
+function rejectUnknownKeys(
+  value: JsonObject,
+  allowed: readonly string[],
+  location: string,
+  errors: string[],
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key))
+      errors.push(`${location}.${key} is not part of the ownership contract`);
+  }
 }
 
 function expectedTaskId(index: number): string {
