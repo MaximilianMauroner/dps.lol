@@ -212,8 +212,12 @@ carry a value (or valid right-censoring for a time metric) for the objective's
 primary metric. Every censored metric must use the transferred objective's
 horizon. An exact transfer also rejects a
 complete right-censored non-kill when the objective uses `fail-if-not-killed`.
-Coverage-first aggregation additionally carries machine-readable killed/total
-counts and weights with a weight-consistent fraction. Sampled estimates carry
+Complete coverage-first results carry machine-readable killed/total counts and
+weights with a weight-consistent fraction. An `incomplete`, `cancelled` or `invalid`
+result may use `coverage: null` when objective evaluation has not measured it;
+this does not mean zero kills. Any supplied coverage, including on interrupted
+results, must match the requested cohort denominator. Exact comparison transfers
+still require a complete result with coverage. Sampled estimates carry
 effective sample count, confidence and standard errors. Uncensored elapsed-time
 metrics cannot exceed the objective horizon. Sustained DPS requires a non-empty
 measurement window after warm-up. Objective, horizon, censoring and aggregation
@@ -266,6 +270,12 @@ transfer. Any incompatible change requires:
 - fixture updates proving old and new forms are not silently conflated;
 - consumer migration at the owning slice; and
 - advisor review before shared files change.
+
+The additive P01 coverage revision keeps contract revision `1`: interrupted
+step and run results with unevaluated coverage may retain `coverage: null`,
+while complete coverage-first results and exact transfers still require coverage.
+Existing complete results and transfers need no migration; consumers must not
+score interrupted results or replace missing coverage with zero.
 
 The follow-up repair keeps contract revision `1` but makes the previously
 unaccepted shape stricter: exact transfers now carry their own version and
