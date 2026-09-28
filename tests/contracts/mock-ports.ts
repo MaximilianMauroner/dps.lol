@@ -160,9 +160,11 @@ export function createMockPorts(): CombatKernelPorts {
             if (!open) throw new TypeError("lifecycle batch is closed");
             lifecycleEntitiesByRunId.set(snapshot.runId, staged);
             open = false;
+            return undefined;
           },
           rollback: () => {
             open = false;
+            return undefined;
           },
         };
       },

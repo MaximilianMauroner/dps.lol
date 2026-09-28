@@ -435,9 +435,9 @@ export const LIFECYCLE_PORT_PROTOCOL_VERSION = 2 as const;
 export interface LifecycleBatch {
   apply(transition: LifecycleTransition, context: PortContext): LifecycleResolution;
   /** Publishes every staged transition atomically, exactly once. A throwing commit publishes none. */
-  commit(): void;
+  commit(): undefined;
   /** Discards all staged transitions, including after a failed commit. */
-  rollback(): void;
+  rollback(): undefined;
 }
 
 export interface LifecyclePort {
@@ -465,6 +465,17 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
+function isNativeAsyncFunction(value: unknown): boolean {
+  return Object.prototype.toString.call(value) === "[object AsyncFunction]";
+}
+
+function rejectThenable(value: unknown, message: string): void {
+  if (!isThenable(value)) return;
+  // Observe a rejected promise even though this synchronous boundary rejects it.
+  void Promise.resolve(value).catch(() => undefined);
+  throw new TypeError(message);
+}
+
 /**
  * Runs the entire speculative step, including result validation, before publishing
  * lifecycle effects. The callback sees only apply, never commit or rollback.
@@ -472,10 +483,13 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 export function withLifecycleBatch<T>(
   port: LifecyclePort,
   snapshot: Readonly<EngineSnapshot>,
-  work: (stage: Pick<LifecycleBatch, "apply">) => T,
+  work: (stage: Pick<LifecycleBatch, "apply">) => T extends PromiseLike<unknown> ? never : T,
 ): T {
   assertLifecyclePortProtocol(port);
+  if (isNativeAsyncFunction(port.beginBatch))
+    throw new TypeError("lifecycle beginBatch must be synchronous");
   const batch = port.beginBatch(structuredClone(snapshot));
+  rejectThenable(batch, "lifecycle beginBatch must be synchronous");
   if (
     batch === null ||
     typeof batch !== "object" ||
@@ -483,30 +497,56 @@ export function withLifecycleBatch<T>(
     typeof batch.commit !== "function" ||
     typeof batch.rollback !== "function"
   ) {
-    throw new TypeError("lifecycle port must open a complete transaction");
+    const error = new TypeError("lifecycle port must open a complete transaction");
+    const rollback = (batch as Partial<LifecycleBatch> | null)?.rollback;
+    if (typeof rollback === "function") {
+      try {
+        if (isNativeAsyncFunction(rollback))
+          throw new TypeError("lifecycle rollback must be synchronous");
+        rejectThenable(rollback.call(batch), "lifecycle rollback must be synchronous");
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
+      }
+    }
+    throw error;
   }
+  if (isNativeAsyncFunction(batch.rollback))
+    throw new TypeError("lifecycle rollback must be synchronous");
+  const asyncCommit = isNativeAsyncFunction(batch.commit);
   let open = true;
+  let failed = false;
+  let firstFailure: unknown;
   const stage = Object.freeze({
     apply: (transition: LifecycleTransition, context: PortContext) => {
       if (!open) throw new TypeError("lifecycle batch is closed");
-      const resolution = batch.apply(structuredClone(transition), structuredClone(context));
-      if (isThenable(resolution)) throw new TypeError("lifecycle apply must finish synchronously");
-      return resolution;
+      if (failed) throw new TypeError("lifecycle batch has already failed");
+      try {
+        if (context.runId !== snapshot.runId)
+          throw new TypeError("lifecycle batch context must match the snapshot run");
+        if (isNativeAsyncFunction(batch.apply))
+          throw new TypeError("lifecycle apply must finish synchronously");
+        const resolution = batch.apply(structuredClone(transition), structuredClone(context));
+        rejectThenable(resolution, "lifecycle apply must finish synchronously");
+        return resolution;
+      } catch (error) {
+        failed = true;
+        firstFailure = error;
+        throw error;
+      }
     },
   });
   try {
+    if (asyncCommit) throw new TypeError("lifecycle commit must be synchronous");
     const result = work(stage);
-    if (isThenable(result)) {
-      throw new TypeError("lifecycle batches must finish synchronously");
-    }
-    if (isThenable(batch.commit())) throw new TypeError("lifecycle commit must be synchronous");
+    rejectThenable(result, "lifecycle batches must finish synchronously");
+    if (failed) throw firstFailure;
     open = false;
+    rejectThenable(batch.commit(), "lifecycle commit must be synchronous");
     return result;
   } catch (error) {
     open = false;
     try {
-      if (isThenable(batch.rollback()))
-        throw new TypeError("lifecycle rollback must be synchronous");
+      rejectThenable(batch.rollback(), "lifecycle rollback must be synchronous");
     } catch (rollbackError) {
       throw new AggregateError([error, rollbackError], "lifecycle batch rollback failed");
     }

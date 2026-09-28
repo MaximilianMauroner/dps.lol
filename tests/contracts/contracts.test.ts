@@ -394,9 +394,11 @@ describe("P01 versioned contract fixtures", () => {
           },
           commit: () => {
             committed = [...committed, ...staged];
+            return undefined;
           },
           rollback: () => {
             staged.length = 0;
+            return undefined;
           },
         };
       },
@@ -461,6 +463,7 @@ describe("P01 versioned contract fixtures", () => {
         },
         rollback: () => {
           rolledBack += 1;
+          return undefined;
         },
       }),
     };
@@ -469,7 +472,7 @@ describe("P01 versioned contract fixtures", () => {
     );
     expect(rolledBack).toBe(1);
     expect(() =>
-      withLifecycleBatch(failingCommit, sampleSnapshot, () => Promise.resolve()),
+      withLifecycleBatch(failingCommit, sampleSnapshot, () => Promise.resolve() as unknown as null),
     ).toThrow(/must finish synchronously/);
     expect(rolledBack).toBe(2);
 
@@ -484,6 +487,7 @@ describe("P01 versioned contract fixtures", () => {
         },
         rollback: () => {
           rolledBack += 1;
+          return undefined;
         },
       }),
     };
@@ -504,6 +508,21 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => withLifecycleBatch(malformed, sampleSnapshot, () => null)).toThrow(
       /complete transaction/,
     );
+    let malformedRollback = 0;
+    const partiallyFormed: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () =>
+        ({
+          rollback: () => {
+            malformedRollback += 1;
+            return undefined;
+          },
+        }) as unknown as LifecycleBatch,
+    };
+    expect(() => withLifecycleBatch(partiallyFormed, sampleSnapshot, () => null)).toThrow(
+      /complete transaction/,
+    );
+    expect(malformedRollback).toBe(1);
     const failingBegin: LifecyclePort = {
       protocolVersion: 2,
       beginBatch: () => {
@@ -520,9 +539,10 @@ describe("P01 versioned contract fixtures", () => {
         apply: () => {
           throw new Error("not used");
         },
-        commit: () => Promise.resolve() as unknown as void,
+        commit: () => Promise.resolve() as unknown as undefined,
         rollback: () => {
           rolledBack += 1;
+          return undefined;
         },
       }),
     };
@@ -530,6 +550,15 @@ describe("P01 versioned contract fixtures", () => {
       /commit must be synchronous/,
     );
     expect(rolledBack).toBe(4);
+
+    expect(() =>
+      withLifecycleBatch(createMockPorts().lifecycle, sampleSnapshot, (stage) =>
+        stage.apply(
+          { entityId: "enemy", transition: "despawn", replacement: null },
+          { ...mockPortContext, runId: "foreign-run" },
+        ),
+      ),
+    ).toThrow(/snapshot run/);
 
     const brokenRollback: LifecyclePort = {
       protocolVersion: 2,
@@ -548,6 +577,203 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => withLifecycleBatch(brokenRollback, sampleSnapshot, () => null)).toThrow(
       /rollback failed/,
     );
+  });
+
+  test("refuses to commit a caught apply error or a reentrant transition", () => {
+    let committed: string[] = [];
+    let rolledBack = 0;
+    const transition = { entityId: "enemy", transition: "despawn" as const, replacement: null };
+    const partiallyMutating: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => {
+        const staged: string[] = [];
+        return {
+          apply: (request) => {
+            staged.push(request.entityId);
+            throw new Error("apply failed after staging");
+          },
+          commit: () => {
+            committed = [...committed, ...staged];
+            return undefined;
+          },
+          rollback: () => {
+            rolledBack += 1;
+            staged.length = 0;
+            return undefined;
+          },
+        };
+      },
+    };
+    expect(() =>
+      withLifecycleBatch(partiallyMutating, sampleSnapshot, (stage) => {
+        try {
+          stage.apply(transition, mockPortContext);
+        } catch {
+          // A caller may turn a failed event into a typed invalid result.
+        }
+        return null;
+      }),
+    ).toThrow(/apply failed after staging/);
+    expect(committed).toEqual([]);
+    expect(rolledBack).toBe(1);
+
+    let leakedStage: Pick<LifecycleBatch, "apply"> | null = null;
+    let reentrantError: unknown;
+    const reentrant: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => {
+        const staged: string[] = [];
+        return {
+          apply: (request) => {
+            staged.push(request.entityId);
+            return {
+              accepted: true,
+              entityId: request.entityId,
+              transition: request.transition,
+              state: request.replacement,
+              reason: null,
+            };
+          },
+          commit: () => {
+            try {
+              leakedStage!.apply(transition, mockPortContext);
+            } catch (error) {
+              reentrantError = error;
+            }
+            committed = [...committed, ...staged];
+            return undefined;
+          },
+          rollback: () => undefined,
+        };
+      },
+    };
+    withLifecycleBatch(reentrant, sampleSnapshot, (stage) => {
+      leakedStage = stage;
+      stage.apply(transition, mockPortContext);
+    });
+    expect(reentrantError).toBeInstanceOf(TypeError);
+    expect(committed).toEqual(["enemy"]);
+  });
+
+  test("rejects asynchronous lifecycle callbacks and native async publication", async () => {
+    const effects: string[] = [];
+    let rolledBack = 0;
+    const port: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () => {
+          throw new Error("not used");
+        },
+        commit: (async () => {
+          await Promise.resolve();
+          effects.push("late publication");
+        }) as unknown as () => undefined,
+        rollback: () => {
+          rolledBack += 1;
+          return undefined;
+        },
+      }),
+    };
+    expect(() => withLifecycleBatch(port, sampleSnapshot, () => null)).toThrow(
+      /commit must be synchronous/,
+    );
+    await Promise.resolve();
+    expect(effects).toEqual([]);
+    expect(rolledBack).toBe(1);
+
+    let leakedStage: Pick<LifecycleBatch, "apply"> | null = null;
+    const ordinaryPort: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () => {
+          throw new Error("not used");
+        },
+        commit: () => {
+          throw new Error("must not commit");
+        },
+        rollback: () => {
+          rolledBack += 1;
+          return undefined;
+        },
+      }),
+    };
+    expect(() =>
+      withLifecycleBatch(ordinaryPort, sampleSnapshot, ((stage: Pick<LifecycleBatch, "apply">) => {
+        leakedStage = stage;
+        return Promise.resolve().then(() =>
+          stage.apply(
+            { entityId: "enemy", transition: "despawn", replacement: null },
+            mockPortContext,
+          ),
+        );
+      }) as unknown as (stage: Pick<LifecycleBatch, "apply">) => null),
+    ).toThrow(/must finish synchronously/);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rolledBack).toBe(2);
+    expect(() =>
+      leakedStage!.apply(
+        { entityId: "enemy", transition: "despawn", replacement: null },
+        mockPortContext,
+      ),
+    ).toThrow(/closed/);
+
+    const rejectedBegin: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => Promise.reject(new Error("late begin")) as unknown as LifecycleBatch,
+    };
+    expect(() => withLifecycleBatch(rejectedBegin, sampleSnapshot, () => null)).toThrow(
+      /beginBatch must be synchronous/,
+    );
+    const rejectedApply: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () =>
+          Promise.reject(new Error("late apply")) as unknown as ReturnType<LifecycleBatch["apply"]>,
+        commit: () => undefined,
+        rollback: () => undefined,
+      }),
+    };
+    expect(() =>
+      withLifecycleBatch(rejectedApply, sampleSnapshot, (stage) =>
+        stage.apply(
+          { entityId: "enemy", transition: "despawn", replacement: null },
+          mockPortContext,
+        ),
+      ),
+    ).toThrow(/apply must finish synchronously/);
+    const rejectedCommit: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () => {
+          throw new Error("not used");
+        },
+        commit: () => Promise.reject(new Error("late commit")) as unknown as undefined,
+        rollback: () => undefined,
+      }),
+    };
+    expect(() => withLifecycleBatch(rejectedCommit, sampleSnapshot, () => null)).toThrow(
+      /commit must be synchronous/,
+    );
+    const rejectedRollback: LifecyclePort = {
+      protocolVersion: 2,
+      beginBatch: () => ({
+        apply: () => {
+          throw new Error("not used");
+        },
+        commit: () => {
+          throw new Error("not used");
+        },
+        rollback: () => Promise.reject(new Error("late rollback")) as unknown as undefined,
+      }),
+    };
+    expect(() =>
+      withLifecycleBatch(rejectedRollback, sampleSnapshot, () => {
+        throw new Error("batch failed");
+      }),
+    ).toThrow(/rollback failed/);
+    await Promise.resolve();
+    await Promise.resolve();
   });
 
   test("rejects trace sequence reuse across different timestamps", () => {
@@ -2187,10 +2413,10 @@ describe("P01 versioned contract fixtures", () => {
     deadActor.alive = false;
     deadActor.health.current = 0;
     expect(() =>
-      assertLifecycleResolution(
-        { entityId: "enemy", transition: "death", replacement: deadEnemy },
-        sampleSnapshot.entities,
-        withLifecycleBatch(ports.lifecycle, sampleSnapshot, (stage) =>
+      withLifecycleBatch(ports.lifecycle, sampleSnapshot, (stage) =>
+        assertLifecycleResolution(
+          { entityId: "enemy", transition: "death", replacement: deadEnemy },
+          sampleSnapshot.entities,
           stage.apply(
             { entityId: "actor", transition: "death", replacement: deadActor },
             mockPortContext,

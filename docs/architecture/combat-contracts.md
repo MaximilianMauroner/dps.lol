@@ -162,10 +162,18 @@ and validates its result inside the callback. The callback can only call
 `stage.apply`; it cannot commit early. `beginBatch` and `apply` may update private
 staged state but must not publish it. A stateful port atomically publishes all
 staged transitions, in order and exactly once, only when `commit` succeeds.
+A failed `apply` poisons the batch even if a caller catches the error. The
+staging handle closes before commit, so synchronous reentrant code cannot add
+another transition during publication. A partially formed transaction with a
+usable rollback method is rolled back before rejection.
 A throwing `commit` must publish none; `rollback` discards every staged effect
 and must not throw. Any callback error, including a later event or result
 validation failure, rolls back and preserves the session checkpoint. The batch
-is synchronous: a returned promise is rejected and rolled back. The caller
+is synchronous: native async methods are rejected before invocation, and
+unexpected promise-like returns are observed, rejected and rolled back. Commit
+and rollback return exactly `undefined`. A nonconforming adapter that starts
+delayed publication before returning cannot be repaired by the caller; its
+implementation must obey the synchronous atomic-commit rule. The caller
 must do no fallible work between successful commit and adopting its already
 validated in-memory result. A pure lifecycle adapter can use the same protocol
 with trivial staging. Old immediate-apply lifecycle ports are rejected by the
