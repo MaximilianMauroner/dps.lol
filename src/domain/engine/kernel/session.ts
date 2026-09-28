@@ -1,14 +1,16 @@
 import {
   EngineCommandSchema,
   EngineSnapshotSchema,
-  EngineStepResultSchema,
   PolicyVisibleStateSchema,
   StepBudgetSchema,
   assertEngineInputCompatible,
+  assertEngineStepResult,
   assertLifecycleResolution,
+  withLifecycleBatch,
   type EngineCommand,
   type EngineEvent,
   type EngineInput,
+  type LifecycleBatch,
   type EngineSession,
   type EngineSnapshot,
   type EngineStepResult,
@@ -110,6 +112,8 @@ export class IncrementalKernelSession implements EngineSession {
   private readonly actorEntityId: string;
   private readonly visibleEntityIds: readonly string[];
   private readonly lifecyclePort: EngineInput["ports"]["lifecycle"];
+  private readonly input: EngineInput;
+  private stepping = false;
 
   constructor(
     start: ValidatedResume | FreshKernelStart,
@@ -119,6 +123,7 @@ export class IncrementalKernelSession implements EngineSession {
   ) {
     this.horizonMs = start.input.run.objective.horizonMs;
     this.objectiveKind = start.input.run.objective.kind;
+    this.input = start.input;
     this.lifecyclePort = start.input.ports.lifecycle;
     this.actorEntityId = start.input.scenario.effective.actorEntityId;
     this.visibleEntityIds = [
@@ -193,10 +198,7 @@ export class IncrementalKernelSession implements EngineSession {
     return value;
   }
 
-  step(rawBudget: StepBudget): EngineStepResult {
-    const budget = StepBudgetSchema.parse(rawBudget);
-    if (this.state.status !== "running")
-      throw new TypeError("a terminal kernel session cannot be stepped");
+  private performStep(budget: StepBudget, lifecycleStage: Pick<LifecycleBatch, "apply">) {
     const traceEvents: TraceEvent[] = [];
     const emittedEvents: EngineEvent[] = [];
     const workingEntities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
@@ -314,7 +316,7 @@ export class IncrementalKernelSession implements EngineSession {
         const resolution = assertLifecycleResolution(
           lifecycle,
           workingEntities.active(),
-          this.lifecyclePort.apply(structuredClone(lifecycle), structuredClone(context)),
+          lifecycleStage.apply(structuredClone(lifecycle), structuredClone(context)),
         );
         if (!resolution.accepted)
           throw new TypeError(`lifecycle service rejected transition: ${resolution.reason}`);
@@ -398,15 +400,19 @@ export class IncrementalKernelSession implements EngineSession {
             : "step event budget exhausted",
       },
     });
-    const result = EngineStepResultSchema.parse({
-      schemaVersion: 1,
-      status: exhausted ? "incomplete" : "progress",
-      snapshot: nextState,
-      emittedEvents,
-      result: incompleteResult,
-      reason: nextState.interruption.reason,
-    });
-    this.queue = exhausted
+    const result = assertEngineStepResult(
+      this.input,
+      {
+        schemaVersion: 1,
+        status: exhausted ? "incomplete" : "progress",
+        snapshot: nextState,
+        emittedEvents,
+        result: incompleteResult,
+        reason: nextState.interruption.reason,
+      },
+      this.state.engineHash,
+    );
+    const nextQueue = exhausted
       ? new EventQueue(
           nextState.currentTimeMs,
           this.eventLimit,
@@ -414,8 +420,25 @@ export class IncrementalKernelSession implements EngineSession {
           nextState.allocatedEventIds,
         )
       : workingQueue;
-    this.entities = workingEntities;
-    this.state = nextState;
-    return result;
+    return { result, nextState, nextQueue, workingEntities };
+  }
+
+  step(rawBudget: StepBudget): EngineStepResult {
+    const budget = StepBudgetSchema.parse(rawBudget);
+    if (this.state.status !== "running")
+      throw new TypeError("a terminal kernel session cannot be stepped");
+    if (this.stepping) throw new TypeError("kernel session step is already running");
+    this.stepping = true;
+    try {
+      const committed = withLifecycleBatch(this.lifecyclePort, this.state, (lifecycleStage) =>
+        this.performStep(budget, lifecycleStage),
+      );
+      this.queue = committed.nextQueue;
+      this.entities = committed.workingEntities;
+      this.state = committed.nextState;
+      return committed.result;
+    } finally {
+      this.stepping = false;
+    }
   }
 }
