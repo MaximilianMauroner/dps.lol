@@ -8,7 +8,9 @@ import {
   PolicyVisibleStateSchema,
   RunManifestSchema,
   type EngineCommand,
+  type LifecycleTransition,
   type PolicyVisibleState,
+  type PortContext,
   type ScheduledEvent,
 } from "../../../src/domain/contracts";
 import { createMockPorts } from "../../contracts/mock-ports";
@@ -965,6 +967,116 @@ test("scheduled death waits for its timestamp and revival survives checkpoint re
   ]);
 });
 
+test("lifecycle events use the shared port at their event frontier", () => {
+  const checkpoint = deathCheckpoint();
+  const calls: Array<{ transition: LifecycleTransition; context: PortContext }> = [];
+  const ports = {
+    ...createMockPorts(),
+    lifecycle: {
+      protocolVersion: 2 as const,
+      beginBatch: () => {
+        const staged: typeof calls = [];
+        return {
+          apply: (transition: LifecycleTransition, context: PortContext) => {
+            staged.push({
+              transition: structuredClone(transition),
+              context: structuredClone(context),
+            });
+            return {
+              accepted: true,
+              entityId: transition.entityId,
+              transition: transition.transition,
+              state: transition.replacement,
+              reason: null,
+            };
+          },
+          commit: () => {
+            calls.push(...staged);
+            return undefined;
+          },
+          rollback: () => undefined,
+        };
+      },
+    },
+  };
+  const start = assertResumeCompatible(
+    { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+    checkpoint,
+    HASH_A,
+  );
+  const session = new IncrementalKernelSession(
+    start,
+    (event) => [lifecycleTrace(event, "enemy", "death")],
+    view,
+  );
+  const result = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.transition.entityId).toBe("enemy");
+  expect(calls[0]?.transition.transition).toBe("death");
+  expect(calls[0]?.transition.replacement?.alive).toBe(false);
+  expect(calls[0]?.context.timeMs).toBe(1000);
+  expect(calls[0]?.context.sequence).toBe(checkpoint.queue.entries[0]?.sequence);
+  expect(result.snapshot.entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(false);
+});
+
+test("forged or rejected lifecycle port responses leave the checkpoint unchanged", () => {
+  const checkpoint = deathCheckpoint();
+  for (const apply of [
+    (transition: LifecycleTransition) => ({
+      accepted: true,
+      entityId: transition.entityId,
+      transition: transition.transition,
+      state: checkpoint.entities.find((entity) => entity.entityId === "enemy")!,
+      reason: null,
+    }),
+    (transition: LifecycleTransition) => ({
+      accepted: false,
+      entityId: transition.entityId,
+      transition: transition.transition,
+      state: null,
+      reason: "lifecycle service rejected transition",
+    }),
+  ]) {
+    let commits = 0;
+    let rollbacks = 0;
+    const start = assertResumeCompatible(
+      {
+        scenario: sampleResolvedScenario,
+        run: sampleRunningRun,
+        ports: {
+          ...createMockPorts(),
+          lifecycle: {
+            protocolVersion: 2,
+            beginBatch: () => ({
+              apply,
+              commit: () => {
+                commits += 1;
+                return undefined;
+              },
+              rollback: () => {
+                rollbacks += 1;
+                return undefined;
+              },
+            }),
+          },
+        },
+      },
+      checkpoint,
+      HASH_A,
+    );
+    const session = new IncrementalKernelSession(
+      start,
+      (event) => [lifecycleTrace(event, "enemy", "death")],
+      view,
+    );
+    const before = session.snapshot();
+    expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow();
+    expect(session.snapshot()).toEqual(before);
+    expect(commits).toBe(0);
+    expect(rollbacks).toBe(1);
+  }
+});
+
 test("invalid lifecycle trace or replacement rolls back the whole session step", () => {
   const checkpoint = deathCheckpoint();
   const wrongTrace = new IncrementalKernelSession(
@@ -1018,6 +1130,37 @@ test("invalid lifecycle trace or replacement rolls back the whole session step",
 
 test("same-time lifecycle descendant failure rolls back an earlier death in the batch", () => {
   const checkpoint = deathCheckpoint();
+  const published: string[] = [];
+  const rolledBack: string[][] = [];
+  const ports = {
+    ...createMockPorts(),
+    lifecycle: {
+      protocolVersion: 2 as const,
+      beginBatch: () => {
+        const staged: string[] = [];
+        return {
+          apply: (transition: LifecycleTransition) => {
+            staged.push(transition.transition);
+            return {
+              accepted: true,
+              entityId: transition.entityId,
+              transition: transition.transition,
+              state: transition.replacement,
+              reason: null,
+            };
+          },
+          commit: () => {
+            published.push(...staged);
+            return undefined;
+          },
+          rollback: () => {
+            rolledBack.push([...staged]);
+            return undefined;
+          },
+        };
+      },
+    },
+  };
   const enemy = checkpoint.entities.find((entity) => entity.entityId === "enemy")!;
   const dispatch = (event: ScheduledEvent): EngineCommand[] => {
     if (event.eventId === "event-004") return [traceCommand(event)];
@@ -1041,12 +1184,107 @@ test("same-time lifecycle descendant failure rolls back an earlier death in the 
       },
     ];
   };
-  const session = new IncrementalKernelSession(resume(checkpoint), dispatch, view);
+  const session = new IncrementalKernelSession(
+    assertResumeCompatible(
+      { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+      checkpoint,
+      HASH_A,
+    ),
+    dispatch,
+    view,
+  );
   const before = session.snapshot();
   expect(() => session.step({ maxEvents: 2, untilTimeMs: null })).toThrow("lifecycle trace");
   expect(session.snapshot()).toEqual(before);
+  expect(rolledBack).toEqual([["death"]]);
+  expect(published).toEqual([]);
   const first = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(published).toEqual(["death"]);
   expect(first.snapshot.entities.find((entity) => entity.entityId === "enemy")?.alive).toBe(false);
   expect(first.snapshot.queue.entries[0]?.timeMs).toBe(1000);
   expect(first.snapshot.queue.entries[0]?.sequence).toBe(4);
+});
+
+test("lifecycle publication failure leaves the validated kernel step uncommitted", () => {
+  const checkpoint = deathCheckpoint();
+  let rollbacks = 0;
+  const ports = {
+    ...createMockPorts(),
+    lifecycle: {
+      protocolVersion: 2 as const,
+      beginBatch: () => ({
+        apply: (transition: LifecycleTransition) => ({
+          accepted: true,
+          entityId: transition.entityId,
+          transition: transition.transition,
+          state: transition.replacement,
+          reason: null,
+        }),
+        commit: (): undefined => {
+          throw new Error("publication failed");
+        },
+        rollback: () => {
+          rollbacks += 1;
+          return undefined;
+        },
+      }),
+    },
+  };
+  const session = new IncrementalKernelSession(
+    assertResumeCompatible(
+      { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+      checkpoint,
+      HASH_A,
+    ),
+    (event) => [lifecycleTrace(event, "enemy", "death")],
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow("publication failed");
+  expect(rollbacks).toBe(1);
+  expect(session.snapshot()).toEqual(before);
+});
+
+test("lifecycle publication cannot reenter the uncommitted session frontier", () => {
+  const checkpoint = deathCheckpoint();
+  let reentryError: string | null = null;
+  const ports = {
+    ...createMockPorts(),
+    lifecycle: {
+      protocolVersion: 2 as const,
+      beginBatch: () => ({
+        apply: (transition: LifecycleTransition) => ({
+          accepted: true,
+          entityId: transition.entityId,
+          transition: transition.transition,
+          state: transition.replacement,
+          reason: null,
+        }),
+        commit: () => {
+          try {
+            session.step({ maxEvents: 1, untilTimeMs: null });
+          } catch (error) {
+            reentryError = (error as Error).message;
+          }
+          return undefined;
+        },
+        rollback: () => undefined,
+      }),
+    },
+  };
+  const session = new IncrementalKernelSession(
+    assertResumeCompatible(
+      { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+      checkpoint,
+      HASH_A,
+    ),
+    (event) => [lifecycleTrace(event, "enemy", "death")],
+    view,
+  );
+  const result = session.step({ maxEvents: 1, untilTimeMs: null });
+  expect(String(reentryError)).toContain("already running");
+  expect(
+    result.snapshot.trace.events.filter((event) => event.eventId === "event-003"),
+  ).toHaveLength(1);
+  expect(session.snapshot()).toEqual(result.snapshot);
 });
