@@ -144,7 +144,13 @@ export function readAuditedBaselineSnapshot(
   plan: Pick<Plan, "baselineCommit" | "baselineTree">,
   repoRoot = resolve(process.cwd()),
 ): BaselineSnapshot {
-  const contents = readFileSync(join(repoRoot, BASELINE_FILES_RELATIVE_PATH), "utf8");
+  const contents = readFileSync(join(repoRoot, BASELINE_FILES_RELATIVE_PATH), "utf8").replace(
+    /\r\n/g,
+    "\n",
+  );
+  if (contents.includes("\r")) {
+    throw new Error("bundled audited path list has invalid line endings");
+  }
   const digest = createHash("sha256").update(contents).digest("hex");
   if (digest !== BASELINE_FILES_SHA256) {
     throw new Error(`bundled audited path list has an unexpected SHA-256: ${digest}`);

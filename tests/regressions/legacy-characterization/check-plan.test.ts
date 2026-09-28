@@ -192,7 +192,11 @@ describe("offline ownership contract validator", () => {
       ).toBe("true");
       expect(runCheckPlan(shallow)).toBe(0);
 
-      writeFileSync(join(shallow, "scripts/plan-baseline-files.txt"), "changed\n");
+      const bundledPath = join(shallow, "scripts/plan-baseline-files.txt");
+      writeFileSync(bundledPath, readFileSync(bundledPath, "utf8").replace(/\n/g, "\r\n"));
+      expect(runCheckPlan(shallow)).toBe(0);
+
+      writeFileSync(bundledPath, "changed\n");
       const structural = validatePlanDocument(loadPlanDocument());
       if (!structural.plan) throw new Error(structural.errors.join("; "));
       expect(() => readAuditedBaselineSnapshot(structural.plan!, shallow)).toThrow(
