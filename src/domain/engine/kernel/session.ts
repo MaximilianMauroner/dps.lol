@@ -22,12 +22,6 @@ import { DEFAULT_PHASE_ORDER, EventQueue, type QueueCommand } from "./event-queu
 import { EntityRegistry } from "./entities";
 import { lifecycleTransitionFromEvent } from "./lifecycle-event";
 
-export class KernelWorkLimitError extends Error {
-  constructor() {
-    super("kernel event allocation limit reached; no combat score is available");
-  }
-}
-
 export type KernelDispatcher = (
   event: Readonly<ScheduledEvent>,
   context: PortContext,
@@ -111,6 +105,7 @@ export class IncrementalKernelSession implements EngineSession {
   private queue: EventQueue;
   private entities: EntityRegistry;
   private readonly horizonMs: number;
+  private readonly objectiveKind: EngineInput["run"]["objective"]["kind"];
   private readonly actorEntityId: string;
   private readonly visibleEntityIds: readonly string[];
 
@@ -121,6 +116,7 @@ export class IncrementalKernelSession implements EngineSession {
     private readonly eventLimit = 100_000,
   ) {
     this.horizonMs = start.input.run.objective.horizonMs;
+    this.objectiveKind = start.input.run.objective.kind;
     this.actorEntityId = start.input.scenario.effective.actorEntityId;
     this.visibleEntityIds = [
       ...start.input.scenario.effective.policy.visibility.visibleEntityIds,
@@ -196,6 +192,8 @@ export class IncrementalKernelSession implements EngineSession {
 
   step(rawBudget: StepBudget): EngineStepResult {
     const budget = StepBudgetSchema.parse(rawBudget);
+    if (this.state.status !== "running")
+      throw new TypeError("a terminal kernel session cannot be stepped");
     const traceEvents: TraceEvent[] = [];
     const emittedEvents: EngineEvent[] = [];
     const workingEntities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
@@ -327,48 +325,83 @@ export class IncrementalKernelSession implements EngineSession {
     });
     // A batch is atomic at the session boundary. The queue and trace are only
     // committed after the entire bounded step has passed contract validation.
-    if (step.status === "event-limit") throw new KernelWorkLimitError();
+    const exhausted = step.status === "event-limit";
+    const limitReason = "kernel event allocation limit reached; no combat score is available";
+    const incompleteResult = exhausted
+      ? {
+          schemaVersion: 1 as const,
+          resultId: this.state.runId,
+          runId: this.state.runId,
+          status: "incomplete" as const,
+          objective: this.objectiveKind,
+          resolvedScenarioHash: this.state.resolvedScenarioHash,
+          candidateInputHash: this.state.candidateInputHash,
+          metrics: {
+            damage: { status: "undefined" as const, reason: limitReason },
+            dps: { status: "undefined" as const, reason: limitReason },
+            ttk: { status: "undefined" as const, reason: limitReason },
+            timeToFirstDeath: { status: "undefined" as const, reason: limitReason },
+            timeToElimination: { status: "undefined" as const, reason: limitReason },
+          },
+          coverage: null,
+          uncertainty: null,
+          killed: false,
+          censoring: "invalid" as const,
+          warnings: [limitReason],
+          traceId: this.state.trace.traceId,
+        }
+      : null;
     const cancelledIds = new Set(step.cancelledEventIds);
     const nextState = EngineSnapshotSchema.parse({
       ...this.state,
       currentTimeMs: workingQueue.currentTimeMs,
-      queue: workingQueue.snapshot(),
+      queue: exhausted ? { ...workingQueue.snapshot(), entries: [] } : workingQueue.snapshot(),
       entities: workingEntities.active(),
       stateRevisions: workingEntities.stateRevisions(),
       buffs: workingEntities.active().flatMap((entity) => entity.buffs),
       allocatedEventIds: workingQueue.allocatedEventIds(),
       trace: { ...this.state.trace, events: [...this.state.trace.events, ...traceEvents] },
-      pendingActions: this.state.pendingActions.map((pending) =>
-        pending.continuationEventId !== null &&
-        (emittedEvents.some((entry) => entry.eventId === pending.continuationEventId) ||
-          cancelledIds.has(pending.continuationEventId))
-          ? {
-              ...pending,
-              continuationEventId: null,
-              state: cancelledIds.has(pending.continuationEventId) ? "interrupted" : "complete",
-            }
-          : pending,
-      ),
-      status: "running",
-      resumability: "resumable",
-      result: null,
+      pendingActions: exhausted
+        ? []
+        : this.state.pendingActions.map((pending) =>
+            pending.continuationEventId !== null &&
+            (emittedEvents.some((entry) => entry.eventId === pending.continuationEventId) ||
+              cancelledIds.has(pending.continuationEventId))
+              ? {
+                  ...pending,
+                  continuationEventId: null,
+                  state: cancelledIds.has(pending.continuationEventId) ? "interrupted" : "complete",
+                }
+              : pending,
+          ),
+      status: exhausted ? "incomplete" : "running",
+      resumability: exhausted ? "non-resumable" : "resumable",
+      result: incompleteResult,
       interruption: {
         state: "budget-exhausted",
-        reason:
-          step.status === "empty"
+        reason: exhausted
+          ? limitReason
+          : step.status === "empty"
             ? "kernel awaits objective evaluation"
             : "step event budget exhausted",
       },
     });
     const result = EngineStepResultSchema.parse({
       schemaVersion: 1,
-      status: "progress",
+      status: exhausted ? "incomplete" : "progress",
       snapshot: nextState,
       emittedEvents,
-      result: null,
+      result: incompleteResult,
       reason: nextState.interruption.reason,
     });
-    this.queue = workingQueue;
+    this.queue = exhausted
+      ? new EventQueue(
+          nextState.currentTimeMs,
+          this.eventLimit,
+          nextState.queue,
+          nextState.allocatedEventIds,
+        )
+      : workingQueue;
     this.entities = workingEntities;
     this.state = nextState;
     return result;
