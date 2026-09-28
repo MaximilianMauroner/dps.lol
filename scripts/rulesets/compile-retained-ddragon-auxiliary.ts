@@ -19,7 +19,12 @@ export async function compileRetainedDataDragonAuxiliaryInventory(
   selection: AuxiliarySelection,
   limits?: RetainedFileLimits,
 ) {
-  const ids = [selection.runesArtifactId, selection.summonerArtifactId, selection.mapArtifactId];
+  const selected = {
+    runesArtifactId: selection.runesArtifactId,
+    summonerArtifactId: selection.summonerArtifactId,
+    mapArtifactId: selection.mapArtifactId,
+  };
+  const ids = [selected.runesArtifactId, selected.summonerArtifactId, selected.mapArtifactId];
   if (ids.some((id) => !id) || new Set(ids).size !== 3)
     throw new TypeError("auxiliary inventory requires three distinct artifact IDs");
   const { sourceSet, retained } = await loadVerifiedRetainedSourceFiles(
@@ -35,9 +40,9 @@ export async function compileRetainedDataDragonAuxiliaryInventory(
       throw new TypeError(`auxiliary source artifact ${id} conflicts with the pinned version`);
     return { artifact: entry.artifact, bytes, retainedPath: entry.retainedPath };
   };
-  const runes = select(selection.runesArtifactId);
-  const summoners = select(selection.summonerArtifactId);
-  const maps = select(selection.mapArtifactId);
+  const runes = select(selected.runesArtifactId);
+  const summoners = select(selected.summonerArtifactId);
+  const maps = select(selected.mapArtifactId);
   const inventory = await discoverDataDragonAuxiliaryInventory({ runes, summoners, maps });
   const body = {
     schemaVersion: 1 as const,

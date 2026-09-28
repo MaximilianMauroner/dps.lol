@@ -184,6 +184,14 @@ test("verified auxiliary bytes retain all IDs, hierarchy, raw mode tags and visi
   ]);
   expect(first.undiscoveredArtifactIds).toEqual(["manual-scope"]);
   expect(first.reportHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  const mutableSelection = { ...selection };
+  const pendingReport = compileRetainedDataDragonAuxiliaryInventory(
+    sourceSet,
+    root,
+    mutableSelection,
+  );
+  mutableSelection.mapArtifactId = "missing";
+  expect(await pendingReport).toEqual(first);
   const recaptured = await fixture({ retrievedAt: "2026-09-29T00:00:00Z" });
   expect(
     (
