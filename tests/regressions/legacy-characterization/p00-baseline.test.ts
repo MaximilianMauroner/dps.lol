@@ -37,14 +37,7 @@ function simulate(overrides: Partial<Parameters<typeof simulateYunara>[0]> = {})
 }
 
 describe("P00 legacy characterization", () => {
-  /**
-   * Intentional red test at the audited baseline.
-   *
-   * This asserts the future-event contract, not the current output. The
-   * repair belongs to the shared event/action work in P04/P08/P16. Keeping
-   * this assertion red prevents the existing defect from becoming a golden
-   * result while still making the defect reproducible without credentials.
-   */
+  // Regression for the audited baseline's eager application of W's future tick.
   test("W future tick cannot mutate health before an earlier eligible attack", () => {
     const result = simulate({
       durationSeconds: 2,
@@ -67,6 +60,116 @@ describe("P00 legacy characterization", () => {
     expect(result.events.map((event) => event.time)).toEqual(
       [...result.events].map((event) => event.time).sort((left, right) => left - right),
     );
+  });
+
+  test("an earlier lethal attack cancels pending W damage", () => {
+    const result = simulate({
+      actions: ["W", "AA"],
+      target: { ...target, health: 300 },
+    });
+    expect(result.ttk).toBe(0.5);
+    expect(result.events.some((event) => event.source === "Arc of Judgment — linger")).toBe(false);
+    expect(result.totalDamage).toBe(300);
+  });
+
+  test("current-health on-hit sees only W damage that has already landed", () => {
+    const result = simulate({
+      actions: ["W", "AA"],
+      build: { name: "BORK chronology", itemIds: [3153] },
+    });
+    const initial = result.events.find((event) => event.source === "Arc of Judgment")!;
+    const onHit = result.events.find(
+      (event) => event.source === "Blade of the Ruined King — Mist's Edge",
+    )!;
+    expect(onHit.time).toBe(0.5);
+    expect(onHit.raw).toBeCloseTo((target.health - initial.final) * 0.06, 3);
+  });
+
+  test("linger drains during cooldown waiting and before an attack at the same time", () => {
+    const waiting = simulate({
+      durationSeconds: 12,
+      actions: ["W", "W", "AA"],
+      target: { ...target, health: 100_000 },
+    });
+    expect(waiting.events.map((event) => event.time)).toEqual([0, 1, 10, 10.5, 10.5, 11]);
+
+    const attack = simulate({ actions: ["W", "Q", "Q", "AA"] });
+    expect(attack.events.filter((event) => event.time === 1).map((event) => event.source)).toEqual([
+      "Arc of Judgment — linger",
+      "Basic attack",
+      "Cultivation of Spirit — passive",
+      "Cultivation of Spirit — active",
+    ]);
+  });
+
+  test("a lethal linger stops an attack waiting for readiness", () => {
+    const result = simulate({ actions: ["W", "AA", "AA"], target: { ...target, health: 400 } });
+    expect(result.ttk).toBe(1);
+    expect(result.events.filter((event) => event.source === "Basic attack")).toHaveLength(1);
+  });
+
+  test("an attack outside the window cannot drain damage before an earlier spell", () => {
+    const result = simulate({
+      durationSeconds: 1.2,
+      actions: ["W", "AA", "AA", "W"],
+      abilityHaste: 1500,
+    });
+    expect(result.events.map((event) => event.time)).toEqual([0, 0.5, 0.5, 0.75, 1]);
+  });
+
+  test("linger uses penetration earned by earlier attacks", () => {
+    const result = simulate({
+      actions: ["AA", "W", "AA"],
+      build: { name: "Terminus chronology", itemIds: [3302] },
+      target: { ...target, magicResist: 100 },
+    });
+    expect(result.events.find((event) => event.source === "Arc of Judgment")?.resistance).toBe(100);
+    expect(
+      result.events.find((event) => event.source === "Arc of Judgment — linger")?.resistance,
+    ).toBe(90);
+  });
+
+  test("continued autos share chronology in mortal and uncapped modes", () => {
+    const base = {
+      actions: ["W" as const],
+      continueAutos: true,
+      target: { ...target, health: 400 },
+    };
+    const mortal = simulate(base);
+    expect(mortal.ttk).toBe(1);
+    expect(mortal.events.filter((event) => event.source === "Basic attack")).toHaveLength(1);
+    const hidden = simulate({ ...base, includeEvents: false });
+    expect(hidden.ttk).toBe(mortal.ttk);
+    expect(hidden.totalDamage).toBe(mortal.totalDamage);
+    const uncapped = simulate({ ...base, targetMode: "uncapped" });
+    expect(uncapped.ttk).toBeNull();
+    expect(uncapped.events.map((event) => event.time)).toEqual(
+      uncapped.events.map((event) => event.time).sort((left, right) => left - right),
+    );
+    expect(uncapped.totalDamage).toBeGreaterThan(400);
+  });
+
+  test("a lethal linger stops a spell waiting for cooldown", () => {
+    const result = simulate({
+      durationSeconds: 12,
+      actions: ["W", "W"],
+      target: { ...target, health: 300 },
+    });
+    expect(result.ttk).toBe(1);
+    expect(result.events.map((event) => event.time)).toEqual([0, 1]);
+  });
+
+  test("pending linger respects the window even without actions or event capture", () => {
+    const base = { actions: ["W" as const], durationSeconds: 1 };
+    const visible = simulate(base);
+    expect(visible.events.map((event) => event.time)).toEqual([0, 1]);
+    expect(simulate({ ...base, durationSeconds: 0.999 }).events.map((event) => event.time)).toEqual(
+      [0],
+    );
+    const hidden = simulate({ ...base, includeEvents: false });
+    expect(hidden.events).toEqual([]);
+    expect(hidden.totalDamage).toBe(visible.totalDamage);
+    expect(hidden.sources).toEqual(visible.sources);
   });
 
   test("characterizes scripted cooldown waiting without treating readiness as an action", () => {

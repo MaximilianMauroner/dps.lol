@@ -268,6 +268,15 @@ export const yunara: ChampionPlugin = {
       return final > 0 || overkill > 0;
     };
 
+    // W snapshots its raw damage at cast time, but health and mitigation must
+    // be evaluated when the tick lands. Drain before actions at the same time.
+    const pendingDamage: Parameters<typeof add>[] = [];
+    const drainDamageThrough = (time: number) => {
+      while (pendingDamage.length > 0 && pendingDamage[0]![0] <= time) {
+        add(...pendingDamage.shift()!);
+      }
+    };
+
     const fiendhunterActiveAt = (time: number): boolean => {
       expireTimedItemStates(time);
       return Boolean(
@@ -327,7 +336,9 @@ export const yunara: ChampionPlugin = {
     };
 
     const attack = (time: number) => {
-      if (isDead() || time > input.durationSeconds) return false;
+      if (time > input.durationSeconds) return false;
+      drainDamageThrough(time);
+      if (isDead()) return false;
       applyRExitEffects(time);
       expireTimedItemStates(time);
       advanceStormrazorMovement(time);
@@ -514,11 +525,14 @@ export const yunara: ChampionPlugin = {
 
     let cursor = 0;
     for (const action of input.actions) {
+      drainDamageThrough(cursor);
       if (cursor > input.durationSeconds || isDead()) break;
       applyRExitEffects(cursor);
       if (action === "R") {
         if (input.ranks.r <= 0) continue;
         const castTime = Math.max(cursor, state.rReadyAt);
+        drainDamageThrough(castTime);
+        if (isDead()) break;
         if (castTime > input.durationSeconds) break;
         applyRExitEffects(castTime);
         state.rUntil = castTime + R_DURATION_SECONDS;
@@ -539,6 +553,8 @@ export const yunara: ChampionPlugin = {
       } else if (action === "W") {
         if (input.ranks.w <= 0) continue;
         const castTime = Math.max(cursor, state.wReadyAt);
+        drainDamageThrough(castTime);
+        if (isDead()) break;
         if (castTime > input.durationSeconds) break;
         applyRExitEffects(castTime);
         if (castTime < state.rUntil) {
@@ -554,14 +570,20 @@ export const yunara: ChampionPlugin = {
           const base = [0, 55, 95, 135, 175, 215][input.ranks.w]!;
           const hit = base + 0.85 * (totalAd - BASE_AD - growthAtLevel(AD_GROWTH, input.level));
           add(castTime, "Arc of Judgment", "magic", hit, ["Initial hit; 85% bonus AD"]);
-          add(castTime + 1, "Arc of Judgment — linger", "magic", hit * 0.6, [
-            "One representative 60% lingering tick",
+          pendingDamage.push([
+            castTime + 1,
+            "Arc of Judgment — linger",
+            "magic",
+            hit * 0.6,
+            ["One representative 60% lingering tick"],
           ]);
         }
         state.wReadyAt = castTime + cooldownWithHaste(ABILITY_COOLDOWN_SECONDS.W);
         cursor = castTime + ABILITY_CAST_SECONDS.W;
       } else if (action === "E") {
         const castTime = Math.max(cursor, state.eReadyAt);
+        drainDamageThrough(castTime);
+        if (isDead()) break;
         if (castTime > input.durationSeconds) break;
         applyRExitEffects(castTime);
         state.eReadyAt = castTime + cooldownWithHaste(ABILITY_COOLDOWN_SECONDS.E);
@@ -579,6 +601,7 @@ export const yunara: ChampionPlugin = {
         next = state.nextAttackReady;
       }
     }
+    drainDamageThrough(input.durationSeconds);
     advanceStormrazorMovement(input.durationSeconds);
 
     const ttk = firstKillTime;
