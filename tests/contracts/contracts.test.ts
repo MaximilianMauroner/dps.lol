@@ -1350,6 +1350,7 @@ describe("P01 versioned contract fixtures", () => {
     const mismatch = ["retained lifecycle trace effects must match the retired entity ledger"];
     expect(withLifecycleEffect("summon-1", "despawn", [])).toEqual(mismatch);
     expect(withLifecycleEffect("summon-1", "despawn", ["summon-1"])).toBeUndefined();
+    expect(withLifecycleEffect("enemy", "despawn", [])).toEqual(mismatch);
     expect(withLifecycleEffect("summon-1", "spawn", [])).toEqual(mismatch);
     expect(withLifecycleEffect("summon-1", "spawn", ["summon-1"])).toBeUndefined();
   });
