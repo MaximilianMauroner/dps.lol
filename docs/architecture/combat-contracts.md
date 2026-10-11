@@ -279,9 +279,13 @@ state; they cannot disagree on stacks, sources or expiry.
 Resume restores the allocation ledger into each port context so a discarded
 trace event ID cannot be allocated again.
 `retiredEntityIds` is the matching entity ledger: every despawned entity ID stays
-there, disjoint from the active entities, so a restored session can never spawn
-that ID again. Resume requires every resolved-scenario entity to be either active
-or retired; an entity cannot silently drop out of a checkpoint.
+there, disjoint from the active entities, so a restored session cannot spawn
+that ID again. Each lifecycle effect in the retained trace must name an active or
+retired entity, and a despawn effect must name a retired one. As with event IDs,
+a truncated trace makes this check partial. Resume requires every resolved-scenario
+entity to be either active or retired, so an entity cannot silently drop out of a
+checkpoint. Policy-visible entities must stay active, because the frozen policy
+view cannot represent a departed entity; despawning one fails the step.
 Step envelopes may repeat events retained in the snapshot trace only when the
 event ID, allocation sequence and all causal identity fields describe that
 same retained event. Reusing either a retained ID or sequence for different

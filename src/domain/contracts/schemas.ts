@@ -2185,6 +2185,7 @@ export const EngineSnapshotSchema = z
       });
     }
     const knownEntityIds = new Set(entityIds);
+    const retiredEntityIds = new Set(value.retiredEntityIds);
     for (const [index, entityId] of value.retiredEntityIds.entries()) {
       if (knownEntityIds.has(entityId)) {
         context.addIssue({
@@ -2192,6 +2193,24 @@ export const EngineSnapshotSchema = z
           path: ["retiredEntityIds", index],
           message: "retired entity IDs cannot remain active",
         });
+      }
+    }
+    // A despawned identity stays retired; every other lifecycle identity stays accounted for.
+    for (const [eventIndex, event] of value.trace.events.entries()) {
+      for (const [effectIndex, effect] of event.effects.entries()) {
+        if (effect.kind !== "lifecycle") continue;
+        const retired = retiredEntityIds.has(effect.entityId);
+        if (
+          effect.transition === "despawn"
+            ? !retired
+            : !retired && !knownEntityIds.has(effect.entityId)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["trace", "events", eventIndex, "effects", effectIndex, "entityId"],
+            message: "retained lifecycle trace effects must match the retired entity ledger",
+          });
+        }
       }
     }
     if (

@@ -1032,15 +1032,18 @@ function assertSnapshotCompatible(
   else if (retainedActor.team !== "actor")
     mismatches.push("snapshot designated scenario actor must remain on the actor team");
   // A scenario identity may only leave the active world through the retired ledger.
-  const accountedEntityIds = new Set([
-    ...snapshot.entities.map((entity) => entity.entityId),
-    ...snapshot.retiredEntityIds,
-  ]);
+  const activeEntityIds = new Set(snapshot.entities.map((entity) => entity.entityId));
+  const retiredEntityIds = new Set(snapshot.retiredEntityIds);
   for (const entity of scenario.effective.entities) {
-    if (!accountedEntityIds.has(entity.entityId))
+    if (!activeEntityIds.has(entity.entityId) && !retiredEntityIds.has(entity.entityId))
       mismatches.push(
         `snapshot must retain scenario entity ${entity.entityId} as active or retired`,
       );
+  }
+  // The frozen policy view cannot represent a departed entity.
+  for (const entityId of scenario.effective.policy.visibility.visibleEntityIds) {
+    if (!activeEntityIds.has(entityId))
+      mismatches.push(`snapshot must retain policy-visible entity ${entityId}`);
   }
   for (const pending of snapshot.pendingActions) {
     if (pending.command.actorId !== scenario.effective.actorEntityId)

@@ -107,7 +107,6 @@ function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnaps
 export class IncrementalKernelSession implements EngineSession {
   private state: EngineSnapshot;
   private queue: EventQueue;
-  private entities: EntityRegistry;
   private readonly horizonMs: number;
   private readonly objectiveKind: EngineInput["run"]["objective"]["kind"];
   private readonly actorEntityId: string;
@@ -140,11 +139,6 @@ export class IncrementalKernelSession implements EngineSession {
       eventLimit,
       this.state.queue,
       this.state.allocatedEventIds,
-    );
-    this.entities = new EntityRegistry(
-      this.state.entities,
-      this.state.retiredEntityIds,
-      this.state.stateRevisions,
     );
   }
 
@@ -430,7 +424,7 @@ export class IncrementalKernelSession implements EngineSession {
           nextState.allocatedEventIds,
         )
       : workingQueue;
-    return { result, nextState, nextQueue, workingEntities };
+    return { result, nextState, nextQueue };
   }
 
   step(rawBudget: StepBudget): EngineStepResult {
@@ -444,7 +438,6 @@ export class IncrementalKernelSession implements EngineSession {
         this.performStep(budget, lifecycleStage),
       );
       this.queue = committed.nextQueue;
-      this.entities = committed.workingEntities;
       this.state = committed.nextState;
       return committed.result;
     } finally {

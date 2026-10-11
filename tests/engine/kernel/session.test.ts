@@ -1097,6 +1097,42 @@ test("despawned identities stay retired across checkpoints and cannot be spawned
   expect(counts).toEqual({ commits: 3, rollbacks: 1 });
 });
 
+test("despawning a policy-visible scenario entity fails the step without changing the checkpoint", () => {
+  const checkpoint = EngineSnapshotSchema.parse({
+    ...sampleSnapshot,
+    // Drop the actor's copied ability so only the policy view still depends on the enemy.
+    entities: sampleSnapshot.entities.map((entity) =>
+      entity.entityId === "actor"
+        ? {
+            ...entity,
+            abilities: entity.abilities.filter((ability) => ability.origin.kind !== "copied"),
+          }
+        : entity,
+    ),
+    queue: {
+      ...sampleSnapshot.queue,
+      entries: [
+        {
+          ...sampleSnapshot.queue.entries[0]!,
+          phase: "lifecycle",
+          kind: "lifecycle-transition",
+          payload: { entityId: "enemy", transition: "despawn", replacement: null },
+        },
+      ],
+    },
+  });
+  const session = new IncrementalKernelSession(
+    resume(checkpoint),
+    (event) => [lifecycleTrace(event, "enemy", "despawn")],
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "snapshot must retain policy-visible entity enemy",
+  );
+  expect(session.snapshot()).toEqual(before);
+});
+
 test("lifecycle events use the shared port at their event frontier", () => {
   const checkpoint = deathCheckpoint();
   const calls: Array<{ transition: LifecycleTransition; context: PortContext }> = [];

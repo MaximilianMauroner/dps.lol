@@ -1313,11 +1313,45 @@ describe("P01 versioned contract fixtures", () => {
       run: sampleRunningRun,
       ports: createMockPorts(),
     };
-    expect(() => assertResumeCompatible(input, enemyGone)).toThrow(
-      /scenario entity enemy as active or retired/,
-    );
+    const mismatchesOf = (snapshot: typeof sampleSnapshot) => {
+      try {
+        assertResumeCompatible(input, snapshot);
+        return [];
+      } catch (error) {
+        if (error instanceof ResumeCompatibilityError) return error.mismatches;
+        throw error;
+      }
+    };
+    expect(mismatchesOf(enemyGone)).toEqual([
+      "snapshot must retain scenario entity enemy as active or retired",
+      "snapshot must retain policy-visible entity enemy",
+    ]);
+    // Retiring the enemy accounts for it, but the frozen policy view still needs it.
     enemyGone.retiredEntityIds = ["enemy"];
-    expect(() => assertResumeCompatible(input, enemyGone)).not.toThrow();
+    expect(mismatchesOf(enemyGone)).toEqual(["snapshot must retain policy-visible entity enemy"]);
+  });
+
+  test("retained lifecycle trace effects must agree with the retired entity ledger", () => {
+    const withLifecycleEffect = (
+      entityId: string,
+      transition: "spawn" | "despawn",
+      retiredEntityIds: string[],
+    ) => {
+      const snapshot = clone(sampleSnapshot);
+      snapshot.trace.events[1] = {
+        ...snapshot.trace.events[1]!,
+        kind: "lifecycle",
+        targetEntityIds: [entityId],
+        effects: [{ kind: "lifecycle", entityId, transition }],
+      };
+      snapshot.retiredEntityIds = retiredEntityIds;
+      return EngineSnapshotSchema.safeParse(snapshot).error?.issues.map((issue) => issue.message);
+    };
+    const mismatch = ["retained lifecycle trace effects must match the retired entity ledger"];
+    expect(withLifecycleEffect("summon-1", "despawn", [])).toEqual(mismatch);
+    expect(withLifecycleEffect("summon-1", "despawn", ["summon-1"])).toBeUndefined();
+    expect(withLifecycleEffect("summon-1", "spawn", [])).toEqual(mismatch);
+    expect(withLifecycleEffect("summon-1", "spawn", ["summon-1"])).toBeUndefined();
   });
 
   test("uses tagged censored metrics instead of JSON Infinity or NaN", () => {
