@@ -42,6 +42,19 @@ test("spawn, snapshot, and despawn preserve ownership and IDs", () => {
   expect(restored.retired()).toEqual(registry.retired());
 });
 
+test("a lifecycle despawn removes the entity's self-sourced buffs with it", () => {
+  const registry = new EntityRegistry(sampleScenario.entities);
+  const selfBuff = {
+    ...structuredClone(sampleScenario.entities[0]!.buffs[0]!),
+    ownerEntityId: "summon-1",
+    sourceEntityId: "summon-1",
+  };
+  registry.spawn({ ...summon("summon-1", "actor"), buffs: [selfBuff] });
+  registry.apply({ entityId: "summon-1", transition: "despawn", replacement: null });
+  expect(registry.get("summon-1")).toBeNull();
+  expect(registry.retired()).toEqual(["summon-1"]);
+});
+
 test("invalid owner or cycle is rejected without changing active state", () => {
   const registry = new EntityRegistry(sampleScenario.entities);
   const before = registry.active();
@@ -88,7 +101,7 @@ test("death, revive, and transform preserve identity and revision through checkp
   const registry = new EntityRegistry(sampleScenario.entities, [], { actor: 4, enemy: 2 });
   const actor = registry.get("actor")!;
   const dead = { ...actor, alive: false, health: { ...actor.health, current: 0, shield: 0 } };
-  registry.applyInPlace({ entityId: "actor", transition: "death", replacement: dead });
+  registry.apply({ entityId: "actor", transition: "death", replacement: dead });
   expect(registry.get("actor")?.alive).toBe(false);
   expect(registry.stateRevisions()).toEqual({ actor: 5, enemy: 2 });
 
@@ -115,8 +128,8 @@ test("death, revive, and transform preserve identity and revision through checkp
     alive: true,
     health: { ...actor.health, current: 200 },
   };
-  restored.applyInPlace({ entityId: "actor", transition: "revive", replacement: revived });
-  restored.applyInPlace({
+  restored.apply({ entityId: "actor", transition: "revive", replacement: revived });
+  restored.apply({
     entityId: "actor",
     transition: "transform",
     replacement: { ...restored.get("actor")!, position: { x: 50, y: 0, z: 0 } },
@@ -130,21 +143,21 @@ test("invalid lifecycle transitions and exhausted revisions leave registry uncha
   const actor = registry.get("actor")!;
   const before = registry.active();
   expect(() =>
-    registry.applyInPlace({ entityId: "actor", transition: "revive", replacement: actor }),
+    registry.apply({ entityId: "actor", transition: "revive", replacement: actor }),
   ).toThrow("dead entity");
   expect(() =>
-    registry.applyInPlace({ entityId: "actor", transition: "death", replacement: actor }),
+    registry.apply({ entityId: "actor", transition: "death", replacement: actor }),
   ).toThrow("dead entity");
   expect(() =>
-    registry.applyInPlace({
+    registry.apply({
       entityId: "actor",
       transition: "transform",
       replacement: sampleScenario.entities[1]!,
     }),
   ).toThrow("identity");
   expect(() =>
-    registry.applyInPlace({ entityId: "actor", transition: "despawn", replacement: null }),
-  ).toThrow("allocation checkpoint ledger");
+    registry.apply({ entityId: "enemy", transition: "despawn", replacement: null }),
+  ).toThrow("dangling entity references");
   expect(registry.active()).toEqual(before);
   expect(registry.stateRevisions()).toEqual({ actor: 1, enemy: 1 });
 
@@ -153,9 +166,9 @@ test("invalid lifecycle transitions and exhausted revisions leave registry uncha
     enemy: 1,
   });
   const dead = { ...actor, alive: false, health: { ...actor.health, current: 0 } };
-  expect(() =>
-    maxed.applyInPlace({ entityId: "actor", transition: "death", replacement: dead }),
-  ).toThrow("revision exhausted");
+  expect(() => maxed.apply({ entityId: "actor", transition: "death", replacement: dead })).toThrow(
+    "revision exhausted",
+  );
   expect(maxed.get("actor")?.alive).toBe(true);
   expect(maxed.stateRevisions().actor).toBe(Number.MAX_SAFE_INTEGER);
 });

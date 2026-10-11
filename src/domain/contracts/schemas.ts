@@ -2125,6 +2125,7 @@ export const EngineSnapshotSchema = z
     currentTimeMs: nonNegativeInteger,
     queue: EventQueueSnapshotSchema,
     entities: z.array(EntityStateSchema).min(1),
+    retiredEntityIds: uniqueIdentifiers,
     buffs: z.array(BuffStateSchema),
     pendingActions: z.array(PendingActionSchema),
     policyProgress: PolicyExecutionProgressSchema,
@@ -2184,6 +2185,15 @@ export const EngineSnapshotSchema = z
       });
     }
     const knownEntityIds = new Set(entityIds);
+    for (const [index, entityId] of value.retiredEntityIds.entries()) {
+      if (knownEntityIds.has(entityId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["retiredEntityIds", index],
+          message: "retired entity IDs cannot remain active",
+        });
+      }
+    }
     if (
       canonicalJson(Object.keys(value.stateRevisions).sort()) !==
       canonicalJson([...entityIds].sort())

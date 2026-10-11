@@ -1031,6 +1031,17 @@ function assertSnapshotCompatible(
   if (!retainedActor) mismatches.push("snapshot must retain the designated scenario actor");
   else if (retainedActor.team !== "actor")
     mismatches.push("snapshot designated scenario actor must remain on the actor team");
+  // A scenario identity may only leave the active world through the retired ledger.
+  const accountedEntityIds = new Set([
+    ...snapshot.entities.map((entity) => entity.entityId),
+    ...snapshot.retiredEntityIds,
+  ]);
+  for (const entity of scenario.effective.entities) {
+    if (!accountedEntityIds.has(entity.entityId))
+      mismatches.push(
+        `snapshot must retain scenario entity ${entity.entityId} as active or retired`,
+      );
+  }
   for (const pending of snapshot.pendingActions) {
     if (pending.command.actorId !== scenario.effective.actorEntityId)
       mismatches.push(`snapshot pending action ${pending.actionId} differs from scenario actor`);

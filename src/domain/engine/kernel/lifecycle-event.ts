@@ -1,15 +1,24 @@
 import { z } from "zod";
 import { EntityStateSchema, type LifecycleTransition, type ScheduledEvent } from "../../contracts";
 
-const LifecycleEventPayloadSchema = z
-  .object({
-    entityId: z.string().min(1),
-    transition: z.enum(["death", "revive", "transform"]),
-    replacement: EntityStateSchema,
-  })
-  .strict();
+const LifecycleEventPayloadSchema = z.union([
+  z
+    .object({
+      entityId: z.string().min(1),
+      transition: z.enum(["spawn", "death", "revive", "transform"]),
+      replacement: EntityStateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      entityId: z.string().min(1),
+      transition: z.literal("despawn"),
+      replacement: z.null(),
+    })
+    .strict(),
+]);
 
-/** A lifecycle event carries its full replacement; no live lookup is needed on replay. */
+/** A lifecycle event carries its full resulting state; no live lookup is needed on replay. */
 export function lifecycleTransitionFromEvent(event: ScheduledEvent): LifecycleTransition | null {
   if (event.kind !== "lifecycle-transition") return null;
   if (event.phase !== "lifecycle")

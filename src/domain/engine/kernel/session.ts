@@ -80,6 +80,7 @@ function freshSnapshot(start: FreshKernelStart, eventLimit: number): EngineSnaps
     currentTimeMs: 0,
     queue: queue.snapshot(),
     entities,
+    retiredEntityIds: registry.retired(),
     buffs: entities.flatMap((entity) => entity.buffs),
     pendingActions: [],
     policyProgress: {
@@ -140,7 +141,11 @@ export class IncrementalKernelSession implements EngineSession {
       this.state.queue,
       this.state.allocatedEventIds,
     );
-    this.entities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
+    this.entities = new EntityRegistry(
+      this.state.entities,
+      this.state.retiredEntityIds,
+      this.state.stateRevisions,
+    );
   }
 
   snapshot(): EngineSnapshot {
@@ -201,7 +206,11 @@ export class IncrementalKernelSession implements EngineSession {
   private performStep(budget: StepBudget, lifecycleStage: Pick<LifecycleBatch, "apply">) {
     const traceEvents: TraceEvent[] = [];
     const emittedEvents: EngineEvent[] = [];
-    const workingEntities = new EntityRegistry(this.state.entities, [], this.state.stateRevisions);
+    const workingEntities = new EntityRegistry(
+      this.state.entities,
+      this.state.retiredEntityIds,
+      this.state.stateRevisions,
+    );
     const workingQueue = new EventQueue(
       this.state.currentTimeMs,
       this.eventLimit,
@@ -320,7 +329,7 @@ export class IncrementalKernelSession implements EngineSession {
         );
         if (!resolution.accepted)
           throw new TypeError(`lifecycle service rejected transition: ${resolution.reason}`);
-        workingEntities.applyInPlace(lifecycle);
+        workingEntities.apply(lifecycle);
       }
       traceEvents.push(structuredClone(trace));
       emittedEvents.push({
@@ -371,6 +380,7 @@ export class IncrementalKernelSession implements EngineSession {
       currentTimeMs: workingQueue.currentTimeMs,
       queue: exhausted ? { ...workingQueue.snapshot(), entries: [] } : workingQueue.snapshot(),
       entities: workingEntities.active(),
+      retiredEntityIds: workingEntities.retired(),
       stateRevisions: workingEntities.stateRevisions(),
       buffs: workingEntities.active().flatMap((entity) => entity.buffs),
       allocatedEventIds: workingQueue.allocatedEventIds(),

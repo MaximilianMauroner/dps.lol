@@ -444,6 +444,7 @@ export const sampleSnapshot = parseContract(EngineSnapshotSchema, {
     ],
   },
   entities: [transformedCopiedAbility, observedTarget],
+  retiredEntityIds: [],
   buffs: transformedCopiedAbility.buffs,
   pendingActions: [
     {

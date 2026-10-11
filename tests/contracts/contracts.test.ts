@@ -1283,6 +1283,43 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => assertResumeCompatible(input, complete)).toThrow(SnapshotNotResumableError);
   });
 
+  test("snapshots keep a retired entity ledger that accounts for every scenario entity", () => {
+    // Snapshots written before the ledger existed fail closed instead of defaulting to none.
+    const withoutLedger: Record<string, unknown> = clone(sampleSnapshot);
+    delete withoutLedger.retiredEntityIds;
+    const missing = EngineSnapshotSchema.safeParse(withoutLedger);
+    expect(missing.success).toBe(false);
+    expect(missing.error?.issues.map((issue) => issue.path)).toEqual([["retiredEntityIds"]]);
+
+    const stillActive = clone(sampleSnapshot);
+    stillActive.retiredEntityIds = ["enemy"];
+    expect(() => parseContract(EngineSnapshotSchema, stillActive)).toThrow(
+      /retired entity IDs cannot remain active/,
+    );
+
+    const duplicate = clone(sampleSnapshot);
+    duplicate.retiredEntityIds = ["summon-1", "summon-1"];
+    expect(() => parseContract(EngineSnapshotSchema, duplicate)).toThrow(/values must be unique/);
+
+    // The actor's copied ability names the enemy, so it leaves the world with the enemy.
+    const enemyGone = clone(sampleSnapshot);
+    enemyGone.entities = enemyGone.entities.filter((entity) => entity.entityId !== "enemy");
+    enemyGone.entities[0]!.abilities = enemyGone.entities[0]!.abilities.filter(
+      (ability) => ability.origin.kind !== "copied",
+    );
+    enemyGone.stateRevisions = { actor: 1 };
+    const input = {
+      scenario: sampleResolvedScenario,
+      run: sampleRunningRun,
+      ports: createMockPorts(),
+    };
+    expect(() => assertResumeCompatible(input, enemyGone)).toThrow(
+      /scenario entity enemy as active or retired/,
+    );
+    enemyGone.retiredEntityIds = ["enemy"];
+    expect(() => assertResumeCompatible(input, enemyGone)).not.toThrow();
+  });
+
   test("uses tagged censored metrics instead of JSON Infinity or NaN", () => {
     const json = JSON.stringify(censoredResult);
     expect(json).not.toContain("Infinity");
