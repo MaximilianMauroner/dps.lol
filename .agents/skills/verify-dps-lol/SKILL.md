@@ -5,7 +5,7 @@ description: Verify patch-pinned Yunara fixture simulation and disclosure. Use w
 
 # Verify dps.lol
 
-Read README.md, current route schemas and [features.md](features.md). Use an
+Read README.md, current route schemas and [the feature index](features/README.md). Use an
 isolated worktree with no DATABASE_URL, Riot or bucket credentials. Do not copy
 .env.example values as working services. Generate disposable local prototype
 `PROTOTYPE_ACCESS_PASSWORD` and `PROTOTYPE_SESSION_SECRET` in the launcher
