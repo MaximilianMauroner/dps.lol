@@ -29,13 +29,17 @@ dependency unavailability; it does not prove Railway's private TCP wake routing.
 
 ## Unapplied production rollout
 
-1. Obtain Max's approval for deploying the draft PR and enabling sleep on the
-   dps production Postgres service. Do not change credentials, volume, backups,
+1. Obtain Max's approval for deploying the PR, enabling sleep and redeploying the
+   dps production Postgres container, including a rollback redeployment. Do not change credentials, volume, backups,
    database contents, schema or the existing pool settings.
 2. Deploy the code with Postgres still awake. Confirm authenticated cohort and
    progression reads, then verify an authorized ingestion operation separately.
-3. Enable `sleepApplication: true` on Postgres. Verify that private Railway TCP
-   connections wake this template. If they do not, revert the setting immediately.
+3. Enable `sleepApplication: true` on Postgres, then redeploy that service to create
+   a new container with the setting. Preserve its existing persistent volume and
+   image. Railway applies Serverless only when a container is created; settings
+   readback alone does not change the running container. Inspect the resolved
+   deployment and lifecycle. Verify that private Railway TCP connections wake
+   this template. If they do not, follow rollback immediately.
 4. After at least 15 minutes without traffic, confirm sleep from Railway lifecycle
    evidence. Wake through an authenticated read, confirm existing row counts and
    archive pointers without changing data, and record response latency.
@@ -47,7 +51,9 @@ expected marginal saving is about $0.41–$0.74/month, before small wake CPU cos
 The prior partial-cycle RAM bill was $0.33. Volume and archived data costs remain.
 These are resource savings, not a reduction below the Hobby $5 cash floor.
 
-Rollback: disable Postgres sleep first; this restores the existing always-awake
-dependency. Revert the code only if a regression remains. No migration or data
+Rollback: disable Postgres sleep first, then redeploy Postgres with the same image
+and persistent volume to apply the setting to a new container. Confirm readiness
+and effective awake lifecycle. Both actions require the approval in step 1.
+Revert the code only if a regression remains. No migration or data
 rollback is required. If a write response is uncertain, reconcile its existing
 match/archive identity before retrying; never blindly repeat the transaction.

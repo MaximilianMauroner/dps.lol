@@ -5,8 +5,17 @@ import { randomUUID } from "node:crypto";
 import { closeDatabase, database, query, transaction } from "../src/db/client";
 
 const fixtureUrl = process.env.DPS_TEST_DATABASE_URL;
-if (fixtureUrl && !["127.0.0.1", "localhost"].includes(new URL(fixtureUrl).hostname)) {
-  throw new Error("DPS_TEST_DATABASE_URL must name an isolated local fixture");
+if (fixtureUrl) {
+  const url = new URL(fixtureUrl);
+  if (
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    !["127.0.0.1", "localhost"].includes(url.hostname) ||
+    url.search !== ""
+  ) {
+    throw new Error(
+      "DPS_TEST_DATABASE_URL must name an isolated local fixture without query overrides",
+    );
+  }
 }
 
 describe.skipIf(!fixtureUrl)("database dependency wake and uncertain writes", () => {
