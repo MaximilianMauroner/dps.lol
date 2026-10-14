@@ -278,6 +278,14 @@ Top-level snapshot buffs must exactly match the canonical entity-owned buff
 state; they cannot disagree on stacks, sources or expiry.
 Resume restores the allocation ledger into each port context so a discarded
 trace event ID cannot be allocated again.
+`retiredEntityIds` is the matching entity ledger: every despawned entity ID stays
+there, disjoint from the active entities, so a restored session cannot spawn
+that ID again. Each lifecycle effect in the retained trace must name an active or
+retired entity, and a despawn effect must name a retired one. The check covers
+only the lifecycle effects that the trace retains. Resume requires every resolved-scenario
+entity to be either active or retired, so an entity cannot silently drop out of a
+checkpoint. Policy-visible entities must stay active, because the frozen policy
+view cannot represent a departed entity; despawning one fails the step.
 Step envelopes may repeat events retained in the snapshot trace only when the
 event ID, allocation sequence and all causal identity fields describe that
 same retained event. Reusing either a retained ID or sequence for different
@@ -319,6 +327,15 @@ objective/evaluation configuration; snapshots carry replay identities and
 explicit resumability/interruption state; policy views are projections rather
 than full `EntityState` values. A downstream consumer must adopt these fields
 before resuming runs or accepting comparison transfers.
+
+The retired-entity ledger revision keeps contract revision `1` and makes
+`EngineSnapshot.retiredEntityIds` required. A snapshot without it fails at the
+schema boundary instead of defaulting to an empty ledger, because an empty
+default would let a resumed run reuse a despawned identity. No stored snapshot
+needs migration: at this revision only the P04 kernel session and the contract
+and kernel tests create or read `EngineSnapshot`. No database table, archive
+object, worker message or browser storage holds one. A consumer that later
+persists snapshots must store the ledger with them.
 
 No P01 contract reserves a database migration number or authorizes production
 data changes. The current legacy runtime remains the compatibility boundary

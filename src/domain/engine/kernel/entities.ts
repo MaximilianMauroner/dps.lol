@@ -106,12 +106,13 @@ export class EntityRegistry {
     if (
       [...this.entities.values()].some(
         (other) =>
-          other.ownerEntityId === entityId ||
-          other.abilities.some(
-            (ability) =>
-              ability.origin.kind === "copied" && ability.origin.sourceEntityId === entityId,
-          ) ||
-          other.buffs.some((buff) => buff.sourceEntityId === entityId),
+          other.entityId !== entityId &&
+          (other.ownerEntityId === entityId ||
+            other.abilities.some(
+              (ability) =>
+                ability.origin.kind === "copied" && ability.origin.sourceEntityId === entityId,
+            ) ||
+            other.buffs.some((buff) => buff.sourceEntityId === entityId)),
       )
     )
       throw new TypeError("cannot despawn an entity while active state references it");
@@ -121,12 +122,11 @@ export class EntityRegistry {
     return structuredClone(entity);
   }
 
-  /** Death, revive, and transform preserve identity across P01 checkpoints. */
-  applyInPlace(transition: LifecycleTransition): LifecycleResolution {
-    if (transition.transition === "spawn" || transition.transition === "despawn")
-      throw new TypeError("spawn and despawn require an entity allocation checkpoint ledger");
-    const previous = this.entities.get(transition.entityId);
-    if (!previous) throw new TypeError("cannot transition an unknown entity");
+  /**
+   * Applies one lifecycle transition. Despawned IDs stay in the retired ledger, so a
+   * restored checkpoint can never allocate them again.
+   */
+  apply(transition: LifecycleTransition): LifecycleResolution {
     const replacement =
       transition.replacement === null ? null : EntityStateSchema.parse(transition.replacement);
     const request = { ...transition, replacement };
@@ -137,19 +137,28 @@ export class EntityRegistry {
       state: replacement,
       reason: null,
     });
-    if (replacement === null) throw new TypeError("in-place lifecycle requires a replacement");
-    const nextRevision = this.revisions.get(transition.entityId)! + 1;
+    if (request.transition === "despawn") this.despawn(request.entityId);
+    else if (replacement === null)
+      throw new TypeError("lifecycle transition requires a replacement");
+    else if (request.transition === "spawn") this.spawn(replacement);
+    else this.replace(request.entityId, replacement);
+    return structuredClone(result);
+  }
+
+  /** Death, revive, and transform keep the entity identity and advance its revision. */
+  private replace(entityId: string, replacement: EntityState): void {
+    const previous = this.entities.get(entityId)!;
+    const nextRevision = this.revisions.get(entityId)! + 1;
     if (!Number.isSafeInteger(nextRevision))
       throw new RangeError("entity state revision exhausted");
-    this.entities.set(transition.entityId, structuredClone(replacement));
+    this.entities.set(entityId, structuredClone(replacement));
     try {
       this.assertReferences();
     } catch (error) {
-      this.entities.set(transition.entityId, previous);
+      this.entities.set(entityId, previous);
       throw error;
     }
-    this.revisions.set(transition.entityId, nextRevision);
-    return structuredClone(result);
+    this.revisions.set(entityId, nextRevision);
   }
 
   private assertReferences(): void {

@@ -98,7 +98,7 @@ function traceCommand(event: (typeof sampleSnapshot.queue.entries)[number]): Eng
 function lifecycleTrace(
   event: ScheduledEvent,
   entityId: string,
-  transition: "death" | "revive" | "transform",
+  transition: LifecycleTransition["transition"],
 ): EngineCommand {
   const base = traceCommand(event);
   if (base.kind !== "trace") throw new Error("fixture must produce a trace");
@@ -965,6 +965,172 @@ test("scheduled death waits for its timestamp and revival survives checkpoint re
   expect(revival.snapshot.trace.events.at(-1)?.effects).toEqual([
     { kind: "lifecycle", entityId: "enemy", transition: "revive" },
   ]);
+});
+
+test("despawned identities stay retired across checkpoints and cannot be spawned again", () => {
+  const actor = sampleSnapshot.entities.find((entity) => entity.entityId === "actor")!;
+  const summon = {
+    ...structuredClone(actor),
+    entityId: "summon-1",
+    ownerEntityId: "actor",
+    kind: "summon" as const,
+    championId: null,
+    abilities: [],
+    buffs: [],
+    resources: [],
+    inventory: [],
+    inventoryOrigin: "empty" as const,
+  };
+  const lifecycleEvent = (
+    eventId: string,
+    sequence: number,
+    timeMs: number,
+    causeEventIds: string[],
+    payload: Readonly<LifecycleTransition>,
+  ) => ({
+    eventId,
+    sequence,
+    timeMs,
+    phase: "lifecycle" as const,
+    kind: "lifecycle-transition",
+    payload,
+    causeEventIds,
+  });
+  const checkpoint = EngineSnapshotSchema.parse({
+    ...sampleSnapshot,
+    queue: {
+      ...sampleSnapshot.queue,
+      entries: [
+        lifecycleEvent("event-003", 3, 1000, ["event-002"], {
+          entityId: "summon-1",
+          transition: "spawn",
+          replacement: summon,
+        }),
+      ],
+    },
+  });
+  // Spawn at 1000 schedules a despawn at 1500, which schedules a forbidden respawn at 2000.
+  const dispatch = (event: ScheduledEvent): EngineCommand[] => {
+    const { transition } = event.payload as LifecycleTransition;
+    const trace = lifecycleTrace(event, "summon-1", transition);
+    const next =
+      event.eventId === "event-003"
+        ? lifecycleEvent("event-004", 4, 1500, [event.eventId], {
+            entityId: "summon-1",
+            transition: "despawn",
+            replacement: null,
+          })
+        : event.eventId === "event-004"
+          ? lifecycleEvent("event-005", 5, 2000, [event.eventId], {
+              entityId: "summon-1",
+              transition: "spawn",
+              replacement: summon,
+            })
+          : null;
+    if (next === null) return [trace];
+    return [
+      trace,
+      {
+        schemaVersion: 1,
+        kind: "schedule-event",
+        commandId: `schedule-${next.eventId}`,
+        issuedAtMs: event.timeMs,
+        causeEventIds: [event.eventId],
+        event: next,
+      },
+    ];
+  };
+  const counts = { commits: 0, rollbacks: 0 };
+  const ports = {
+    ...createMockPorts(),
+    lifecycle: {
+      protocolVersion: 2 as const,
+      beginBatch: () => ({
+        apply: (transition: LifecycleTransition) => ({
+          accepted: true,
+          entityId: transition.entityId,
+          transition: transition.transition,
+          state: transition.replacement,
+          reason: null,
+        }),
+        commit: () => {
+          counts.commits += 1;
+          return undefined;
+        },
+        rollback: () => {
+          counts.rollbacks += 1;
+          return undefined;
+        },
+      }),
+    },
+  };
+  const session = (snapshot: unknown) =>
+    new IncrementalKernelSession(
+      assertResumeCompatible(
+        { scenario: sampleResolvedScenario, run: sampleRunningRun, ports },
+        JSON.parse(JSON.stringify(snapshot)),
+        HASH_A,
+      ),
+      dispatch,
+      view,
+    );
+  const ids = (snapshot: typeof sampleSnapshot) =>
+    snapshot.entities.map((entity) => entity.entityId);
+
+  const uninterrupted = session(checkpoint).step({ maxEvents: 2, untilTimeMs: 1500 });
+  const spawned = session(checkpoint).step({ maxEvents: 1, untilTimeMs: null });
+  expect(ids(spawned.snapshot)).toEqual(["actor", "enemy", "summon-1"]);
+  expect(spawned.snapshot.stateRevisions["summon-1"]).toBe(1);
+  expect(spawned.snapshot.retiredEntityIds).toEqual([]);
+
+  const despawned = session(spawned.snapshot).step({ maxEvents: 1, untilTimeMs: null });
+  expect(ids(despawned.snapshot)).toEqual(["actor", "enemy"]);
+  expect(despawned.snapshot.stateRevisions).toEqual({ actor: 1, enemy: 1 });
+  expect(despawned.snapshot.retiredEntityIds).toEqual(["summon-1"]);
+  expect(despawned.snapshot).toEqual(uninterrupted.snapshot);
+  expect(counts).toEqual({ commits: 3, rollbacks: 0 });
+
+  const restored = session(despawned.snapshot);
+  const before = restored.snapshot();
+  expect(() => restored.step({ maxEvents: 1, untilTimeMs: null })).toThrow("already allocated");
+  expect(restored.snapshot()).toEqual(before);
+  expect(counts).toEqual({ commits: 3, rollbacks: 1 });
+});
+
+test("despawning a policy-visible scenario entity fails the step without changing the checkpoint", () => {
+  const checkpoint = EngineSnapshotSchema.parse({
+    ...sampleSnapshot,
+    // Drop the actor's copied ability so only the policy view still depends on the enemy.
+    entities: sampleSnapshot.entities.map((entity) =>
+      entity.entityId === "actor"
+        ? {
+            ...entity,
+            abilities: entity.abilities.filter((ability) => ability.origin.kind !== "copied"),
+          }
+        : entity,
+    ),
+    queue: {
+      ...sampleSnapshot.queue,
+      entries: [
+        {
+          ...sampleSnapshot.queue.entries[0]!,
+          phase: "lifecycle",
+          kind: "lifecycle-transition",
+          payload: { entityId: "enemy", transition: "despawn", replacement: null },
+        },
+      ],
+    },
+  });
+  const session = new IncrementalKernelSession(
+    resume(checkpoint),
+    (event) => [lifecycleTrace(event, "enemy", "despawn")],
+    view,
+  );
+  const before = session.snapshot();
+  expect(() => session.step({ maxEvents: 1, untilTimeMs: null })).toThrow(
+    "snapshot must retain policy-visible entity enemy",
+  );
+  expect(session.snapshot()).toEqual(before);
 });
 
 test("lifecycle events use the shared port at their event frontier", () => {

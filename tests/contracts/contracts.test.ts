@@ -1283,6 +1283,78 @@ describe("P01 versioned contract fixtures", () => {
     expect(() => assertResumeCompatible(input, complete)).toThrow(SnapshotNotResumableError);
   });
 
+  test("snapshots keep a retired entity ledger that accounts for every scenario entity", () => {
+    // Snapshots written before the ledger existed fail closed instead of defaulting to none.
+    const withoutLedger: Record<string, unknown> = clone(sampleSnapshot);
+    delete withoutLedger.retiredEntityIds;
+    const missing = EngineSnapshotSchema.safeParse(withoutLedger);
+    expect(missing.success).toBe(false);
+    expect(missing.error?.issues.map((issue) => issue.path)).toEqual([["retiredEntityIds"]]);
+
+    const stillActive = clone(sampleSnapshot);
+    stillActive.retiredEntityIds = ["enemy"];
+    expect(() => parseContract(EngineSnapshotSchema, stillActive)).toThrow(
+      /retired entity IDs cannot remain active/,
+    );
+
+    const duplicate = clone(sampleSnapshot);
+    duplicate.retiredEntityIds = ["summon-1", "summon-1"];
+    expect(() => parseContract(EngineSnapshotSchema, duplicate)).toThrow(/values must be unique/);
+
+    // The actor's copied ability names the enemy, so it leaves the world with the enemy.
+    const enemyGone = clone(sampleSnapshot);
+    enemyGone.entities = enemyGone.entities.filter((entity) => entity.entityId !== "enemy");
+    enemyGone.entities[0]!.abilities = enemyGone.entities[0]!.abilities.filter(
+      (ability) => ability.origin.kind !== "copied",
+    );
+    enemyGone.stateRevisions = { actor: 1 };
+    const input = {
+      scenario: sampleResolvedScenario,
+      run: sampleRunningRun,
+      ports: createMockPorts(),
+    };
+    const mismatchesOf = (snapshot: typeof sampleSnapshot) => {
+      try {
+        assertResumeCompatible(input, snapshot);
+        return [];
+      } catch (error) {
+        if (error instanceof ResumeCompatibilityError) return error.mismatches;
+        throw error;
+      }
+    };
+    expect(mismatchesOf(enemyGone)).toEqual([
+      "snapshot must retain scenario entity enemy as active or retired",
+      "snapshot must retain policy-visible entity enemy",
+    ]);
+    // Retiring the enemy accounts for it, but the frozen policy view still needs it.
+    enemyGone.retiredEntityIds = ["enemy"];
+    expect(mismatchesOf(enemyGone)).toEqual(["snapshot must retain policy-visible entity enemy"]);
+  });
+
+  test("retained lifecycle trace effects must agree with the retired entity ledger", () => {
+    const withLifecycleEffect = (
+      entityId: string,
+      transition: "spawn" | "despawn",
+      retiredEntityIds: string[],
+    ) => {
+      const snapshot = clone(sampleSnapshot);
+      snapshot.trace.events[1] = {
+        ...snapshot.trace.events[1]!,
+        kind: "lifecycle",
+        targetEntityIds: [entityId],
+        effects: [{ kind: "lifecycle", entityId, transition }],
+      };
+      snapshot.retiredEntityIds = retiredEntityIds;
+      return EngineSnapshotSchema.safeParse(snapshot).error?.issues.map((issue) => issue.message);
+    };
+    const mismatch = ["retained lifecycle trace effects must match the retired entity ledger"];
+    expect(withLifecycleEffect("summon-1", "despawn", [])).toEqual(mismatch);
+    expect(withLifecycleEffect("summon-1", "despawn", ["summon-1"])).toBeUndefined();
+    expect(withLifecycleEffect("enemy", "despawn", [])).toEqual(mismatch);
+    expect(withLifecycleEffect("summon-1", "spawn", [])).toEqual(mismatch);
+    expect(withLifecycleEffect("summon-1", "spawn", ["summon-1"])).toBeUndefined();
+  });
+
   test("uses tagged censored metrics instead of JSON Infinity or NaN", () => {
     const json = JSON.stringify(censoredResult);
     expect(json).not.toContain("Infinity");
